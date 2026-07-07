@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3588-accel/profile.toml
+#
+# RK3588 hardware-acceleration patch profile: the ordered patch series that turns
+# a mainline 7.1 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media
+# stack (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU).
+#
+# A profile is owned by a kernel definition, not a device (boot2deb §4): this
+# series applies to mainline 7.1 and is referenced by kernels/rk3588-mainline-7.1.
+# Each list is the authoritative apply order for one source tree, applied with
+# `git am --3way`; a tree's list may span scopes (the kernel tree interleaves the
+# media-accel and rocket scopes). Paths are relative to this repo's root.
+
+# Declared intent; the builder's verify-applies gate is the enforcement (§4).
+applies_to_kernel = ">=7.0, <7.2"
+
+# Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU) in
+# dependency order — npu-clk before npu-volt, the independent IOMMU/BO fixes,
+# batched submit, then perf-counters last (a default-off debug Kconfig). The
+# media-accel patches are byte-identical to the frozen debian-rk1 build; the
+# rocket series is the review-hardened lineage, reconciled to am-clean form.
+kernel = [
+    "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
+    "media-accel/kernel/050-av1-iommu-v14-curated.patch",
+    "media-accel/kernel/060-vepu580-rcawston-v3.patch",
+    "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
+    "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
+    "rocket/081-rocket-drv-npu-clk.patch",
+    "rocket/082-rocket-drv-npu-volt.patch",
+    "rocket/083-rocket-drv-iommu-keepattach.patch",
+    "rocket/084-rocket-drv-fix-bo-mm-uaf.patch",
+    "rocket/085-rocket-drv-batched-submit.patch",
+    "rocket/086-rocket-drv-perf-counters.patch",
+]
+
+# ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
+# materialized as an ordered `git am` series (0001-0004; one commit needs a 3-way
+# resolution a cherry-pick cannot reproduce — see media-accel/ffmpeg/README.md),
+# then the NV15/NV20 fix that scale_rkrga expects (0005).
+ffmpeg = [
+    "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
+    "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
+    "media-accel/ffmpeg/0003-lavu-add-RKMPP-hwcontext.patch",
+    "media-accel/ffmpeg/0004-lavf-rkrga-add-RKRGA-scale-vpp-and-overlay-filters.patch",
+    "media-accel/ffmpeg/0005-rkrga-accept-v4l2request-10bit-nv15-nv20.patch",
+]
+
+# Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
+# default_cma_region heap so VEPU580 encode works against the mainline kernel.
+userspace = [
+    "media-accel/userspace/001-mpp-allocator-dma-heap-mainline-cma.patch",
+]
+
+# u-boot tree: the RK1 builds pristine v2026.04 with no patches.
+uboot = []

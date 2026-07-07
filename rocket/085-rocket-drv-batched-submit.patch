@@ -1,0 +1,321 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 30 Jun 2026 12:00:00 +0000
+Subject: [PATCH] rocket: per-job batched submit -- run a job's tasks in one HW
+ kick (RK3588 dispatch-floor)
+
+Stock rocket submits one NPU task per HW kick: rocket_job_hw_submit() programs a
+single task's regcmd into PC_DATA_ADDR, sets PC_TASK_CON.TASK_NUMBER(1), and the
+IRQ handler re-arms the next task on every completion (next_task_idx++). A matmul
+tiled into nMt*nNt*nKt tiles therefore pays one submit + one completion IRQ + one
+waiter wakeup per tile -- the dispatch-floor cost on the prefill matmul.
+
+The RK3588 PC can instead stream a contiguous run of self-chaining regcmds from a
+single kick: program only the first task, set PC_TASK_CON.TASK_NUMBER = N, and the
+PC executes one OP_ENABLE per task, following each task's embedded PC_BASE_ADDRESS
+link to the next. TASK_NUMBER gates a single completion interrupt -- it fires once,
+when all N tasks have completed. (Confirmed on HW: a 2..64-task batch raises exactly
+one IRQ, after the last task; PC_TASK_DMA_BASE_ADDR stays 0 -- there is no
+kernel-walked descriptor table, a model that was implemented and disproven on this
+silicon.)
+
+Chaining is PER JOB, selected by userspace via a new uAPI flag, not a global module
+param. A job runs chained only when it carries DRM_ROCKET_JOB_BATCHED (set by
+userspace exactly for the jobs whose regcmds it laid out contiguously and
+self-chained); any other job keeps the stock per-task path. So a chained-layout job
+(fp16 matmul) and a gapped-layout job (int8/int4 -- whose int32 CACC clears per kick,
+not per task, so chaining garbles them; or the resident/prepacked + stream paths) can
+coexist in ONE process. An earlier revision gated this on a single global module param
+(rocket_batch_submit), which forced TASK_NUMBER=N onto EVERY multi-task job and so
+could not express that mix: a gapped int8 job under the global param streamed task 0
+into the inter-task gap and corrupted (or stalled to the timeout). The per-job flag
+replaces it.
+
+uAPI (include/uapi/drm/rocket_accel.h):
+  - drm_rocket_job gains an OPTIONAL trailing __u32 flags (+ __u32 reserved pad) and
+    the DRM_ROCKET_JOB_BATCHED bit. It is appended past the original struct, so the
+    submit ioctl copies min(job_struct_size, sizeof) and zero-fills the rest: a stock
+    userspace that predates the field is accepted unchanged (flags read 0 => stock
+    per-task), and a newer userspace's flag is honored. Unknown flag bits are rejected.
+
+kernel (drivers/accel/rocket/rocket_job.{c,h}):
+  - rocket_batch_submit (0644) is kept as a MASTER switch over the per-job flag:
+    1 (default) honors the flag, 0 forces every job to the stock per-task path (a
+    global kill switch for bisecting the lever). It is no longer the chaining decision.
+  - rocket_ioctl_submit_job captures DRM_ROCKET_JOB_BATCHED into rjob->want_batched.
+  - rocket_job_run() decides job->batched = want_batched && master && task_count > 1 &&
+    count fits the 12-bit TASK_NUMBER, once, before the first hw_submit.
+  - rocket_job_hw_submit() programs task 0's BASE_ADDRESS/REGISTER_AMOUNTS (as before),
+    sets TASK_NUMBER = task_count for a batched job, leaves TASK_DMA_BASE_ADDR = 0, and
+    advances next_task_idx straight to task_count -- so the existing IRQ-handler retire
+    path (next_task_idx == task_count) fires the job's done fence on the single
+    completion IRQ instead of re-arming a next task. The IRQ handler is unchanged.
+
+This is the KERNEL HALF. It requires userspace to lay a flagged job's per-task regcmds
+out contiguously and rewrite each task's trailer to link to the next (rocket-userspace
+ROCKET_BATCH_SUBMIT; src/rocket_chain.c). A flagged job whose regcmds are NOT contiguous
+runs task 0 and times out, recoverable (drm_sched resets the core). Userspace must set
+the flag only for self-chained jobs.
+
+Scope/measured: see BATCHED_SUBMIT_FINDINGS.md. The lever pays on jobs that decompose
+into independent tasks (a matmul's output tiles). All fp16 matmul submit paths --
+one-shot tiled, the resident/prepacked + stream backend paths (mm_compute_kacc), and the
+flash-attn batch path -- chain correctly and bit-exactly behind the per-job flag (HW
+sweep 2026-06-29); int8/int4 stay gapped by design (CACC).
+
+Apply on top of the keep-IOMMU-attached + bo-mm-uaf fixes (our OOT rocket-mainline-v7.1
+build tree):  patch -p1 < this.patch
+Install the matching uAPI header where both the kernel build and userspace see it
+(e.g. /lib/modules/$(uname -r)/build/include/uapi/drm/rocket_accel.h and
+/usr/include/drm/rocket_accel.h); the canonical copy is rocket-patches/uapi/rocket_accel.h.
+---
+ drivers/accel/rocket/rocket_job.c | 94 +++++++++++++++++++++++++++++--
+ drivers/accel/rocket/rocket_job.h | 14 +++++
+ include/uapi/drm/rocket_accel.h   | 27 +++++++++
+ 3 files changed, 131 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index d01b74682579..6382730a5d34 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -10,8 +10,12 @@
+ #include <linux/interrupt.h>
+ #include <linux/iommu.h>
+ #include <linux/kref.h>
++#include <linux/minmax.h>
++#include <linux/moduleparam.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/stddef.h>
++#include <linux/string.h>
+ 
+ #include "rocket_core.h"
+ #include "rocket_device.h"
+@@ -21,6 +25,28 @@
+ 
+ #define JOB_TIMEOUT_MS 500
+ 
++/*
++ * Batched (chained) submit. A job runs batched only when userspace sets the
++ * per-job DRM_ROCKET_JOB_BATCHED flag (the job's regcmds are then laid out
++ * contiguously and self-chained): the kernel programs only task 0, sets
++ * PC_TASK_CON.TASK_NUMBER to the task count, and retires the whole job on the
++ * one completion IRQ that TASK_NUMBER gates (it fires when the PC task counter
++ * reaches task_count). A job without the flag keeps the stock one-submit-per-
++ * task path, so chained-layout (fp16) and gapped-layout (int8/int4/prepacked)
++ * jobs coexist in one process.
++ *
++ * This module param is a master switch over the per-job flag: 1 (default)
++ * honors the flag, 0 forces every job to the stock per-task path (a global
++ * kill switch for debugging / bisecting the lever). It is NOT the chaining
++ * decision itself — that is per-job. Against a stock gapped layout a chained
++ * kick runs only task 0 and times out, so userspace must self-chain exactly
++ * the jobs it flags (rocket-userspace ROCKET_BATCH_SUBMIT).
++ */
++static int rocket_batch_submit = 1;
++module_param(rocket_batch_submit, int, 0644);
++MODULE_PARM_DESC(rocket_batch_submit,
++		 "Master enable for per-job chained submit (DRM_ROCKET_JOB_BATCHED): 1 (default) honors the per-job flag, 0 forces every job to the stock per-task path.");
++
+ static struct rocket_job *
+ to_rocket_job(struct drm_sched_job *sched_job)
+ {
+@@ -118,7 +144,16 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 	/* GO ! */
+ 
+ 	task = &job->tasks[job->next_task_idx];
+-	job->next_task_idx++;
++	/*
++	 * A batched job streams all of its tasks from this single kick, so jump
++	 * next_task_idx straight to the end: the one completion IRQ then retires
++	 * the whole job (the per-task re-arm in rocket_job_handle_irq is skipped).
++	 * The stock path advances one task at a time and is re-armed per IRQ.
++	 */
++	if (job->batched)
++		job->next_task_idx = job->task_count;
++	else
++		job->next_task_idx++;
+ 
+ 	rocket_pc_writel(core, BASE_ADDRESS, 0x1);
+ 
+@@ -143,7 +178,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 
+ 	rocket_pc_writel(core, TASK_CON, PC_TASK_CON_RESERVED_0(1) |
+ 					 PC_TASK_CON_TASK_COUNT_CLEAR(1) |
+-					 PC_TASK_CON_TASK_NUMBER(1) |
++					 PC_TASK_CON_TASK_NUMBER(job->batched ? job->task_count : 1) |
+ 					 PC_TASK_CON_TASK_PP_EN(1));
+ 
+ 	rocket_pc_writel(core, TASK_DMA_BASE_ADDR, PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
+@@ -344,6 +379,19 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+ 		core->attached_domain = job->domain;
+ 	}
+ 
++	/*
++	 * Decide chained vs per-task once, here, before the first (and for a
++	 * batched job, only) hw_submit. Gate on userspace having requested it
++	 * for THIS job (DRM_ROCKET_JOB_BATCHED -> want_batched), on the master
++	 * param, on there being more than one task to chain, and on the count
++	 * fitting the 12-bit TASK_NUMBER field; anything else runs the stock
++	 * per-task path. Per-job so a flagged (self-chained) job and an
++	 * unflagged (gapped) job can run back to back on the same core.
++	 */
++	job->batched = job->want_batched && rocket_batch_submit &&
++		       job->task_count > 1 &&
++		       job->task_count <= PC_TASK_CON_TASK_NUMBER__MASK;
++
+ 	scoped_guard(mutex, &core->job_lock) {
+ 		core->in_flight_job = job;
+ 		rocket_job_hw_submit(core, job);
+@@ -361,6 +409,12 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 
+ 	scoped_guard(mutex, &core->job_lock)
+ 		if (core->in_flight_job) {
++			/*
++			 * A batched job advanced next_task_idx straight to task_count
++			 * in rocket_job_hw_submit, so it falls through and retires on
++			 * its single TASK_NUMBER-gated completion IRQ. The stock path
++			 * re-arms the next task here on each per-task completion.
++			 */
+ 			if (core->in_flight_job->next_task_idx < core->in_flight_job->task_count) {
+ 				rocket_job_hw_submit(core, core->in_flight_job);
+ 				return;
+@@ -576,6 +630,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 	if (job->task_count == 0)
+ 		return -EINVAL;
+ 
++	/* Reject unknown flag bits so a future flag can't be silently ignored. */
++	if (job->flags & ~DRM_ROCKET_JOB_BATCHED) {
++		drm_dbg(dev, "Unknown bits set in drm_rocket_job.flags (0x%x).\n",
++			job->flags);
++		return -EINVAL;
++	}
++
+ 	rjob = kzalloc_obj(*rjob);
+ 	if (!rjob)
+ 		return -ENOMEM;
+@@ -584,6 +645,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 
+ 	rjob->rdev = rdev;
+ 
++	/*
++	 * Userspace's per-job chained-submit request. rocket_job_run ANDs this
++	 * with the master param and the task-count constraints to decide
++	 * job->batched; a stock (gapped) job leaves the flag clear.
++	 */
++	rjob->want_batched = !!(job->flags & DRM_ROCKET_JOB_BATCHED);
++
+ 	ret = drm_sched_job_init(&rjob->base,
+ 				 &file_priv->sched_entity,
+ 				 1, NULL, file->client_id);
+@@ -633,7 +701,15 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
+ 	if (args->job_count == 0)
+ 		return 0;
+ 
+-	if (args->job_struct_size < sizeof(struct drm_rocket_job)) {
++	/*
++	 * @flags (and its @reserved pad) is an OPTIONAL trailing field. Require
++	 * only the original fields so a stock userspace (whose drm_rocket_job
++	 * predates @flags) is still accepted; the copy below zero-fills anything
++	 * it does not supply. Newer userspace passes the larger struct and its
++	 * @flags is honored.
++	 */
++	if (args->job_struct_size <
++	    offsetofend(struct drm_rocket_job, out_bo_handle_count)) {
+ 		drm_dbg(dev, "job_struct_size field in drm_rocket_submit struct is too small.\n");
+ 		return -EINVAL;
+ 	}
+@@ -650,9 +726,19 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
+ 	}
+ 
+ 	for (i = 0; i < args->job_count; i++) {
++		/*
++		 * Copy min(userspace struct, our struct) and zero-fill the rest,
++		 * so a userspace that omits the trailing @flags/@reserved reads
++		 * them as 0 and a userspace newer than us has its extra tail
++		 * ignored. Strides by the userspace-declared job_struct_size.
++		 */
++		size_t copy_size = min_t(size_t, args->job_struct_size,
++					 sizeof(*jobs));
++
++		memset(&jobs[i], 0, sizeof(*jobs));
+ 		if (copy_from_user(&jobs[i],
+ 				   u64_to_user_ptr(args->jobs) + i * args->job_struct_size,
+-				   sizeof(*jobs))) {
++				   copy_size)) {
+ 			ret = -EFAULT;
+ 			drm_dbg(dev, "Failed to copy incoming job array\n");
+ 			goto exit;
+diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
+index 4ae00feec3b9..c5f8ad0504b2 100644
+--- a/drivers/accel/rocket/rocket_job.h
++++ b/drivers/accel/rocket/rocket_job.h
+@@ -30,6 +30,20 @@ struct rocket_job {
+ 	u32 task_count;
+ 	u32 next_task_idx;
+ 
++	/*
++	 * want_batched: userspace set DRM_ROCKET_JOB_BATCHED on this job (its
++	 * regcmds are laid out contiguously and self-chained). Captured at submit
++	 * from drm_rocket_job.flags.
++	 *
++	 * batched: the effective decision, made once per job in rocket_job_run as
++	 * want_batched && the rocket_batch_submit master param && task_count > 1 &&
++	 * the count fits TASK_NUMBER. When set, the job's self-chaining regcmds run
++	 * from one HW kick (TASK_NUMBER = task_count, single completion IRQ) instead
++	 * of one submit per task; read by the submit and IRQ paths.
++	 */
++	bool want_batched;
++	bool batched;
++
+ 	/* Fence to be signaled by drm-sched once its done with the job */
+ 	struct dma_fence *inference_done_fence;
+ 
+diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
+index d0685e372b79..c6e9f838f8fc 100644
+--- a/include/uapi/drm/rocket_accel.h
++++ b/include/uapi/drm/rocket_accel.h
+@@ -21,6 +21,18 @@ extern "C" {
+ #define DRM_IOCTL_ROCKET_PREP_BO		DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_PREP_BO, struct drm_rocket_prep_bo)
+ #define DRM_IOCTL_ROCKET_FINI_BO		DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_FINI_BO, struct drm_rocket_fini_bo)
+ 
++/*
++ * Flags for drm_rocket_job.flags.
++ *
++ * DRM_ROCKET_JOB_BATCHED: run this job's tasks as a single chained HW kick
++ * (PC_TASK_CON.TASK_NUMBER = task_count, one completion IRQ) instead of one
++ * submit + IRQ per task. The job's per-task regcmds must be laid out
++ * contiguously and self-chained in userspace; against a stock gapped layout the
++ * PC runs task 0 and the job times out. Per-job (not a module param) so a
++ * chained-layout job and a gapped-layout job can coexist in one process.
++ */
++#define DRM_ROCKET_JOB_BATCHED		(1 << 0)
++
+ /**
+  * struct drm_rocket_create_bo - ioctl argument for creating Rocket BOs.
+  *
+@@ -155,6 +167,21 @@ struct drm_rocket_job {
+ 	 * (size is that times 4).
+ 	 */
+ 	__u32 out_bo_handle_count;
++
++	/**
++	 * @flags: Input: bitmask of DRM_ROCKET_JOB_* flags. Optional and
++	 * appended past the original struct: a kernel that predates a flag
++	 * ignores it, and userspace that predates this field leaves it
++	 * implicitly zero (the kernel copies min(job_struct_size, its sizeof)
++	 * and zero-fills the rest). Must be zero except for known flag bits.
++	 */
++	__u32 flags;
++
++	/**
++	 * @reserved: Reserved, must be zero. Pads @flags out to an 8-byte
++	 * boundary and leaves room for growth.
++	 */
++	__u32 reserved;
+ };
+ 
+ /**
+-- 
+2.43.0
+

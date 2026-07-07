@@ -1,0 +1,75 @@
+From 95a6c48816d39b190be4b7333ad6fc249c08590c Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 15 May 2026 12:19:17 -0400
+Subject: [PATCH] allocator_dma_heap: force default_cma_region for mainline 7.1
+ + rcawston VEPU580
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Mainline exposes /dev/dma_heap/{system,default_cma_region,reserved},
+not the Rockchip-BSP heap names. The VEPU580 needs a physically
+contiguous bitstream buffer (the rcawston driver does not coalesce a
+multi-segment dma-buf import into one IOVA range). Forcing all
+heap_infos entries to the contiguous default_cma_region heap makes
+hevc_rkmpp/h264_rkmpp encode work against the stock kernel.
+
+Local patch — not for upstream. Revert if pairing with a BSP kernel.
+---
+ osal/allocator/allocator_dma_heap.c | 39 +++++++++++++++++++++++------
+ 1 file changed, 31 insertions(+), 8 deletions(-)
+
+diff --git a/osal/allocator/allocator_dma_heap.c b/osal/allocator/allocator_dma_heap.c
+index b08cc7c9..c30129b9 100644
+--- a/osal/allocator/allocator_dma_heap.c
++++ b/osal/allocator/allocator_dma_heap.c
+@@ -62,15 +62,38 @@ typedef struct DmaHeapInfo_t {
+     RK_U32      flags;
+ } DmaHeapInfo;
+ 
++/*
++ * LOCAL PATCH (rockchip-accel, mainline 7.1 + rcawston VEPU580):
++ *
++ * All heap names forced to "default_cma_region" (the mainline kernel's
++ * CONFIG_DMABUF_HEAPS_CMA heap on this board). Rationale:
++ *
++ *  - Mainline exposes /dev/dma_heap/{system,default_cma_region,reserved},
++ *    NOT the Rockchip-BSP names (cma, system-dma32, system-uncached, ...).
++ *    Stock table → only "system" (idx2) opens → encoder gets a
++ *    page-allocator (non-contiguous) buffer.
++ *  - The rcawston VEPU580 driver's dma-buf import does not coalesce a
++ *    multi-segment import into one IOVA range; its guardrail then
++ *    rejects the bitstream-top register (BSBT) and, even past that,
++ *    the encoder would IOMMU-fault writing sequentially across IOVA
++ *    gaps. The VEPU580 needs a physically contiguous bitstream buffer.
++ *  - "default_cma_region" is physically contiguous → single IOVA range
++ *    → encode works against the STOCK kernel (no kernel patch).
++ *
++ * MPP here is encode-only (decode uses v4l2request), so the extra CMA
++ * pressure is modest. If 4K needs more, grow the CMA reservation via
++ * bootarg/DT `cma=`, not a kernel rebuild. Revert this block to use the
++ * upstream BSP heap names if ever pairing with a Rockchip BSP kernel.
++ */
+ static DmaHeapInfo heap_infos[MPP_ALLOC_FLAG_TYPE_NB] = {
+-    {   "system-uncached",          -1,                                                MPP_ALLOC_FLAG_NONE , },   /* 0 */
+-    {   "system-uncached-dma32",    -1,                                                MPP_ALLOC_FLAG_DMA32, },   /* 1 */
+-    {   "system",                   -1,                      MPP_ALLOC_FLAG_CACHABLE                       , },   /* 2 */
+-    {   "system-dma32",             -1,                      MPP_ALLOC_FLAG_CACHABLE | MPP_ALLOC_FLAG_DMA32, },   /* 3 */
+-    {   "cma-uncached",             -1, MPP_ALLOC_FLAG_CMA                                                 , },   /* 4 */
+-    {   "cma-uncached-dma32",       -1, MPP_ALLOC_FLAG_CMA                           | MPP_ALLOC_FLAG_DMA32, },   /* 5 */
+-    {   "cma",                      -1, MPP_ALLOC_FLAG_CMA | MPP_ALLOC_FLAG_CACHABLE                       , },   /* 6 */
+-    {   "cma-dma32",                -1, MPP_ALLOC_FLAG_CMA | MPP_ALLOC_FLAG_CACHABLE | MPP_ALLOC_FLAG_DMA32, },   /* 7 */
++    {   "default_cma_region",       -1,                                                MPP_ALLOC_FLAG_NONE , },   /* 0 */
++    {   "default_cma_region",       -1,                                                MPP_ALLOC_FLAG_DMA32, },   /* 1 */
++    {   "default_cma_region",       -1,                      MPP_ALLOC_FLAG_CACHABLE                       , },   /* 2 */
++    {   "default_cma_region",       -1,                      MPP_ALLOC_FLAG_CACHABLE | MPP_ALLOC_FLAG_DMA32, },   /* 3 */
++    {   "default_cma_region",       -1, MPP_ALLOC_FLAG_CMA                                                 , },   /* 4 */
++    {   "default_cma_region",       -1, MPP_ALLOC_FLAG_CMA                           | MPP_ALLOC_FLAG_DMA32, },   /* 5 */
++    {   "default_cma_region",       -1, MPP_ALLOC_FLAG_CMA | MPP_ALLOC_FLAG_CACHABLE                       , },   /* 6 */
++    {   "default_cma_region",       -1, MPP_ALLOC_FLAG_CMA | MPP_ALLOC_FLAG_CACHABLE | MPP_ALLOC_FLAG_DMA32, },   /* 7 */
+ };
+ 
+ static int try_open_path(const char *name)
+-- 
+2.43.0
+

@@ -1,0 +1,107 @@
+From 7829ae2a6088a1b6cd03589edbf43d07d03a6005 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 16 May 2026 13:39:59 -0400
+Subject: [PATCH] lavfi/rkrga: accept Kwiboo v4l2-request 10-bit (NV15/NV20)
+
+nyanmisaka scale_rkrga/vpp_rkrga key RGA format/stride/bit-depth off the
+input AVHWFramesContext sw_format and only know the semi-planar NV15/NV20
+tags (his rkmppdec emits those). Mainline RK3588 decodes 10-bit on the
+V4L2 stateless rkvdec; Kwiboo v4l2-request exports those semi-planar
+CAPTURE buffers (real layout DRM_FORMAT_NV15/NV20) with the *planar*
+logical sw_format YUV420P10/YUV422P10. Combined (this build), every
+HW-decoded 10-bit frame fails scale_rkrga as "Unsupported ...
+yuv420p10le" and is forced onto slow software decode.
+
+Normalise the v4l2-request planar-10 logical tags to the true
+semi-planar RK format at the two sw_format consumers. Safe: these
+filters only ever process AV_PIX_FMT_DRM_PRIME frames whose backing
+buffer already IS the RK semi-planar 10-bit layout. NV15 keeps
+uncompact_10b_msb=0 (compact, as rkvdec produces). 8-bit and
+rkmpp-tagged paths are untouched.
+---
+ libavfilter/rkrga_common.c |  7 +++++--
+ libavfilter/rkrga_common.h | 23 +++++++++++++++++++++++
+ libavfilter/vf_vpp_rkrga.c |  2 +-
+ 3 files changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/libavfilter/rkrga_common.c b/libavfilter/rkrga_common.c
+index 9fd78312e7..8fe3a7c1a7 100644
+--- a/libavfilter/rkrga_common.c
++++ b/libavfilter/rkrga_common.c
+@@ -1062,6 +1062,7 @@ static av_cold int fill_rga_frame_info_by_link(AVFilterContext *avctx,
+ {
+     FilterLink *l = ff_filter_link(link);
+     AVHWFramesContext *hwfc;
++    enum AVPixelFormat sw_fmt;
+     RKRGAContext *r = avctx->priv;
+ 
+     if (!l->hw_frames_ctx || link->format != AV_PIX_FMT_DRM_PRIME)
+@@ -1069,14 +1070,16 @@ static av_cold int fill_rga_frame_info_by_link(AVFilterContext *avctx,
+ 
+     hwfc = (AVHWFramesContext *)l->hw_frames_ctx->data;
+ 
+-    if (!map_av_to_rga_format(hwfc->sw_format, &info->rga_fmt, (is_inlink && nb_link > 0))) {
++    sw_fmt = ff_rkrga_normalize_sw_format(hwfc->sw_format);
++
++    if (!map_av_to_rga_format(sw_fmt, &info->rga_fmt, (is_inlink && nb_link > 0))) {
+         av_log(avctx, AV_LOG_ERROR, "Unsupported '%s' pad %d format: '%s'\n",
+                (is_inlink ? "input" : "output"), nb_link,
+                av_get_pix_fmt_name(hwfc->sw_format));
+         return AVERROR(ENOSYS);
+     }
+ 
+-    info->pix_fmt  = hwfc->sw_format;
++    info->pix_fmt  = sw_fmt;
+     info->pix_desc = av_pix_fmt_desc_get(info->pix_fmt);
+     info->bytes_pp = av_get_padded_bits_per_pixel(info->pix_desc) / 8.0f;
+ 
+diff --git a/libavfilter/rkrga_common.h b/libavfilter/rkrga_common.h
+index 8da2320c15..d316c2d7a7 100644
+--- a/libavfilter/rkrga_common.h
++++ b/libavfilter/rkrga_common.h
+@@ -43,6 +43,29 @@
+ #define FF_INLINK_IDX(link)  ((int)((link)->dstpad - (link)->dst->input_pads))
+ #define FF_OUTLINK_IDX(link) ((int)((link)->srcpad - (link)->src->output_pads))
+ 
++/*
++ * Mainline RK3588 decodes 10-bit HEVC/VP9/AV1 on the V4L2 stateless
++ * rkvdec; Kwiboo's v4l2-request hwcontext exports those semi-planar
++ * NV15/NV20 CAPTURE buffers (real layout DRM_FORMAT_NV15 / NV20) with
++ * the *planar* logical sw_format YUV420P10 / YUV422P10. nyanmisaka's
++ * RGA filters key the RGA format/stride/bit-depth off sw_format and
++ * only recognise the semi-planar NV15/NV20 tags (rkmppdec emits those),
++ * so a mainline HW-decoded 10-bit frame is wrongly rejected.
++ *
++ * Normalise the v4l2-request planar-10 logical tags to the real
++ * semi-planar format. Safe: these filters only ever process
++ * AV_PIX_FMT_DRM_PRIME frames whose backing buffer IS the RK
++ * semi-planar 10-bit layout.
++ */
++static inline enum AVPixelFormat ff_rkrga_normalize_sw_format(enum AVPixelFormat f)
++{
++    switch (f) {
++    case AV_PIX_FMT_YUV420P10LE: return AV_PIX_FMT_NV15;
++    case AV_PIX_FMT_YUV422P10LE: return AV_PIX_FMT_NV20;
++    default:                     return f;
++    }
++}
++
+ typedef struct RGAFrame {
+     AVFrame          *frame;
+     rga_info_t        info;
+diff --git a/libavfilter/vf_vpp_rkrga.c b/libavfilter/vf_vpp_rkrga.c
+index bf05222633..1a40555811 100644
+--- a/libavfilter/vf_vpp_rkrga.c
++++ b/libavfilter/vf_vpp_rkrga.c
+@@ -366,7 +366,7 @@ static av_cold int rgavpp_config_props(AVFilterLink *outlink)
+         return AVERROR(EINVAL);
+     }
+     in_frames_ctx = (AVHWFramesContext *)inl->hw_frames_ctx->data;
+-    in_format     = in_frames_ctx->sw_format;
++    in_format     = ff_rkrga_normalize_sw_format(in_frames_ctx->sw_format);
+     out_format    = (r->format == AV_PIX_FMT_NONE) ? in_format : r->format;
+ 
+     config_force_format(ctx, in_format, &out_format);
+-- 
+2.43.0
+

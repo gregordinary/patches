@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 30 Jun 2026 12:00:00 +0000
+Subject: [PATCH] rocket: keep the IOMMU domain attached across jobs (RK3588
+ dispatch-floor A/B)
+
+Backport of "[RFC PATCH v4 5/9] accel: rocket: Keep the IOMMU domain attached
+across jobs" (Midgy BALON, linux-rockchip 2026-06-13) onto our in-tree
+rocket-mainline-v7.1 (clk+volt) source.
+
+Stock rocket attaches the per-context IOMMU domain in rocket_job_run() and
+detaches it again on every completion and reset. Each attach/detach toggles the
+rk_iommu stall/reset/paging handshake -- per drm_sched job. On RK3568 that
+handshake times out on the idle NPU MMU (the upstream bug); on RK3588 it
+completes but still costs handshake latency on every submitted job. We are
+submit-overhead-bound on the detection path, so this is a dispatch-floor lever.
+
+Track the attached domain in the core, swap it only when a job from a different
+context runs, hold a kref so it outlives the job that attached it, and detach at
+core teardown / after reset (the reset wipes the page-table base).
+
+NOTE vs upstream: our rocket_reset() detaches inside the job_lock scoped_guard
+(before rocket_core_reset()) rather than after it; the keep-attached drop is
+applied in place there. Functionally equivalent for the bookkeeping (clears
+attached_domain so the next job re-attaches and reprograms the page-table base).
+
+Apply from your kernel source tree root:  patch -p1 < this.patch
+
+Review hardening (K1): document the drm_sched serialization that makes the
+lockless attached_domain swap in rocket_job_run() safe; pass the real attached
+domain (not NULL) to iommu_detach_group() at every detach site; and state the
+"attached_domain holds one kref iff non-NULL" invariant at the struct field.
+---
+ drivers/accel/rocket/rocket_core.c | 14 +++++++++-
+ drivers/accel/rocket/rocket_core.h | 12 ++++++++
+ drivers/accel/rocket/rocket_job.c  | 44 ++++++++++++++++++++++++++----
+ 3 files changed, 64 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
+index 5d3879674d3b..b6bb43b409fb 100644
+--- a/drivers/accel/rocket/rocket_core.c
++++ b/drivers/accel/rocket/rocket_core.c
+@@ -13,6 +13,7 @@
+ #include <linux/reset.h>
+ 
+ #include "rocket_core.h"
++#include "rocket_drv.h"
+ #include "rocket_job.h"
+ 
+ int rocket_core_init(struct rocket_core *core)
+@@ -138,9 +139,20 @@ void rocket_core_fini(struct rocket_core *core)
+ {
+ 	pm_runtime_dont_use_autosuspend(core->dev);
+ 	pm_runtime_disable(core->dev);
++
++	/*
++	 * Stop the scheduler before tearing down the IOMMU so an in-flight
++	 * job can no longer touch the (about to be detached) domain.
++	 */
++	rocket_job_fini(core);
++
++	if (core->attached_domain) {
++		iommu_detach_group(core->attached_domain->domain, core->iommu_group);
++		rocket_iommu_domain_put(core->attached_domain);
++		core->attached_domain = NULL;
++	}
+ 	iommu_group_put(core->iommu_group);
+ 	core->iommu_group = NULL;
+-	rocket_job_fini(core);
+ }
+ 
+ void rocket_core_reset(struct rocket_core *core)
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 10e89621f4e9..0abfe2c39c92 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -29,6 +29,8 @@ struct regulator;
+ #define rocket_core_writel(core, reg, value) \
+ 	writel(value, (core)->core_iomem + (REG_CORE_##reg) - REG_CORE_S_STATUS)
+ 
++struct rocket_iommu_domain;
++
+ struct rocket_core {
+ 	struct device *dev;
+ 	struct rocket_device *rdev;
+@@ -61,6 +63,16 @@ struct rocket_core {
+ 	struct regulator *npu_supply;
+ 
+ 	struct iommu_group *iommu_group;
++	/*
++	 * The IOMMU domain currently attached to this core's group, kept attached
++	 * across jobs from the same context (see rocket_job_run). Invariant:
++	 * attached_domain holds exactly one reference on the domain iff it is
++	 * non-NULL -- so every place that clears it must iommu_detach_group() and
++	 * rocket_iommu_domain_put() together. Mutated only from the drm_sched
++	 * single-threaded run/reset path (see the serialization note in
++	 * rocket_job_run).
++	 */
++	struct rocket_iommu_domain *attached_domain;
+ 
+ 	struct mutex job_lock;
+ 	struct rocket_job *in_flight_job;
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index ac51bff39833..d01b74682579 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -9,6 +9,7 @@
+ #include <drm/rocket_accel.h>
+ #include <linux/interrupt.h>
+ #include <linux/iommu.h>
++#include <linux/kref.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ 
+@@ -314,9 +315,34 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+ 	if (ret < 0)
+ 		return fence;
+ 
+-	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
+-	if (ret < 0)
+-		return fence;
++	/*
++	 * Attach the job's IOMMU domain only when it differs from the one
++	 * already attached. Re-attaching per job toggles the rk_iommu
++	 * stall/reset handshake on an idle NPU MMU, which is slow and
++	 * noisy; keep the domain attached across jobs instead.
++	 *
++	 * core->attached_domain is read-modify-written here without job_lock.
++	 * That is safe because drm_sched serializes the only two writers: this
++	 * .run_job callback runs from the scheduler's single work item, and the
++	 * reset path (rocket_reset, the other writer) only runs after
++	 * drm_sched_stop() has fenced off run_job for this entity. The two never
++	 * execute concurrently, so the swap needs no lock; job_lock is taken
++	 * below only for in_flight_job, which IS also touched from the IRQ path.
++	 */
++	if (core->attached_domain != job->domain) {
++		if (core->attached_domain) {
++			iommu_detach_group(core->attached_domain->domain, core->iommu_group);
++			rocket_iommu_domain_put(core->attached_domain);
++			core->attached_domain = NULL;
++		}
++
++		ret = iommu_attach_group(job->domain->domain, core->iommu_group);
++		if (ret < 0)
++			return fence;
++
++		kref_get(&job->domain->kref);
++		core->attached_domain = job->domain;
++	}
+ 
+ 	scoped_guard(mutex, &core->job_lock) {
+ 		core->in_flight_job = job;
+@@ -340,7 +366,6 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 				return;
+ 			}
+ 
+-			iommu_detach_group(NULL, iommu_group_get(core->dev));
+ 			dma_fence_signal(core->in_flight_job->done_fence);
+ 			pm_runtime_put_autosuspend(core->dev);
+ 			core->in_flight_job = NULL;
+@@ -364,7 +389,16 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+ 		if (core->in_flight_job)
+ 			pm_runtime_put_noidle(core->dev);
+ 
+-		iommu_detach_group(NULL, core->iommu_group);
++		/*
++		 * The reset wipes the IOMMU page-table base, so drop the
++		 * attached domain to force the next job to re-attach and
++		 * reprogram it.
++		 */
++		if (core->attached_domain) {
++			iommu_detach_group(core->attached_domain->domain, core->iommu_group);
++			rocket_iommu_domain_put(core->attached_domain);
++			core->attached_domain = NULL;
++		}
+ 
+ 		core->in_flight_job = NULL;
+ 	}
+-- 
+2.43.0
+

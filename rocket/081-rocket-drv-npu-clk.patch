@@ -1,0 +1,152 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 30 Jun 2026 12:00:00 +0000
+Subject: [PATCH] rocket: program the NPU compute clock from runtime-resume
+ (clock lever)
+
+Add the rocket_npu_clk_hz module param: when set, (re)program the shared SCMI
+NPU compute clock ("npu") from runtime-resume (only after the PM core has
+powered the domain -- setting it cold wedges SCMI), and park it back at the
+vendor 200 MHz POWER_DOWN rate on suspend. 0 leaves the DT default (200 MHz).
+
+Review hardening (K3): the "npu" clock handle is acquired ONCE via
+devm_clk_get_optional() in rocket_core_init and stashed in struct rocket_core,
+instead of a clk_get/clk_put on every resume/suspend (a hot path). -EPROBE_DEFER
+is propagated; an absent clock degrades to the stock 200 MHz, never failing probe.
+
+Apply first (before volt/keepattach).
+---
+ drivers/accel/rocket/rocket_core.c | 19 ++++++++++++
+ drivers/accel/rocket/rocket_core.h | 10 ++++++
+ drivers/accel/rocket/rocket_drv.c  | 50 ++++++++++++++++++++++++++++++
+ 3 files changed, 79 insertions(+)
+
+diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
+index b3b2fa9ba645..66501861e37d 100644
+--- a/drivers/accel/rocket/rocket_core.c
++++ b/drivers/accel/rocket/rocket_core.c
+@@ -32,6 +32,25 @@ int rocket_core_init(struct rocket_core *core)
+ 	if (err)
+ 		return dev_err_probe(dev, err, "failed to get clocks for core %d\n", core->index);
+ 
++	/*
++	 * Acquire the shared SCMI NPU compute clock ("npu") once, for the device
++	 * lifetime, so the rocket_npu_clk_hz re-rate in runtime-resume/suspend
++	 * needs no per-transition clk_get/clk_put (mirrors the npu_supply
++	 * regulator acquisition). It is only RE-RATED from runtime-resume, never
++	 * set cold (that wedges SCMI). Optional: a board without the clock just
++	 * runs stock 200 MHz and never fails to probe -- the "degrade, don't
++	 * disrupt" rule of the clock lever. -EPROBE_DEFER is propagated so the
++	 * clock is retried once its provider is up.
++	 */
++	core->npu_clk = devm_clk_get_optional(dev, "npu");
++	if (IS_ERR(core->npu_clk)) {
++		if (PTR_ERR(core->npu_clk) == -EPROBE_DEFER)
++			return PTR_ERR(core->npu_clk);
++		dev_info(dev, "rocket: no \"npu\" clock (%ld); NPU clock scaling disabled\n",
++			 PTR_ERR(core->npu_clk));
++		core->npu_clk = NULL;
++	}
++
+ 	core->pc_iomem = devm_platform_ioremap_resource_byname(pdev, "pc");
+ 	if (IS_ERR(core->pc_iomem)) {
+ 		dev_err(dev, "couldn't find PC registers %ld\n", PTR_ERR(core->pc_iomem));
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index f6d7382854ca..1080f3b307b8 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -39,6 +39,16 @@ struct rocket_core {
+ 	struct clk_bulk_data clks[4];
+ 	struct reset_control_bulk_data resets[2];
+ 
++	/*
++	 * Shared SCMI NPU compute clock ("npu"), acquired once for the device
++	 * lifetime (devm) so runtime-resume/suspend can re-rate it without a
++	 * clk_get/clk_put on every PM transition. NULL when no "npu" clock is
++	 * wired (then the rocket_npu_clk_hz lever is a no-op). Only ever re-rated
++	 * from runtime-resume/suspend, never set cold (that wedges SCMI). See
++	 * rocket_drv.c.
++	 */
++	struct clk *npu_clk;
++
+ 	struct iommu_group *iommu_group;
+ 
+ 	struct mutex job_lock;
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 8bbbce594883..60d007d2a8d5 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -25,6 +25,19 @@
+ static struct platform_device *drm_dev;
+ static struct rocket_device *rdev;
+ 
++#define ROCKET_NPU_POWER_DOWN_HZ	200000000UL	/* vendor POWER_DOWN_FREQ */
++
++/*
++ * If non-zero, program the shared SCMI NPU compute clock ("npu") to this rate
++ * from runtime-resume, i.e. only AFTER the PM core has powered the domain.
++ * 0 leaves the DT default (200 MHz) untouched (stock). Writable via sysfs so
++ * the rate can be swept without rebuilding.
++ */
++static unsigned long rocket_npu_clk_hz;
++module_param(rocket_npu_clk_hz, ulong, 0644);
++MODULE_PARM_DESC(rocket_npu_clk_hz,
++	"NPU compute clock target in Hz applied in runtime-resume (e.g. 600000000); 0 = stock 200 MHz");
++
+ static void
+ rocket_iommu_domain_destroy(struct kref *kref)
+ {
+@@ -246,6 +259,31 @@ static int rocket_device_runtime_resume(struct device *dev)
+ 		return err;
+ 	}
+ 
++	/*
++	 * The power domain for this core is now powered (the PM core resumed the
++	 * genpd before calling us) and the bulk clocks are enabled, so it is safe
++	 * to (re)program the shared SCMI NPU compute clock here. Setting it cold,
++	 * with the domain off (DT of_clk_set_defaults at probe, or an external
++	 * module), wedges the SCMI firmware -- so do it ONLY from here.
++	 */
++	if (rocket_npu_clk_hz) {
++		struct clk *npu_clk = rdev->cores[core].npu_clk;
++
++		if (!npu_clk) {
++			dev_warn(dev, "rocket: no \"npu\" clock; cannot apply %lu Hz\n",
++				 rocket_npu_clk_hz);
++		} else {
++			int r = clk_set_rate(npu_clk, rocket_npu_clk_hz);
++
++			if (r)
++				dev_warn(dev, "rocket: clk_set_rate(npu, %lu Hz) failed: %d\n",
++					 rocket_npu_clk_hz, r);
++			else
++				dev_info(dev, "rocket: core %d NPU clk -> %lu Hz (reads back %lu)\n",
++					 core, rocket_npu_clk_hz, clk_get_rate(npu_clk));
++		}
++	}
++
+ 	return 0;
+ }
+ 
+@@ -260,6 +298,18 @@ static int rocket_device_runtime_suspend(struct device *dev)
+ 	if (!rocket_job_is_idle(&rdev->cores[core]))
+ 		return -EBUSY;
+ 
++	/*
++	 * Park the compute clock back at the vendor power-down rate (200 MHz)
++	 * while the domain is still powered, so it never powers off (and back on)
++	 * at a raised rate -- mirroring the vendor's POWER_DOWN_FREQ handling.
++	 */
++	if (rocket_npu_clk_hz) {
++		struct clk *npu_clk = rdev->cores[core].npu_clk;
++
++		if (npu_clk)
++			clk_set_rate(npu_clk, ROCKET_NPU_POWER_DOWN_HZ);
++	}
++
+ 	clk_bulk_disable_unprepare(ARRAY_SIZE(rdev->cores[core].clks), rdev->cores[core].clks);
+ 
+ 	return 0;
+-- 
+2.43.0
+
