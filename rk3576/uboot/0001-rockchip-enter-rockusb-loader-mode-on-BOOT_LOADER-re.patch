@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 10 Jul 2026 16:39:58 -0400
+Subject: [PATCH 1/2] rockchip: enter rockusb loader mode on BOOT_LOADER reboot
+ flag
+
+setup_boot_mode() reads the Rockchip reboot-mode register and dispatches
+BOOT_FASTBOOT and BOOT_UMS, but ignores BOOT_LOADER (0x5242C301) -- the
+value the kernel's syscon-reboot-mode writes for "reboot loader". Handle
+it by arming preboot to run the rockusb gadget, so a board can re-enter
+USB flash (loader) mode from a running Linux with no physical button and
+no maskrom, mirroring the vendor loader's convenience.
+---
+ arch/arm/mach-rockchip/boot_mode.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/arch/arm/mach-rockchip/boot_mode.c b/arch/arm/mach-rockchip/boot_mode.c
+index 55e94566..1563b1bd 100644
+--- a/arch/arm/mach-rockchip/boot_mode.c
++++ b/arch/arm/mach-rockchip/boot_mode.c
+@@ -97,6 +97,10 @@ int setup_boot_mode(void)
+ 	writel(BOOT_NORMAL, reg);
+ 
+ 	switch (boot_mode) {
++	case BOOT_LOADER:
++		debug("%s: enter rockusb!\n", __func__);
++		env_set("preboot", "setenv preboot; rockusb 0 mmc 0");
++		break;
+ 	case BOOT_FASTBOOT:
+ 		debug("%s: enter fastboot!\n", __func__);
+ 		env_set("preboot", "setenv preboot; fastboot usb 0");

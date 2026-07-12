@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3576-loader/profile.toml
+#
+# RK3576 u-boot USB-flash-mode profile. Mainline u-boot on RK3576 can already
+# speak the rockusb protocol (2207:350e) but never reaches it from a running
+# system or a physical key. This profile adds the two missing triggers so a
+# board keeps a case-free path back into USB flashing after mainline u-boot
+# replaces the vendor bootloader:
+#
+#   * BOOT_LOADER handling, so `reboot loader` from Linux comes back up in
+#     rockusb (loader) mode -- the software path, no maskrom, no button.
+#   * a SARADC download key, so grounding the recovery/jack button at boot
+#     drops into BootROM download mode -- the hardware path, works even when
+#     Linux will not boot (u-boot only).
+#
+# The patches touch only SoC-generic u-boot (the reboot-mode dispatch and the
+# rk3576-generic control DTB/defconfig), so the profile applies to any RK3576
+# board on this kernel. The per-board half of the software path -- the
+# syscon-reboot-mode node that tells Linux which register to write -- lives in
+# the board .dts, not here.
+
+# Declared intent; the builder's verify-applies gate is the enforcement (boot2deb §4).
+applies_to_kernel = ">=7.0, <7.2"
+
+# The kernel/ffmpeg/userspace trees are built pristine -- RK3576 HW decode is
+# native mainline and encode is out of scope, so there are no patches there.
+kernel    = []
+ffmpeg    = []
+userspace = []
+
+# u-boot tree: enter rockusb on the BOOT_LOADER reboot flag, then enable the
+# SARADC download key on the rk3576-generic control DTB. Applied with `git am`.
+uboot = [
+    "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
+]
