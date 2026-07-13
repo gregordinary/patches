@@ -28,9 +28,12 @@ kernel    = []
 ffmpeg    = []
 userspace = []
 
-# u-boot tree: enter rockusb on the BOOT_LOADER reboot flag, then enable the
-# SARADC download key on the rk3576-generic control DTB. Applied with `git am`.
+# u-boot tree: enter rockusb on the BOOT_LOADER reboot flag, enable the SARADC
+# download key on the rk3576-generic control DTB, then make the key's ADC lookup
+# find the RK3576 SARADC at all -- upstream matches it by device-tree node name
+# ("saradc"), which no SoC since rk3568 uses. Applied with `git am`.
 uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
+    "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
 ]

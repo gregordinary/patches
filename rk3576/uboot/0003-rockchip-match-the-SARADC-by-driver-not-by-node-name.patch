@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sun, 12 Jul 2026 21:00:00 -0400
+Subject: [PATCH 3/3] rockchip: match the SARADC by driver, not by node name
+
+setup_boot_mode()'s weak rockchip_dnl_key_pressed() locates the SARADC by
+walking UCLASS_ADC and comparing dev->name against "saradc". dev->name is the
+device-tree *node* name -- lists_bind_fdt() takes it from ofnode_get_name() --
+so the comparison only succeeds on SoCs whose node is spelled saradc@...,
+which today means rk3288 and rk3399.
+
+Every SoC from rk3568 onward follows the generic-node-name convention and
+declares the block as
+
+	saradc: adc@2ae00000 { ... };
+
+where "saradc" is a *label*: it exists only in __symbols__ and never reaches
+dev->name. The match can therefore never succeed on rk3568, rk3588 or rk3576.
+The function falls through to -ENODEV, warns "no saradc device found", and
+reports the download key as unpressed -- so the BootROM-download key is
+silently dead on those SoCs whether or not the board wires one up, and no
+amount of enabling CONFIG_SARADC_ROCKCHIP or setting the node status to okay
+brings it back.
+
+Match on the driver instead. Every Rockchip SARADC binds
+U_BOOT_DRIVER(rockchip_saradc) whatever its node is called, so this finds the
+device under both the old and the new spelling and drops the dependency on
+device-tree cosmetics.
+---
+ arch/arm/mach-rockchip/boot_mode.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-rockchip/boot_mode.c b/arch/arm/mach-rockchip/boot_mode.c
+index 1563b1bd..be131b80 100644
+--- a/arch/arm/mach-rockchip/boot_mode.c
++++ b/arch/arm/mach-rockchip/boot_mode.c
+@@ -51,7 +51,7 @@ __weak int rockchip_dnl_key_pressed(void)
+ 
+ 	ret = -ENODEV;
+ 	uclass_foreach_dev(dev, uc) {
+-		if (!strncmp(dev->name, "saradc", 6)) {
++		if (!strcmp(dev->driver->name, "rockchip_saradc")) {
+ 			ret = adc_channel_single_shot(dev->name, 1, &val);
+ 			break;
+ 		}
