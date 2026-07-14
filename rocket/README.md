@@ -1,4 +1,4 @@
-# rocket-patches
+# rocket — RK3588 NPU kernel patches
 
 Six patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
@@ -7,20 +7,26 @@ tree are never touched, so boot is never at risk and a bad outcome is recovered 
 and job hooks, so the NPU power domain is always powered first: a register access on an
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
-They are grouped by what they are *for*, not by number. Take the two **required** ones and
-add the **optional** ones for more performance.
+**Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
+only configuration the userspace projects' published figures describe. Three of the six are
+required: two of them fix bugs that can crash the kernel, and the third is the one that makes
+the NPU worth using at all. Two more are the dispatch-floor pair those figures assume. Exactly
+one — the voltage patch — costs you nothing to omit at today's operating point. The tiers below
+say what you give up by leaving a patch out; they are not an invitation to cherry-pick.
 
-| | Patch | What you get |
+| | Patch | What it is |
 |---|---|---|
-| **Required** | `081-rocket-drv-npu-clk.patch` | Raises the NPU compute clock from its 200 MHz boot default to 600 MHz (~1.43× throughput). This is the patch that makes the NPU worth using. |
-| **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob; take it whether or not you care about performance. |
-| Optional | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **no-op at ≤600 MHz** — insurance for going above it. |
-| Optional | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%). |
-| Optional | `085-rocket-drv-uapi-extensible-structs.patch` | Makes the submit ioctl's descriptors extensible, so the uAPI can grow without breaking existing userspace. No ABI change, no behavior change — it is the **precondition for `086`**, and worth taking on its own if you will ever ship a uAPI addition. |
-| Optional | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag that userspace's `ROCKET_BATCH_SUBMIT` uses. |
+| **Required** | `081-rocket-drv-npu-clk.patch` | Raises the NPU compute clock from its 200 MHz boot default to 600 MHz (~1.43× throughput), and makes the park of that clock correct: refcounted (the three cores share one clock) and given a deadline that outlives a host-side gap within one inference. Without it the NPU runs at one-fifth speed; with the lever but without the park fixes it is *worse than stock*. |
+| **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob. |
+| **Required** | `085-rocket-drv-uapi-extensible-structs.patch` | Fixes a **kernel oops any client can trigger with one malformed submit** (a NULL `job->domain` dereferenced on the cleanup path) and a submit error the ioctl was silently discarding. Also makes the descriptors extensible, which is the precondition for `086`. |
+| Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
+| Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
+| Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
 
-Every patch is **correct on its own**: none of them ships a bug that a later patch fixes,
-so any subset below is a supported configuration rather than a half-applied series.
+Every patch is **correct on its own**: none of them ships a bug that a later patch fixes.
+That is a property of the series, not a suggestion — it is what makes the subsets in the
+compatibility matrix supported configurations rather than half-applied ones, and it means a
+bisect lands on a real answer.
 
 ## Dependencies
 
@@ -36,7 +42,7 @@ Three, and all of them are real (not just diff context):
 
 `081`, `083`, `084` and `085` each apply to a pristine tree on their own, in any
 combination. **Applying in ascending numeric order always satisfies the dependencies**, so
-if you are unsure, just apply the ones you want lowest-number first.
+if you are unsure, just apply them lowest-number first.
 
 ## The uAPI header is part of the kernel you build
 
@@ -61,7 +67,8 @@ build several configurations against one kernel tree, pin each one's uAPI header
 Every row below was **applied, built, loaded, and run** on a Turing RK1 (RK3588,
 kernel 7.1.1, `rocket_npu_clk_hz=600000000`) — none of it is inferred.
 
-- **ctest** — the [`rocket-userspace`](https://github.com/gregordinary/rocket-userspace) suite (64 tests, 2 skipped).
+- **ctest** — the [`rocket-userspace`](https://github.com/gregordinary/rocket-userspace) suite
+  (64 tests at the time of measurement, 2 skipped; the suite grows).
 - **clock** — 6× multi-worker resident-int8 matmul at stock PM defaults; "stable" means
   every run landed in a tight band with no catastrophic outlier (see [The shared clock](#the-shared-clock-why-081-refcounts-its-park)).
 - **park** — after the run, all three cores `suspended` and `scmi_clk_npu` back at 200 MHz.
@@ -78,13 +85,15 @@ build](#the-uapi-header-is-part-of-the-kernel-you-build).
 |---|---|---|---|---|---|
 | *(stock, no patches)* | — | — | 64/64 | 200 MHz | — |
 | `081` | yes | yes | 64/64 | stable | yes |
-| `081` `084` — **the required set** | yes | yes | 64/64 | stable | yes |
+| `081` `084` | yes | yes | 64/64 | stable | yes |
 | `081` `082` | yes | yes | 64/64 | stable | yes |
 | `081` `083` `084` | yes | yes | 64/64 | stable | yes |
 | `081` `083` `084` `085` | yes | yes | 64/64 | stable | yes |
-| `081` `083` `084` `085` `086` — full | yes | yes | 64/64 | stable | yes |
+| `081` `083` `084` `085` `086` — **the full series** | yes | yes | 64/64 | stable | yes |
 
-Every config is 64/64, on hardware. An earlier revision of this table recorded the configs
+The full series is the configuration this stack ships and benchmarks against; the subsets are
+here to show that no subset is *broken*, which is what lets you bisect. Every config is 64/64,
+on hardware. An earlier revision of this table recorded the configs
 without batched submit as 63/64, failing `matmul_int8_dequant_rocket`. That was never a real
 dependency on the feature: it was a uAPI header-skew artifact of building every config against
 one shared header. It is fixed at the source — each config now pins its own uAPI header, `085`
@@ -96,16 +105,19 @@ installed header.
 
 These patches are the tuning layer of a four-part open source stack for Rockchip NPUs:
 
-- **`rocket-patches`** (this project) — kernel-module patches. The clock patch raises the
-  NPU from its 200 MHz boot default to 600 MHz; the others fix a UAF and trim per-submit
-  dispatch latency. The performance figures quoted by the userspace projects below assume
-  the clock patch is applied.
+- **`patches/rocket`** (this project) — kernel-module patches. The clock patch raises the NPU
+  from its 200 MHz boot default to 600 MHz; the others fix two kernel-crash bugs and trim
+  per-submit dispatch latency. The performance figures quoted by the userspace projects below
+  assume the full series.
 - **[`rocket-userspace`](https://github.com/gregordinary/rocket-userspace)** (`librocketnpu`) — the userspace driver, matmul, and on-NPU op library.
 - **[`ggml-rocket`](https://github.com/gregordinary/ggml-rocket)** — a ggml backend `.so` for `llama.cpp` / `whisper.cpp`.
 - **[`tflite-rocket`](https://github.com/gregordinary/tflite-rocket)** — a TFLite external delegate for detection models.
 
-The userspace builds run on an unpatched mainline `rocket` driver (except for the batched
-path noted above) — these patches raise the ceiling.
+The userspace *builds and runs* on an unpatched mainline `rocket` driver — it degrades to the
+stock 200 MHz clock and turns its chaining paths off after probing the driver version, rather
+than failing. It is just five times slower and exposed to the two crash bugs, which is why
+"optional" describes the patches' relationship to the *build*, not to a system you would want
+to run.
 
 ---
 
@@ -246,9 +258,48 @@ the allocator is provably empty.
 
 Independent of every other patch — applies to a pristine tree on its own.
 
+## Extensible uAPI structs (`085-rocket-drv-uapi-extensible-structs.patch`)
+
+Independent — applies to a pristine tree on its own. Required by `086`.
+
+**It carries a crash fix, which is why it is required and not merely `086`'s precondition.** Stock
+`rocket_ioctl_submit_job()` allocates the job with `kzalloc` and only later resolves its IOMMU
+domain, but a submit that fails to look up a BO handle jumps straight to cleanup — and
+`rocket_iommu_domain_put()` dereferenced `job->domain` unconditionally, still NULL from the
+`kzalloc`. One malformed submit from any client with the device open oopses the kernel. The
+guard is one `if`, matching what `kfree()` and `dma_fence_put()` already do. The same patch
+stops the ioctl **discarding the per-job submit return**, so a job the kernel refuses now fails
+loudly instead of reporting success to a caller that then waits forever on a fence nobody will
+signal.
+
+The headline change is the uAPI contract. `drm_rocket_submit` carries `job_struct_size` and
+`drm_rocket_job` carries `task_struct_size` precisely so the descriptors can grow: userspace
+declares the size of the struct it was built against, and the kernel copies what it
+understands. Stock defeats that by checking both against its *own* `sizeof()`, so the day
+either struct gains a field, every already-built userspace starts failing `SUBMIT` with
+`-EINVAL`. The copy has the mirror-image flaw: a userspace *newer* than the kernel has its
+extra fields silently dropped — a flag the kernel never read, running a job with semantics
+nobody asked for.
+
+This patch adopts the kernel's standard extensible-struct contract for both structs: guard
+on the original ("v1") layout with `offsetofend()`, and copy with `copy_struct_from_user()`,
+which zero-fills what the caller omitted and returns `-E2BIG` if the caller set a trailing
+field this kernel does not know. It declares interface version **1.0** (stock leaves
+`.major`/`.minor` unset and reports `0.0.0`), which is how userspace asks whether the contract
+is in force.
+
+**No ABI change and no behavior change on today's layouts** — `offsetofend(v1 tail)` equals
+`sizeof()` for both structs, so the accepted set is identical. Beyond the crash fix, its value
+is that the *next* uAPI addition does not break anyone. `086` is that addition.
+
 ---
 
-# Optional
+# The rest of the series
+
+None of the three below is load-bearing for correctness. But `083` and `086` are the
+dispatch-floor pair and are what the userspace projects' published figures assume — skipping
+them does not get you a broken system, it gets you a slower one than anything documented.
+`082` is the only patch here that genuinely costs nothing to omit today.
 
 ## NPU rail voltage coupling (`082-rocket-drv-npu-volt.patch`)
 
@@ -317,31 +368,6 @@ convs/1×1s, multi-fd, cross-op batch).
 > place there. Functionally equivalent for the bookkeeping.
 
 Independent — applies to a pristine tree on its own.
-
-## Extensible uAPI structs (`085-rocket-drv-uapi-extensible-structs.patch`)
-
-Independent — applies to a pristine tree on its own. Required by `086`.
-
-`drm_rocket_submit` carries `job_struct_size` and `drm_rocket_job` carries
-`task_struct_size` precisely so the descriptors can grow: userspace declares the size of
-the struct it was built against, and the kernel copies what it understands. Stock defeats
-that by checking both against its *own* `sizeof()`, so the day either struct gains a field,
-every already-built userspace starts failing `SUBMIT` with `-EINVAL`. The copy has the
-mirror-image flaw: a userspace *newer* than the kernel has its extra fields silently
-dropped — a flag the kernel never read, running a job with semantics nobody asked for.
-
-This patch adopts the kernel's standard extensible-struct contract for both structs: guard
-on the original ("v1") layout with `offsetofend()`, and copy with `copy_struct_from_user()`,
-which zero-fills what the caller omitted and returns `-E2BIG` if the caller set a trailing
-field this kernel does not know. It also reports a rejected job instead of discarding the
-per-job return, so a request the kernel cannot honor fails loudly rather than silently.
-
-It declares interface version **1.0** (stock leaves `.major`/`.minor` unset and reports
-`0.0.0`), which is how userspace asks whether the contract is in force.
-
-**No ABI change and no behavior change on today's layouts** — `offsetofend(v1 tail)` equals
-`sizeof()` for both structs, so the accepted set is identical. Its whole value is that the
-*next* uAPI addition does not break anyone. `086` is that addition.
 
 ## Batched submit (`086-rocket-drv-batched-submit.patch`)
 
@@ -429,17 +455,18 @@ it may re-migrate the IRQ; pin after it or mask these IRQs in its config.
 ## Build
 
 The patches are mbox-format and apply with `git am --3way` (or `patch -p1`) against the
-`rocket` driver in your kernel source tree. Apply the ones you want in ascending numeric
-order:
+`rocket` driver in your kernel source tree. Apply the series in ascending numeric order,
+which always satisfies the dependencies:
 
 ```sh
 cd <kernel-tree>
-git am --3way /path/to/rocket-patches/081-rocket-drv-npu-clk.patch          # required
-git am --3way /path/to/rocket-patches/082-rocket-drv-npu-volt.patch         # optional; needs 081
-git am --3way /path/to/rocket-patches/083-rocket-drv-iommu-keepattach.patch # optional
-git am --3way /path/to/rocket-patches/084-rocket-drv-fix-bo-mm-uaf.patch    # required (UAF fix)
-git am --3way /path/to/rocket-patches/085-rocket-drv-uapi-extensible-structs.patch  # optional; needed by 086
-git am --3way /path/to/rocket-patches/086-rocket-drv-batched-submit.patch   # optional; needs 083 + 085
+P=/path/to/patches/rocket
+git am --3way $P/081-rocket-drv-npu-clk.patch                  # required (clock + a correct park)
+git am --3way $P/082-rocket-drv-npu-volt.patch                 # situational; needs 081; no-op <=600 MHz
+git am --3way $P/083-rocket-drv-iommu-keepattach.patch         # recommended (dispatch floor)
+git am --3way $P/084-rocket-drv-fix-bo-mm-uaf.patch            # required (use-after-free fix)
+git am --3way $P/085-rocket-drv-uapi-extensible-structs.patch  # required (oops fix); needed by 086
+git am --3way $P/086-rocket-drv-batched-submit.patch           # recommended; needs 083 + 085
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 
@@ -488,7 +515,6 @@ bit-exact and dispatch-floor figures here were measured on v7.1 at 600 MHz.
 
 **GPL-2.0-only**, per the [`LICENSE`](LICENSE) file. These patches modify the mainline `rocket`
 DRM-accel driver (`drivers/accel/rocket/`), which is `GPL-2.0-only` (© Tomeu Vizoso /
-Collabora), and the Linux kernel is GPL-2.0-only — so the patches and the
 Collabora), and the Linux kernel is GPL-2.0-only — so the patches are derivative kernel work and
 carry the same `GPL-2.0-only` identifier. `083-rocket-drv-iommu-keepattach.patch` is a backport of
 an upstream RFC (Midgy BALON, linux-rockchip) and retains that authorship.
