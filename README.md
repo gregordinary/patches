@@ -24,7 +24,7 @@ builder is built out.
 (`applies_to_kernel`) to an ordered, per-tree patch series drawn from the scopes
 above — the unit a builder consumes.
 [`profiles/rk3588-accel`](profiles/rk3588-accel/) is the RK3588 mainline-7.1 media
-+ NPU series: kernel `040`–`085`, ffmpeg `0001`, userspace `001`. A profile's
++ NPU series: kernel `040`–`086`, ffmpeg `0001`, userspace `001`. A profile's
 `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*` then
 `rocket/*`).
 

@@ -15,10 +15,13 @@
 applies_to_kernel = ">=7.0, <7.2"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
-# in ascending numeric order satisfies the series' two dependencies: npu-volt
-# needs npu-clk, and batched-submit needs the IOMMU keep-attached patch. The
-# npu-clk and BO-use-after-free patches are the ones that matter; the rest raise
-# the performance ceiling.
+# in ascending numeric order satisfies the series' dependencies: npu-volt needs
+# npu-clk, batched-submit needs the IOMMU keep-attached patch, and batched-submit
+# needs uapi-extensible-structs (085) -- 086 appends a field to drm_rocket_job,
+# which is only safe for an older userspace because 085 makes the submit ioctl
+# accept the v1 struct size. Applying 086 without 085 builds a kernel that rejects
+# any userspace declaring the pre-@flags size. The npu-clk and BO-use-after-free
+# patches are the ones that matter; the rest raise the performance ceiling.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -29,7 +32,8 @@ kernel = [
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",
     "rocket/084-rocket-drv-fix-bo-mm-uaf.patch",
-    "rocket/085-rocket-drv-batched-submit.patch",
+    "rocket/085-rocket-drv-uapi-extensible-structs.patch",
+    "rocket/086-rocket-drv-batched-submit.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft

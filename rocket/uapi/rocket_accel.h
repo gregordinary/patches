@@ -27,9 +27,13 @@ extern "C" {
  * DRM_ROCKET_JOB_BATCHED: run this job's tasks as a single chained HW kick
  * (PC_TASK_CON.TASK_NUMBER = task_count, one completion IRQ) instead of one
  * submit + IRQ per task. The job's per-task regcmds must be laid out
- * contiguously and self-chained in userspace; against a stock gapped layout the
+ * contiguously and self-chained by userspace; against a stock gapped layout the
  * PC runs task 0 and the job times out. Per-job (not a module param) so a
  * chained-layout job and a gapped-layout job can coexist in one process.
+ *
+ * Only honored by a driver advertising interface version >= 1.1 (DRM_IOCTL_VERSION).
+ * An older driver does not know the flag and would run a self-chained layout down
+ * the per-task path, so userspace must check the version before self-chaining.
  */
 #define DRM_ROCKET_JOB_BATCHED		(1 << 0)
 
@@ -169,11 +173,10 @@ struct drm_rocket_job {
 	__u32 out_bo_handle_count;
 
 	/**
-	 * @flags: Input: bitmask of DRM_ROCKET_JOB_* flags. Optional and
-	 * appended past the original struct: a kernel that predates a flag
-	 * ignores it, and userspace that predates this field leaves it
-	 * implicitly zero (the kernel copies min(job_struct_size, its sizeof)
-	 * and zero-fills the rest). Must be zero except for known flag bits.
+	 * @flags: Input: bitmask of DRM_ROCKET_JOB_* flags. Appended past the
+	 * original struct: a kernel that predates the field never reads it, and a
+	 * userspace that predates it declares a smaller @job_struct_size and has
+	 * the field zero-filled. Must be zero except for known flag bits.
 	 */
 	__u32 flags;
 

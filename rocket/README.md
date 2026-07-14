@@ -1,6 +1,6 @@
 # rocket-patches
 
-Five patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+Six patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
@@ -16,22 +16,45 @@ add the **optional** ones for more performance.
 | **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob; take it whether or not you care about performance. |
 | Optional | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **no-op at ≤600 MHz** — insurance for going above it. |
 | Optional | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%). |
-| Optional | `085-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Carries the `DRM_ROCKET_JOB_BATCHED` uAPI flag that userspace's `ROCKET_BATCH_SUBMIT` needs. |
+| Optional | `085-rocket-drv-uapi-extensible-structs.patch` | Makes the submit ioctl's descriptors extensible, so the uAPI can grow without breaking existing userspace. No ABI change, no behavior change — it is the **precondition for `086`**, and worth taking on its own if you will ever ship a uAPI addition. |
+| Optional | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag that userspace's `ROCKET_BATCH_SUBMIT` uses. |
 
 Every patch is **correct on its own**: none of them ships a bug that a later patch fixes,
 so any subset below is a supported configuration rather than a half-applied series.
 
 ## Dependencies
 
-Only two, and both are real (not just diff context):
+Three, and all of them are real (not just diff context):
 
 - **`082` requires `081`** — it scales the voltage the clock patch's rate needs.
-- **`085` requires `083`** — batched submit builds on the keep-attached domain
+- **`086` requires `083`** — batched submit builds on the keep-attached domain
   (they conflict in `rocket_job.c` otherwise).
+- **`086` requires `085`** — `086` appends `@flags` to `drm_rocket_job`. Growing a uAPI
+  struct is only safe because `085` teaches the submit ioctl to accept the original
+  ("v1") struct size; without it, the grown struct makes the kernel reject **every**
+  submit from a userspace built against the older header with `-EINVAL`.
 
-`081`, `083` and `084` each apply to a pristine tree on their own, in any combination.
-**Applying in ascending numeric order always satisfies the dependencies**, so if you are
-unsure, just apply the ones you want lowest-number first.
+`081`, `083`, `084` and `085` each apply to a pristine tree on their own, in any
+combination. **Applying in ascending numeric order always satisfies the dependencies**, so
+if you are unsure, just apply the ones you want lowest-number first.
+
+## The uAPI header is part of the kernel you build
+
+`086` changes `include/uapi/drm/rocket_accel.h` as well as the driver. The header and the
+driver code are **one unit** — install the header exactly where the kernel that uses it is
+built, and nowhere else:
+
+- Applying `086` to the driver but leaving the old header behind will not compile
+  (`job->flags` does not exist).
+- The reverse — installing `086`'s header where a kernel *without* `086`'s code is built —
+  compiles fine and produces a driver whose `struct drm_rocket_job` is 8 bytes larger than
+  the one it knows how to validate. It then rejects any userspace declaring the original
+  size, and the failure surfaces far away, as a submit returning `-EINVAL`.
+
+That second case is not hypothetical: it is what made `matmul_int8_dequant_rocket` appear
+to "require" batched submit. Note that a module `srcversion` check **cannot** catch it —
+`srcversion` hashes only the driver's own sources and is byte-identical either way. If you
+build several configurations against one kernel tree, pin each one's uAPI header with it.
 
 ## Compatibility matrix
 
@@ -47,21 +70,27 @@ Each row is a distinct module build, and the loaded module's `srcversion` is ass
 the `.ko` under test before every measurement — a stale module left loaded by a failed
 `rmmod` is otherwise indistinguishable from a real result.
 
+Each config is built against **its own** uAPI header (the one matching the patches it
+carries), not a single shared one — see [The uAPI header is part of the kernel you
+build](#the-uapi-header-is-part-of-the-kernel-you-build).
+
 | Config | Applies | Builds | ctest | clock | park |
 |---|---|---|---|---|---|
-| *(stock, no patches)* | — | — | 63/64 † | 200 MHz | — |
-| `081` | yes | yes | 63/64 † | stable | yes |
-| `081` `084` — **the required set** | yes | yes | 63/64 † | stable | yes |
-| `081` `082` | yes | yes | 63/64 † | stable | yes |
-| `081` `083` `084` | yes | yes | 63/64 † | stable | yes |
-| `081` `083` `084` `085` | yes | yes | **64/64** | stable | yes |
+| *(stock, no patches)* | — | — | 64/64 | 200 MHz | — |
+| `081` | yes | yes | 64/64 | stable | yes |
+| `081` `084` — **the required set** | yes | yes | 64/64 | stable | yes |
+| `081` `082` | yes | yes | 64/64 | stable | yes |
+| `081` `083` `084` | yes | yes | 64/64 | stable | yes |
+| `081` `083` `084` `085` | yes | yes | 64/64 | stable | yes |
+| `081` `083` `084` `085` `086` — full | yes | yes | 64/64 | stable | yes |
 
-† **The one failing test is not a regression — it fails on stock too.** The suite's
-`matmul_int8_dequant_rocket` exercises the batched-submit uAPI, so it needs `085`'s
-`DRM_ROCKET_JOB_BATCHED` flag and returns `-EINVAL` (`ROCKET_SUBMIT: Invalid argument`)
-on any kernel without it, including an unpatched one. Every config that includes `085`
-is 64/64; every config without it fails exactly that one test and nothing else. If your
-userspace uses `ROCKET_BATCH_SUBMIT`, `085` is not optional *for you*.
+Every config is 64/64, on hardware. An earlier revision of this table recorded the configs
+without batched submit as 63/64, failing `matmul_int8_dequant_rocket`. That was never a real
+dependency on the feature: it was a uAPI header-skew artifact of building every config against
+one shared header. It is fixed at the source — each config now pins its own uAPI header, `085`
+makes the descriptors extensible so a header that predates a field no longer breaks the build
+it is paired with, and userspace always declares the full struct size regardless of the
+installed header.
 
 ## The rocket NPU stack
 
@@ -289,9 +318,34 @@ convs/1×1s, multi-fd, cross-op batch).
 
 Independent — applies to a pristine tree on its own.
 
-## Batched submit (`085-rocket-drv-batched-submit.patch`)
+## Extensible uAPI structs (`085-rocket-drv-uapi-extensible-structs.patch`)
 
-Requires `083`.
+Independent — applies to a pristine tree on its own. Required by `086`.
+
+`drm_rocket_submit` carries `job_struct_size` and `drm_rocket_job` carries
+`task_struct_size` precisely so the descriptors can grow: userspace declares the size of
+the struct it was built against, and the kernel copies what it understands. Stock defeats
+that by checking both against its *own* `sizeof()`, so the day either struct gains a field,
+every already-built userspace starts failing `SUBMIT` with `-EINVAL`. The copy has the
+mirror-image flaw: a userspace *newer* than the kernel has its extra fields silently
+dropped — a flag the kernel never read, running a job with semantics nobody asked for.
+
+This patch adopts the kernel's standard extensible-struct contract for both structs: guard
+on the original ("v1") layout with `offsetofend()`, and copy with `copy_struct_from_user()`,
+which zero-fills what the caller omitted and returns `-E2BIG` if the caller set a trailing
+field this kernel does not know. It also reports a rejected job instead of discarding the
+per-job return, so a request the kernel cannot honor fails loudly rather than silently.
+
+It declares interface version **1.0** (stock leaves `.major`/`.minor` unset and reports
+`0.0.0`), which is how userspace asks whether the contract is in force.
+
+**No ABI change and no behavior change on today's layouts** — `offsetofend(v1 tail)` equals
+`sizeof()` for both structs, so the accepted set is identical. Its whole value is that the
+*next* uAPI addition does not break anyone. `086` is that addition.
+
+## Batched submit (`086-rocket-drv-batched-submit.patch`)
+
+Requires `083` and `085`.
 
 Stock `rocket` submits one NPU task per HW kick: `rocket_job_hw_submit()` programs one
 task's regcmd, sets `PC_TASK_CON.TASK_NUMBER(1)`, and the IRQ handler re-arms the next task
@@ -304,10 +358,17 @@ patch selects that per job via a uAPI flag (`DRM_ROCKET_JOB_BATCHED` in
 task count and `next_task_idx` advanced to the end, so the stock IRQ-handler retire path
 fires the job's fence on the single `TASK_NUMBER`-gated completion IRQ instead of re-arming
 per task. An unflagged job keeps the stock per-task path. The module param
-`rocket_batch_submit` (0644, default 1) is a master kill-switch over the flag. The `flags`
-field is appended past the original `drm_rocket_job`, copied `min(job_struct_size, sizeof)`
-+ zero-fill, so a stock userspace is unaffected. Install the matching uAPI header
-([`uapi/rocket_accel.h`](uapi/rocket_accel.h)) where both the kernel build and userspace see it.
+`rocket_batch_submit` (0644, default 1) is a master kill-switch over the flag.
+
+The `flags` field is appended past the original `drm_rocket_job`. That is safe **only**
+because `085` already made the descriptor extensible: the kernel guards on the v1 size and
+copies with `copy_struct_from_user()`, so a userspace that predates `@flags` is accepted
+unchanged and one that sets a flag this kernel does not know is refused with `-E2BIG`
+rather than silently downgraded. Unknown flag bits are rejected with `-EINVAL`.
+
+The driver advertises interface version **1.1**, which is the capability check userspace
+needs (see below). Install the matching uAPI header
+([`uapi/rocket_accel.h`](uapi/rocket_accel.h)) where the kernel that uses it is built.
 
 **This is the kernel half only.** It requires the userspace regcmd-chaining pass that lays a
 flagged job's tasks contiguously and links each task's trailer — `rocket-userspace` with
@@ -316,9 +377,13 @@ both halves together**: a flagged job with a stock gapped layout runs task 0, st
 the gap, and times out (recoverable — drm_sched resets the core). Because the flag is
 per-job, chained fp16 and gapped int8/int4/prepacked jobs coexist in one process.
 
-Conversely, a userspace that *uses* the flag against a kernel **without** this patch gets
-`-EINVAL` on submit — which is why the `rocket-userspace` suite's
-`matmul_int8_dequant_rocket` fails on any kernel lacking `085`, stock included.
+**Userspace must check the version before self-chaining.** A kernel without this patch does
+not know `DRM_ROCKET_JOB_BATCHED`; it ignores the flag and runs the self-chained layout down
+the stock per-task path, which corrupts or stalls the job. Silently ignoring the flag is
+therefore *not* a safe degradation, so a chained layout must never be sent to a driver
+reporting < 1.1. `rocket-userspace` probes this (the `rocket_batch_submit` module param when
+present, else `DRM_IOCTL_VERSION`) and disables chaining rather than trusting
+`ROCKET_BATCH_SUBMIT` alone.
 
 Measured (RK1, 600 MHz, `performance`, `matmul_tiled_rocket 512 3840 4096`, 320 tiles → 5
 batches of 64): the profiled `wait` term drops ~62 → ~48 ms and GFLOP/s rises ~94 → ~96
@@ -373,7 +438,8 @@ git am --3way /path/to/rocket-patches/081-rocket-drv-npu-clk.patch          # re
 git am --3way /path/to/rocket-patches/082-rocket-drv-npu-volt.patch         # optional; needs 081
 git am --3way /path/to/rocket-patches/083-rocket-drv-iommu-keepattach.patch # optional
 git am --3way /path/to/rocket-patches/084-rocket-drv-fix-bo-mm-uaf.patch    # required (UAF fix)
-git am --3way /path/to/rocket-patches/085-rocket-drv-batched-submit.patch   # optional; needs 083
+git am --3way /path/to/rocket-patches/085-rocket-drv-uapi-extensible-structs.patch  # optional; needed by 086
+git am --3way /path/to/rocket-patches/086-rocket-drv-batched-submit.patch   # optional; needs 083 + 085
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 

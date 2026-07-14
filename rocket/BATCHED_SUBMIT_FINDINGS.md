@@ -33,7 +33,7 @@ so the stock per-task path is unchanged until it is turned on.
 > PASS (chained fp16 + gapped int8 in one process). On a per-job-flag kernel it passes; on a
 > global-param-only kernel it FAILS (the gapped int8 half garbles). The RK1's `7.1.1-1` build of
 > 2026-06-24 is global-param-only (predates the 2026-06-29 per-job-flag patch); rebuild + reload
-> the module from `085-rocket-drv-batched-submit.patch` before evaluating chaining there.
+> the module from `086-rocket-drv-batched-submit.patch` before evaluating chaining there.
 
 ## The mechanism (HW-validated 2026-06-24)
 
@@ -101,7 +101,7 @@ needed.
   op location, the contiguous stride, and the amount/base rewrites without
   hardware). Wired into the `mm_compute` path (the default independent-tile fp16
   matmul, also used per-worker by the multicore `mt` path).
-- **`rocket` kernel** (`rocket-patches/085-rocket-drv-batched-submit.patch` + the canonical
+- **`rocket` kernel** (`rocket-patches/086-rocket-drv-batched-submit.patch` + the canonical
   uAPI header `rocket-patches/uapi/rocket_accel.h`): a per-job `DRM_ROCKET_JOB_BATCHED`
   flag in `drm_rocket_job.flags`. `rocket_ioctl_submit_job` captures it into
   `rjob->want_batched`; `rocket_job_run` sets `job->batched` when the flag is set, the
