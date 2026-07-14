@@ -6,9 +6,7 @@ Rockchip hardware **video transcode** stack for mainline Linux (RK35xx / RK3588)
 the vendor BSP kernel. Spans three source trees (kernel, ffmpeg, MPP/RGA
 userspace); a build profile applies the relevant subset.
 
-Validated together on Turing RK1 (RK3588) + mainline kernel 7.1-rc6. The
-`debian-rk1` build repo carries its own copies of these for standalone builds;
-this is the canonical home.
+Validated together on Turing RK1 (RK3588) + mainline kernel 7.1-rc6.
 
 ## kernel/ — apply in numeric order
 

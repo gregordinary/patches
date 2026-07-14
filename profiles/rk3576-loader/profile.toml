@@ -19,7 +19,7 @@
 # syscon-reboot-mode node that tells Linux which register to write -- lives in
 # the board .dts, not here.
 
-# Declared intent; the builder's verify-applies gate is the enforcement (boot2deb §4).
+# Declared intent; the builder's verify-applies gate is the enforcement.
 applies_to_kernel = ">=7.0, <7.2"
 
 # The kernel/ffmpeg/userspace trees are built pristine -- RK3576 HW decode is

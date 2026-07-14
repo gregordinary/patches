@@ -4,10 +4,8 @@
 Standalone, reusable patches for the userspace HW-accel stack
 (librockchip-mpp / librga). Parallels [`../kernel/`](../kernel/).
 
-`make_userspace.sh` (in the `debian-rk1` build repo) does **not** auto-apply
-these yet — they are applied to the source clones manually (or via a committed
-branch). See the project handoff doc `HANDOFF-rk1-hwtranscode.md` in the
-`debian-rk1` repo for the full story.
+These are applied to the source clones as part of a build profile; a builder
+consumes the profile's `userspace` list in order.
 
 ## 001-mpp-allocator-dma-heap-mainline-cma.patch
 
@@ -49,5 +47,4 @@ patch -p1 < .../001-mpp-allocator-dma-heap-mainline-cma.patch
 
 **Community relevance:** anyone running nyanmisaka ffmpeg-rockchip on a
 *mainline* RK3588 kernel with the rcawston VEPU580 patch needs this (or
-an equivalent CMA-heap fix, or the kernel-side `buffer->size` fix noted
-in the handoff doc §6).
+an equivalent CMA-heap fix, or the kernel-side `buffer->size` fix).
