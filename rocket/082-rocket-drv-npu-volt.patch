@@ -4,32 +4,44 @@ Date: Tue, 30 Jun 2026 12:00:00 +0000
 Subject: [PATCH] rocket: couple NPU rail voltage to the compute clock (f/V
  coupling)
 
-Companion to 081-rocket-drv-npu-clk.patch (apply AFTER it). When rocket_npu_clk_hz
-raises the NPU compute clock, scale vdd_npu_s0 with it so a fast clock never
-runs at a low voltage (the V/f-marginal state that hard-locked the box at
-900 MHz). BL31 sets only the PLL, never the rail, so Linux must do this.
+Companion to the rocket_npu_clk_hz clock lever (apply AFTER it). When that param
+raises the NPU compute clock, scale vdd_npu_s0 with it so a fast clock never runs
+at a low voltage -- the V/f-marginal state that hard-locked the box at 900 MHz.
+BL31 sets only the PLL and never the rail, so if Linux does not couple V to f,
+nothing does.
 
-Design: hold the regulator for the device lifetime (the framework aggregates
-LIVE consumers by max, so a put would drop our vote); raise V before clock on
-resume, lower clock before V on suspend; a 0.80 V floor pins the rail at today's
-voltage at <=600 MHz (proven operating point unchanged) and prevents our own
-vote from ever undervolting the shared rail. Default (rocket_npu_uv=0) uses the
-vendor f->V map with that floor. Degrades to clock-only if no npu-supply.
+At the validated 600 MHz operating point this is a literal no-op:
+npu_uv_for_hz(600 MHz) returns the 0.80 V floor, which is where the rail already
+sits. It is insurance for going ABOVE 600 MHz, which is not currently worth it
+(no measured speedup, and a pinned 900 MHz hard-locks the box). Take it if you
+intend to explore that range; skip it and the clock lever alone is complete and
+correct.
 
----
-Review hardening (K2): on a clk_set_rate failure after the voltage was raised,
-roll the rail back to the idle floor and PROPAGATE the failure (undo the
-bulk-clock enable and return the error) instead of silently returning 0 with the
-device half-programmed; check the suspend-side regulator_set_voltage return; and
-propagate -EPROBE_DEFER from the npu-supply get (do not collapse it to clock-only).
+Design: hold the regulator for the device lifetime (the framework aggregates LIVE
+consumers by max, so a put would drop our vote); raise V before clock on resume,
+lower clock before V on suspend; a 0.80 V floor pins the rail at today's voltage
+at <=600 MHz and prevents our own vote from ever undervolting the shared rail.
+Default (rocket_npu_uv=0) uses the vendor f->V map with that floor. Degrades to
+clock-only if no npu-supply; -EPROBE_DEFER from the supply get is propagated
+rather than collapsing permanently to clock-only.
+
+On a clk_set_rate failure after the voltage was raised, roll the rail back to the
+idle floor before propagating the error, so a failed resume never strands the rail
+high at the stock clock.
+
+The voltage path is deliberately PER core and is NOT refcounted the way the shared
+clock's park is. The rail only actually falls once every core has lowered its own
+request -- exactly what max-aggregation gives us. Gating it on the last core down
+would strand the earlier cores' requests high and the rail would never come down
+at all.
 ---
  drivers/accel/rocket/rocket_core.c |  21 +++++
  drivers/accel/rocket/rocket_core.h |  11 +++
- drivers/accel/rocket/rocket_drv.c  | 126 +++++++++++++++++++++++++++--
- 3 files changed, 153 insertions(+), 5 deletions(-)
+ drivers/accel/rocket/rocket_drv.c  | 128 +++++++++++++++++++++++++++--
+ 3 files changed, 154 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
-index 66501861e37d..5d3879674d3b 100644
+index 66501861e..5d3879674 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
 @@ -9,6 +9,7 @@
@@ -68,7 +80,7 @@ index 66501861e37d..5d3879674d3b 100644
  	if (IS_ERR(core->pc_iomem)) {
  		dev_err(dev, "couldn't find PC registers %ld\n", PTR_ERR(core->pc_iomem));
 diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
-index 1080f3b307b8..10e89621f4e9 100644
+index 1080f3b30..10e89621f 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
 @@ -12,6 +12,8 @@
@@ -97,10 +109,10 @@ index 1080f3b307b8..10e89621f4e9 100644
  
  	struct mutex job_lock;
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 60d007d2a8d5..9362050cbb56 100644
+index 3dd6536a7..aa1c2d675 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
-@@ -12,6 +12,7 @@
+@@ -13,6 +13,7 @@
  #include <linux/of.h>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
@@ -108,7 +120,7 @@ index 60d007d2a8d5..9362050cbb56 100644
  
  #include "rocket_device.h"
  #include "rocket_drv.h"
-@@ -38,6 +39,56 @@ module_param(rocket_npu_clk_hz, ulong, 0644);
+@@ -59,6 +60,56 @@ module_param(rocket_npu_clk_hz, ulong, 0644);
  MODULE_PARM_DESC(rocket_npu_clk_hz,
  	"NPU compute clock target in Hz applied in runtime-resume (e.g. 600000000); 0 = stock 200 MHz");
  
@@ -165,9 +177,9 @@ index 60d007d2a8d5..9362050cbb56 100644
  static void
  rocket_iommu_domain_destroy(struct kref *kref)
  {
-@@ -267,7 +318,36 @@ static int rocket_device_runtime_resume(struct device *dev)
- 	 * module), wedges the SCMI firmware -- so do it ONLY from here.
- 	 */
+@@ -293,7 +344,36 @@ static int rocket_device_runtime_resume(struct device *dev)
+ 	mutex_lock(&rocket_clk_lock);
+ 
  	if (rocket_npu_clk_hz) {
 +		struct regulator *npu_reg = rdev->cores[core].npu_supply;
  		struct clk *npu_clk = rdev->cores[core].npu_clk;
@@ -202,48 +214,41 @@ index 60d007d2a8d5..9362050cbb56 100644
  
  		if (!npu_clk) {
  			dev_warn(dev, "rocket: no \"npu\" clock; cannot apply %lu Hz\n",
-@@ -275,12 +355,28 @@ static int rocket_device_runtime_resume(struct device *dev)
- 		} else {
- 			int r = clk_set_rate(npu_clk, rocket_npu_clk_hz);
+@@ -303,14 +383,20 @@ static int rocket_device_runtime_resume(struct device *dev)
  
--			if (r)
--				dev_warn(dev, "rocket: clk_set_rate(npu, %lu Hz) failed: %d\n",
-+			if (r) {
-+				/*
+ 			if (r) {
+ 				/*
+-				 * Undo the bulk-clock enable and PROPAGATE the failure: a
+-				 * degraded resume must not silently return 0 with the device
+-				 * half-programmed. The PM core then leaves the domain
+-				 * suspended rather than running at an unintended rate. The
+-				 * refcount is NOT taken -- this core never held the rate.
 +				 * Clock raise failed AFTER the voltage raise. Roll the rail
 +				 * back to the idle floor (never strand it high at the stock
 +				 * clock), undo the bulk-clock enable, and PROPAGATE the
 +				 * failure: a degraded resume must not silently return 0 with
 +				 * the device half-programmed. The PM core then leaves the
 +				 * domain suspended rather than running at an unintended rate.
-+				 */
++				 * The refcount is NOT taken -- this core never held the rate.
+ 				 */
+-				dev_warn(dev, "rocket: clk_set_rate(npu, %lu Hz) failed: %d (failing resume)\n",
 +				dev_warn(dev, "rocket: clk_set_rate(npu, %lu Hz) failed: %d (reverting voltage, failing resume)\n",
  					 rocket_npu_clk_hz, r);
--			else
--				dev_info(dev, "rocket: core %d NPU clk -> %lu Hz (reads back %lu)\n",
--					 core, rocket_npu_clk_hz, clk_get_rate(npu_clk));
 +				if (raised_v)
 +					regulator_set_voltage(npu_reg,
 +							      npu_uv_for_hz(ROCKET_NPU_POWER_DOWN_HZ),
 +							      ROCKET_NPU_VOLT_MAX_UV);
-+				clk_bulk_disable_unprepare(ARRAY_SIZE(rdev->cores[core].clks),
-+							   rdev->cores[core].clks);
-+				return r;
-+			}
-+
-+			dev_info(dev, "rocket: core %d NPU clk -> %lu Hz (reads back %lu)\n",
-+				 core, rocket_npu_clk_hz, clk_get_rate(npu_clk));
- 		}
- 	}
+ 				mutex_unlock(&rocket_clk_lock);
+ 				clk_bulk_disable_unprepare(ARRAY_SIZE(rdev->cores[core].clks),
+ 							   rdev->cores[core].clks);
+@@ -363,10 +449,40 @@ static int rocket_device_runtime_suspend(struct device *dev)
+ 		rocket_clk_users--;
  
-@@ -304,10 +400,30 @@ static int rocket_device_runtime_suspend(struct device *dev)
- 	 * at a raised rate -- mirroring the vendor's POWER_DOWN_FREQ handling.
- 	 */
  	if (rocket_npu_clk_hz) {
 +		struct regulator *npu_reg = rdev->cores[core].npu_supply;
  		struct clk *npu_clk = rdev->cores[core].npu_clk;
  
- 		if (npu_clk)
+ 		if (npu_clk && rocket_clk_users == 0)
  			clk_set_rate(npu_clk, ROCKET_NPU_POWER_DOWN_HZ);
 +
 +		/*
@@ -255,6 +260,16 @@ index 60d007d2a8d5..9362050cbb56 100644
 +		 * a sibling core still running at a raised rate keeps its voltage.
 +		 * A failed lowering is non-fatal (the rail simply stays higher, which
 +		 * is the safe direction) but must not be swallowed silently.
++		 *
++		 * This stays PER CORE -- it is deliberately NOT gated on
++		 * rocket_clk_users the way the clock park above is, and must not be.
++		 * The rail only actually falls once EVERY core has lowered its own
++		 * request, which is exactly what the regulator's max-aggregation
++		 * gives us; gating it on the last core would instead leave the
++		 * earlier cores' requests stranded high and the rail would never come
++		 * down at all. It is also safe when we did NOT park the clock above
++		 * (siblings still running): their requests hold the rail at the rate
++		 * they need.
 +		 */
 +		if (npu_reg) {
 +			int vr = regulator_set_voltage(npu_reg,
@@ -266,7 +281,7 @@ index 60d007d2a8d5..9362050cbb56 100644
 +		}
  	}
  
- 	clk_bulk_disable_unprepare(ARRAY_SIZE(rdev->cores[core].clks), rdev->cores[core].clks);
+ 	mutex_unlock(&rocket_clk_lock);
 -- 
 2.43.0
 

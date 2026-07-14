@@ -75,7 +75,7 @@ Install the matching uAPI header where both the kernel build and userspace see i
  3 files changed, 131 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index d01b74682579..6382730a5d34 100644
+index d01b74682..6382730a5 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -10,8 +10,12 @@
@@ -247,7 +247,7 @@ index d01b74682579..6382730a5d34 100644
  			drm_dbg(dev, "Failed to copy incoming job array\n");
  			goto exit;
 diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
-index 4ae00feec3b9..c5f8ad0504b2 100644
+index 4ae00feec..c5f8ad050 100644
 --- a/drivers/accel/rocket/rocket_job.h
 +++ b/drivers/accel/rocket/rocket_job.h
 @@ -30,6 +30,20 @@ struct rocket_job {
@@ -272,7 +272,7 @@ index 4ae00feec3b9..c5f8ad0504b2 100644
  	struct dma_fence *inference_done_fence;
  
 diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
-index d0685e372b79..c6e9f838f8fc 100644
+index d0685e372..c6e9f838f 100644
 --- a/include/uapi/drm/rocket_accel.h
 +++ b/include/uapi/drm/rocket_accel.h
 @@ -21,6 +21,18 @@ extern "C" {

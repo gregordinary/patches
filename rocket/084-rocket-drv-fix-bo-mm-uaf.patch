@@ -33,10 +33,10 @@ rocket_gem.{c,h}); apply in any order. Upstream candidate.
  4 files changed, 51 insertions(+), 25 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 9362050cbb56..62c73b9d5dc8 100644
+index aa1c2d675..0cf785d44 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
-@@ -94,6 +94,13 @@ rocket_iommu_domain_destroy(struct kref *kref)
+@@ -115,6 +115,13 @@ rocket_iommu_domain_destroy(struct kref *kref)
  {
  	struct rocket_iommu_domain *domain = container_of(kref, struct rocket_iommu_domain, kref);
  
@@ -50,7 +50,7 @@ index 9362050cbb56..62c73b9d5dc8 100644
  	iommu_domain_free(domain->domain);
  	domain->domain = NULL;
  	kfree(domain);
-@@ -116,6 +123,16 @@ rocket_iommu_domain_create(struct device *dev)
+@@ -137,6 +144,16 @@ rocket_iommu_domain_create(struct device *dev)
  	}
  	kref_init(&domain->kref);
  
@@ -67,7 +67,7 @@ index 9362050cbb56..62c73b9d5dc8 100644
  	return domain;
  }
  
-@@ -137,7 +154,6 @@ rocket_open(struct drm_device *dev, struct drm_file *file)
+@@ -158,7 +175,6 @@ rocket_open(struct drm_device *dev, struct drm_file *file)
  {
  	struct rocket_device *rdev = to_rocket_device(dev);
  	struct rocket_file_priv *rocket_priv;
@@ -75,7 +75,7 @@ index 9362050cbb56..62c73b9d5dc8 100644
  	int ret;
  
  	if (!try_module_get(THIS_MODULE))
-@@ -158,20 +174,13 @@ rocket_open(struct drm_device *dev, struct drm_file *file)
+@@ -179,20 +195,13 @@ rocket_open(struct drm_device *dev, struct drm_file *file)
  
  	file->driver_priv = rocket_priv;
  
@@ -98,7 +98,7 @@ index 9362050cbb56..62c73b9d5dc8 100644
  	rocket_iommu_domain_put(rocket_priv->domain);
  err_free:
  	kfree(rocket_priv);
-@@ -186,8 +195,11 @@ rocket_postclose(struct drm_device *dev, struct drm_file *file)
+@@ -207,8 +216,11 @@ rocket_postclose(struct drm_device *dev, struct drm_file *file)
  	struct rocket_file_priv *rocket_priv = file->driver_priv;
  
  	rocket_job_close(rocket_priv);
@@ -113,7 +113,7 @@ index 9362050cbb56..62c73b9d5dc8 100644
  	kfree(rocket_priv);
  	module_put(THIS_MODULE);
 diff --git a/drivers/accel/rocket/rocket_drv.h b/drivers/accel/rocket/rocket_drv.h
-index 2c673bb99ccc..e294ea9822ba 100644
+index 2c673bb99..e294ea982 100644
 --- a/drivers/accel/rocket/rocket_drv.h
 +++ b/drivers/accel/rocket/rocket_drv.h
 @@ -6,22 +6,35 @@
@@ -155,7 +155,7 @@ index 2c673bb99ccc..e294ea9822ba 100644
  	struct drm_sched_entity sched_entity;
  };
 diff --git a/drivers/accel/rocket/rocket_gem.c b/drivers/accel/rocket/rocket_gem.c
-index a5fffa51ff35..5026a28161f3 100644
+index a5fffa51f..5026a2816 100644
 --- a/drivers/accel/rocket/rocket_gem.c
 +++ b/drivers/accel/rocket/rocket_gem.c
 @@ -14,7 +14,6 @@
@@ -219,7 +219,7 @@ index a5fffa51ff35..5026a28161f3 100644
  err:
  	drm_gem_shmem_object_free(gem_obj);
 diff --git a/drivers/accel/rocket/rocket_gem.h b/drivers/accel/rocket/rocket_gem.h
-index 240430334509..b6653b617928 100644
+index 240430334..b6653b617 100644
 --- a/drivers/accel/rocket/rocket_gem.h
 +++ b/drivers/accel/rocket/rocket_gem.h
 @@ -9,8 +9,6 @@
