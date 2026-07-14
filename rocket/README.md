@@ -96,6 +96,9 @@ back at 200 MHz so the domain never powers down at a raised rate.
 
 - **`rocket_npu_clk_hz`** — module parameter, sysfs-writable, default `0` (stock 200 MHz).
   Target rate in Hz.
+- **`rocket_autosuspend_ms`** — module parameter, sysfs-writable, default `1000`. The park's
+  deadline (see [The park's deadline](#the-parks-deadline-why-081-raises-the-autosuspend-delay)).
+  `0` leaves the PM core's own default.
 
 ```sh
 sudo rmmod rocket
@@ -139,6 +142,48 @@ both came back non-monotonic and were entirely artefact.
 With the refcount, the same six runs land at 15.2 / 15.4 / 14.6 / 14.7 / 15.6 / 13.4 ms and
 the clock holds 600 MHz for the whole active phase, with exactly one 600 → 200 transition:
 the park at the end.
+
+### The park's deadline: why `081` raises the autosuspend delay
+
+Refcounting *who* may park is only half of it. The park also needs a **deadline** that
+outlives a host-side gap **within** one inference — not merely the gap between inferences.
+
+Upstream's autosuspend delay is 50 ms, and the comment says why: "~3 frames at 60Hz". That
+is sized for a media pipeline, which submits one inference per frame, so the only idle gaps
+that matter fall *between* inferences. An LLM or ASR workload breaks the assumption. The
+host packs operands into the NPU's native tiled layout — the NPU cannot tile row-major data
+on-chip, so that scatter is irreducible host work — and a **single** inference therefore
+contains host-side gaps in which every core goes idle. At 50 ms those gaps trip runtime
+suspend *mid-inference*: the last core down parks the shared clock, and the next submit runs
+at 200 MHz until it ramps back.
+
+The clock lever then quietly undoes itself on exactly the workloads it exists for. Sampling
+`scmi_clk_npu` through **one** Whisper `base.en` encode at the stock 50 ms:
+
+```
+200 200 200 200 200 600 600 600 200 600 600 600 600 600   (MHz)
+```
+
+and that encode is *slower than the CPU running the same work*. Encode time on an RK1 at
+600 MHz, 4 reps, against a CPU reference of 1628–1639 ms:
+
+| `autosuspend_delay_ms` | encode (ms) |
+|---|---|
+| 50 (stock) | 1881 / 1734 / 1884 / 1809 — variable, **slower than CPU** |
+| 100 | 1275 / 1383 / 1279 / 1286 |
+| 200 | 1275 / 1272 / 1262 / 1265 |
+| 500 | 1259 / 1254 / 1263 / 1269 |
+| **1000** (default) | 1267 / 1253 / 1254 / 1263 |
+| 2000 | 1273 / 1270 / 1264 / 1256 |
+
+It saturates by ~200 ms. The default is **1000 ms**: that knee plus headroom for a large
+encoder, whose packing gaps are several times longer, since they scale with the weight bytes
+and `base.en` is the small end of the range. Park-at-idle is preserved — only its deadline
+moves — and `rocket_autosuspend_ms=0` restores the PM core's own default.
+
+This lives in `081` rather than a patch of its own because **the park is introduced here**:
+stock mainline never re-rates the clock, so without the lever there is nothing to park and
+nothing to fix.
 
 If you are benchmarking and see a bimodal distribution, check
 `sudo cat /sys/kernel/debug/clk/clk_summary | grep scmi_clk_npu` — and raise

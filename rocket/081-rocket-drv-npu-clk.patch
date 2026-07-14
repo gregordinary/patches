@@ -32,6 +32,39 @@ refuses to suspend still holds the rate. A mutex rather than a bare atomic: it
 must serialise the clk_set_rate against a concurrent resume on another core, and
 both callbacks run in process context and may sleep.
 
+The park also needs a DEADLINE that outlives a host-side gap WITHIN one
+inference, so rocket_autosuspend_ms (default 1000 ms) replaces the hardcoded
+50 ms. Upstream's 50 ms is stated as "~3 frames at 60Hz" -- sized for a media
+pipeline that submits one inference per frame, where the only idle gaps that
+matter fall BETWEEN inferences. An LLM/ASR workload breaks that assumption: the
+host packs the operands into the NPU's native tiled layout (the NPU cannot tile
+row-major data on-chip, so the scatter is irreducible host work), and a SINGLE
+inference therefore contains host gaps in which every core goes idle. At 50 ms
+those gaps trip runtime suspend mid-inference: the last core down parks the
+shared clock, and the next submit runs at 200 MHz until it ramps back. The clock
+lever then silently undoes itself on exactly the workloads it exists for. The
+SCMI clock sampled through ONE whisper base.en encode at the stock 50 ms:
+
+    200 200 200 200 200 600 600 600 200 600 600 600 600 600   (MHz)
+
+and that encode is SLOWER than the CPU running the same work. Encode time on a
+Turing RK1 at 600 MHz, 4 reps (CPU reference 1628-1639 ms):
+
+    autosuspend    encode (ms)
+      50           1881 / 1734 / 1884 / 1809     <- variable, slower than CPU
+     100           1275 / 1383 / 1279 / 1286
+     200           1275 / 1272 / 1262 / 1265
+     500           1259 / 1254 / 1263 / 1269
+    1000           1267 / 1253 / 1254 / 1263
+    2000           1273 / 1270 / 1264 / 1256
+
+It saturates by ~200 ms; 1000 ms is that knee plus headroom for a large encoder,
+whose packing gaps are several times longer (they scale with the weight bytes).
+Park-at-idle is preserved -- only its deadline moves -- and 0 restores the PM
+core's own default. Kept in this patch rather than a separate one because the
+park is introduced HERE: stock mainline never re-rates the clock, so without the
+lever there is nothing to park and nothing to fix.
+
 A clk_set_rate failure on resume propagates: undo the bulk-clock enable and
 return the error rather than silently returning 0 with the device half-
 programmed, so the PM core leaves the domain suspended instead of running it at
@@ -47,16 +80,42 @@ powers a domain on at a rate a sibling raised, so that exposure is pre-existing,
 and a pinned 900 MHz hard-locks the box. 600 MHz is the only validated operating
 point.
 ---
- drivers/accel/rocket/rocket_core.c |  19 +++++
+ drivers/accel/rocket/rocket_core.c |  54 ++++++++++++++--
  drivers/accel/rocket/rocket_core.h |  10 +++
- drivers/accel/rocket/rocket_drv.c  | 111 +++++++++++++++++++++++++++++
- 3 files changed, 140 insertions(+)
+ drivers/accel/rocket/rocket_drv.c  | 111 +++++++++++++++++++++++++++++++
+ 3 files changed, 170 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
-index b3b2fa9ba..66501861e 100644
+index b3b2fa9..ebde9dd 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
-@@ -32,6 +32,25 @@ int rocket_core_init(struct rocket_core *core)
+@@ -7,6 +7,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
+ #include <linux/iommu.h>
++#include <linux/moduleparam.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/reset.h>
+@@ -14,6 +15,17 @@
+ #include "rocket_core.h"
+ #include "rocket_job.h"
+ 
++/*
++ * Deadline for the clock park below (see rocket_device_runtime_suspend() in
++ * rocket_drv.c). The stock 50 ms is too eager once the park exists: it fires
++ * INSIDE a single inference, not just between inferences. 0 leaves the PM core's
++ * own default untouched.
++ */
++static unsigned int rocket_autosuspend_ms = 1000;
++module_param(rocket_autosuspend_ms, uint, 0644);
++MODULE_PARM_DESC(rocket_autosuspend_ms,
++	"runtime-PM autosuspend delay in ms (default 1000; 0 = leave the PM core default)");
++
+ int rocket_core_init(struct rocket_core *core)
+ {
+ 	struct device *dev = core->dev;
+@@ -32,6 +44,25 @@ int rocket_core_init(struct rocket_core *core)
  	if (err)
  		return dev_err_probe(dev, err, "failed to get clocks for core %d\n", core->index);
  
@@ -82,8 +141,39 @@ index b3b2fa9ba..66501861e 100644
  	core->pc_iomem = devm_platform_ioremap_resource_byname(pdev, "pc");
  	if (IS_ERR(core->pc_iomem)) {
  		dev_err(dev, "couldn't find PC registers %ld\n", PTR_ERR(core->pc_iomem));
+@@ -68,12 +99,25 @@ int rocket_core_init(struct rocket_core *core)
+ 	pm_runtime_use_autosuspend(dev);
+ 
+ 	/*
+-	 * As this NPU will be most often used as part of a media pipeline that
+-	 * ends presenting in a display, choose 50 ms (~3 frames at 60Hz) as an
+-	 * autosuspend delay as that will keep the device powered up while the
+-	 * pipeline is running.
++	 * The park above needs a deadline that outlives a host-side gap WITHIN one
++	 * inference, not merely the gap between inferences.
++	 *
++	 * Upstream's 50 ms is "~3 frames at 60Hz" -- sized for a media pipeline that
++	 * submits one inference per frame, where the only idle gaps that matter fall
++	 * BETWEEN inferences. An LLM/ASR workload breaks that assumption: the host
++	 * packs the operands into the NPU's native tiled layout (it cannot be done
++	 * on-chip), so a SINGLE inference contains host-side gaps in which every core
++	 * goes idle. At 50 ms those gaps trip runtime suspend mid-inference, the last
++	 * core down parks the shared clock to 200 MHz, and the next submit runs at a
++	 * third of the rate until it ramps back -- so the clock lever silently undoes
++	 * itself on exactly the workloads it exists for.
++	 *
++	 * 1000 ms is past the measured knee (~200 ms on a small encoder) with headroom
++	 * for a large one, whose packing gaps are several times longer (they scale with
++	 * the weight bytes). Park-at-idle is preserved; only its deadline moves.
+ 	 */
+-	pm_runtime_set_autosuspend_delay(dev, 50);
++	if (rocket_autosuspend_ms)
++		pm_runtime_set_autosuspend_delay(dev, rocket_autosuspend_ms);
+ 
+ 	pm_runtime_enable(dev);
+ 
 diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
-index f6d738285..1080f3b30 100644
+index f6d7382..1080f3b 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
 @@ -39,6 +39,16 @@ struct rocket_core {
@@ -104,7 +194,7 @@ index f6d738285..1080f3b30 100644
  
  	struct mutex job_lock;
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 8bbbce594..3dd6536a7 100644
+index 8bbbce5..3dd6536 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -9,6 +9,7 @@
