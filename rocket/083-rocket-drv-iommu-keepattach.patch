@@ -37,18 +37,18 @@ domain (not NULL) to iommu_detach_group() at every detach site; and state the
  3 files changed, 64 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
-index 5d3879674..b6bb43b40 100644
+index 62a1608f5..0c3992fd7 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
-@@ -13,6 +13,7 @@
+@@ -14,6 +14,7 @@
  #include <linux/reset.h>
  
  #include "rocket_core.h"
 +#include "rocket_drv.h"
  #include "rocket_job.h"
  
- int rocket_core_init(struct rocket_core *core)
-@@ -138,9 +139,20 @@ void rocket_core_fini(struct rocket_core *core)
+ /*
+@@ -163,9 +164,20 @@ void rocket_core_fini(struct rocket_core *core)
  {
  	pm_runtime_dont_use_autosuspend(core->dev);
  	pm_runtime_disable(core->dev);

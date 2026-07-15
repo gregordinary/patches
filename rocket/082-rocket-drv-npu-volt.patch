@@ -41,18 +41,18 @@ at all.
  3 files changed, 154 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
-index 66501861e..5d3879674 100644
+index ebde9ddd9..62a1608f5 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
-@@ -9,6 +9,7 @@
- #include <linux/iommu.h>
+@@ -10,6 +10,7 @@
+ #include <linux/moduleparam.h>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
 +#include <linux/regulator/consumer.h>
  #include <linux/reset.h>
  
  #include "rocket_core.h"
-@@ -51,6 +52,26 @@ int rocket_core_init(struct rocket_core *core)
+@@ -63,6 +64,26 @@ int rocket_core_init(struct rocket_core *core)
  		core->npu_clk = NULL;
  	}
  
