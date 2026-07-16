@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Thu, 16 Jul 2026 16:00:00 -0400
+Subject: [PATCH] crypto: rk3288 - inherit the fallback ahash statesize
+
+The rk3288 driver implements import() and export() by proxying its
+software fallback tfm, so the state it exports is the fallback's
+state. The sha256/sha1/md5 shashes now use the partial block API and
+export their partial block alongside the core state plus a trailing
+length byte (e.g. SHA256_SHASH_STATE_SIZE is 105 bytes), so the
+fallback's statesize exceeds the driver's declared
+sizeof(struct sha256_state) (104) and export() overruns the caller's
+buffer. The self-tests catch the overrun and reject all three hashes
+at every boot:
+
+  alg: ahash: rk-sha256 export() overran state buffer on test vector 0, cfg="import/export"
+  alg: self-tests for sha256 using rk-sha256 failed (rc=-75)
+
+(likewise rk-sha1 and rk-md5, observed on an ASUS Chromebook C201,
+RK3288/veyron-speedy, kernel 7.1.3)
+
+Inherit the fallback's statesize when the tfm is initialised, matching
+what the driver already does for reqsize one statement above, and what
+sun8i-ce -- the same fallback-proxy design -- already does.
+
+Fixes: 3bf533787910 ("crypto: sha256 - Use the partial block API")
+Cc: stable@vger.kernel.org
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/crypto/rockchip/rk3288_crypto_ahash.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+--- a/drivers/crypto/rockchip/rk3288_crypto_ahash.c
++++ b/drivers/crypto/rockchip/rk3288_crypto_ahash.c
+@@ -362,6 +362,9 @@
+ 				 sizeof(struct rk_ahash_rctx) +
+ 				 crypto_ahash_reqsize(tctx->fallback_tfm));
+ 
++	crypto_ahash_set_statesize(tfm,
++				   crypto_ahash_statesize(tctx->fallback_tfm));
++
+ 	return 0;
+ }
+ 
+-- 
+2.47.0

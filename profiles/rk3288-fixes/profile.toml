@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3288-fixes/profile.toml
+#
+# RK3288 kernel-fix profile: fixes a mainline 7.1 kernel needs on RK3288 boards,
+# each written to upstream standards and meant to leave this repo. Referenced by
+# kernels/rk3288-mainline-7.1. Each list is the authoritative apply order for one
+# source tree, applied with `git am --3way`; paths are relative to this repo's
+# root.
+
+# Declared intent; the builder's verify-applies gate is the enforcement.
+applies_to_kernel = ">=7.0, <7.2"
+
+# Kernel tree: the rk3288 crypto engine's hash offloads declare a statesize
+# smaller than what their fallback's export() writes under the partial-block
+# hash state format, so the rk-sha1/rk-sha256/rk-md5 self-tests fail at every
+# boot and the crypto API rejects all three offloads. The fix inherits the
+# fallback's statesize at init_tfm time, exactly as the driver already does for
+# reqsize. Upstream-destined (linux-crypto, Cc: stable); retire it from this
+# series once it reaches the 7.1.y stable tree.
+kernel = [
+    "rk3288/kernel/100-crypto-rk3288-inherit-fallback-ahash-statesize.patch",
+]
+
+ffmpeg    = []
+userspace = []
+uboot     = []
