@@ -1,0 +1,45 @@
+From 0a2227271a8109e3a1173884f49189f0043405d1 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 23:00:25 -0400
+Subject: [PATCH] usb: dwc3: mark the generic host as DMA-active for OS handoff
+
+bootm removes DMA-active devices after 'Starting kernel ...', but the
+dwc3 host glue never declared the flag, so a started xhci stays live
+across the handoff. Its event ring sits in u-boot's malloc arena at the
+top of RAM - immediately next to where the loaded initrd and FDT end up
+- and keeps taking DMA writes (continuously, when a USB keyboard's
+interrupt polling is active) while the kernel boots from exactly that
+memory. On RK3576 this corrupts the boot silently: 'Starting kernel'
+and then nothing, no earlycon output.
+
+Flag the host driver DM_FLAG_ACTIVE_DMA so bootm's removal pass halts
+the controller and quiesces its DMA before the jump.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/usb/dwc3/dwc3-generic.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/dwc3/dwc3-generic.c b/drivers/usb/dwc3/dwc3-generic.c
+index 22b9ef0b..d8dc5e8a 100644
+--- a/drivers/usb/dwc3/dwc3-generic.c
++++ b/drivers/usb/dwc3/dwc3-generic.c
+@@ -279,7 +279,14 @@ U_BOOT_DRIVER(dwc3_generic_host) = {
+ 	.priv_auto	= sizeof(struct dwc3_generic_host_priv),
+ 	.plat_auto	= sizeof(struct dwc3_generic_plat),
+ 	.ops = &xhci_usb_ops,
+-	.flags = DM_FLAG_ALLOC_PRIV_DMA,
++	/*
++	 * ACTIVE_DMA so bootm halts the controller before the OS runs: a
++	 * started host keeps writing its event ring (continuously so with a
++	 * USB keyboard's interrupt polling), and those DMA writes land in
++	 * u-boot's arena at the top of RAM - next to the loaded initrd and
++	 * FDT - after the kernel has taken over.
++	 */
++	.flags = DM_FLAG_ALLOC_PRIV_DMA | DM_FLAG_ACTIVE_DMA,
+ };
+ #endif
+ 
+-- 
+2.43.0
+

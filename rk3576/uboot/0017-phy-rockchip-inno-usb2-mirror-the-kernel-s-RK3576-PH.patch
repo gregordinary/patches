@@ -1,0 +1,162 @@
+From 64a972072a2f811da6dd902403d4c25678c1699e Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 17:24:28 -0400
+Subject: [PATCH] phy: rockchip: inno-usb2: mirror the kernel's RK3576 PHY
+ bring-up
+
+The RK3576 entries carried only a two-bit phy_sus copied from the RK3568
+layout and no analog bring-up at all. On this SoC that breaks host mode
+outright: the BootROM drives the OTG port as a USB device for maskrom
+download, and the PHY carries that session's state into the next boot
+stage - the host controller then reports a phantom high-speed device on
+an empty port (CCS+PED set, HS speed) and every port reset fails with
+"cannot reset port 1!?".
+
+Mirror the mainline kernel driver: phy_sus covers GRF CON bits [8:0]
+(power-on clears the whole UTMI force field, suspend writes 0x1d1), and
+a probe-time tuning hook exits IDDQ, resets the PHY through the CRU
+(the step that actually clears the BootROM's leftover state), and
+applies the kernel's HS DC level and pre-emphasis values.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/phy/rockchip/phy-rockchip-inno-usb2.c | 86 ++++++++++++++++++-
+ 1 file changed, 82 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+index 4ea6600c..fd62bf0a 100644
+--- a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -13,6 +13,7 @@
+ #include <dm/lists.h>
+ #include <generic-phy.h>
+ #include <regmap.h>
++#include <reset.h>
+ #include <syscon.h>
+ #include <asm/arch-rockchip/clock.h>
+ 
+@@ -41,6 +42,13 @@ struct rockchip_usb2phy_cfg {
+ 	unsigned int reg;
+ 	struct usb2phy_reg	clkout_ctl;
+ 	struct usb2phy_reg	clkout_ctl_phy;
++	/*
++	 * One-time analog bring-up run at probe, before any port is used.
++	 * SoCs whose PHY may inherit live state from an earlier boot stage
++	 * (e.g. the BootROM driving the OTG port as a download device) must
++	 * reset the PHY here or host-mode port status is unreliable.
++	 */
++	int (*phy_tuning)(struct udevice *dev);
+ 	const struct rockchip_usb2phy_port_cfg port_cfgs[USB2PHY_NUM_PORTS];
+ };
+ 
+@@ -310,10 +318,21 @@ static int rockchip_usb2phy_probe(struct udevice *dev)
+ 		return ret;
+ 	}
+ 
+-	if (priv->phy_cfg->clkout_ctl_phy.enable)
++	if (priv->phy_cfg->clkout_ctl_phy.enable) {
+ 		ret = regmap_init_mem_index(dev_ofnode(dev), &priv->phy_base, 0);
++		if (ret)
++			return ret;
++	}
+ 
+-	return ret;
++	if (priv->phy_cfg->phy_tuning) {
++		ret = priv->phy_cfg->phy_tuning(dev);
++		if (ret) {
++			dev_err(dev, "phy tuning failed (ret=%d)\n", ret);
++			return ret;
++		}
++	}
++
++	return 0;
+ }
+ 
+ static int rockchip_usb2phy_bind(struct udevice *dev)
+@@ -465,22 +484,81 @@ static const struct rockchip_usb2phy_cfg rk3568_phy_cfgs[] = {
+ 	{ /* sentinel */ }
+ };
+ 
++/*
++ * RK3576 analog bring-up, mirroring the mainline kernel driver: exit IDDQ,
++ * reset the PHY, then apply the HS tuning values. The PHY reset is the
++ * load-bearing step on this SoC: the BootROM drives the OTG port as a USB
++ * device for maskrom download, and without a reset the PHY carries that
++ * session's state into host mode - the controller then reports a phantom
++ * high-speed device on an empty port and every port reset fails.
++ */
++static int rk3576_usb2phy_tuning(struct udevice *dev)
++{
++	struct rockchip_usb2phy *priv = dev_get_priv(dev);
++	u32 reg = priv->phy_cfg->reg;
++	struct reset_ctl phy_rst;
++	int ret;
++
++	/* deassert SIDDQ to power on the analog block */
++	ret = regmap_write(priv->reg_base, reg + 0x0010,
++			   BIT(13 + BIT_WRITEABLE_SHIFT) | 0x0000);
++	if (ret)
++		return ret;
++
++	/* reset the PHY after exiting IDDQ mode */
++	ret = reset_get_by_name(dev, "phy", &phy_rst);
++	if (ret) {
++		dev_err(dev, "failed to get the phy reset (ret=%d)\n", ret);
++		return ret;
++	}
++
++	ret = reset_assert(&phy_rst);
++	if (ret)
++		return ret;
++
++	udelay(10);
++
++	ret = reset_deassert(&phy_rst);
++	if (ret)
++		return ret;
++
++	usleep_range(100, 200);
++
++	/* HS DC voltage level adjustment 4'b1001 : +5.89% */
++	ret = regmap_write(priv->reg_base, reg + 0x000c,
++			   GENMASK(27, 24) | 0x0900);
++
++	/* HS transmitter pre-emphasis current control 2'b10 : 2x */
++	ret |= regmap_write(priv->reg_base, reg + 0x0010,
++			    GENMASK(20, 19) | 0x0010);
++
++	return ret;
++}
++
+ static const struct rockchip_usb2phy_cfg rk3576_phy_cfgs[] = {
+ 	{
+ 		.reg		= 0x0000,
+ 		.clkout_ctl	= { 0x0008, 0, 0, 1, 0 },
++		.phy_tuning	= rk3576_usb2phy_tuning,
+ 		.port_cfgs	= {
+ 			[USB2PHY_PORT_OTG] = {
+-				.phy_sus	= { 0x0000, 1, 0, 2, 1 },
++				/*
++				 * GRF CON0 bits [8:0] are the UTMI force
++				 * controls; power-on must clear the whole
++				 * field for controller-driven operation.
++				 * Values mirror the mainline kernel driver.
++				 */
++				.phy_sus	= { 0x0000, 8, 0, 0, 0x1d1 },
+ 			}
+ 		},
+ 	},
+ 	{
+ 		.reg		= 0x2000,
+ 		.clkout_ctl	= { 0x2008, 0, 0, 1, 0 },
++		.phy_tuning	= rk3576_usb2phy_tuning,
+ 		.port_cfgs	= {
+ 			[USB2PHY_PORT_OTG] = {
+-				.phy_sus	= { 0x2000, 1, 0, 2, 1 },
++				.phy_sus	= { 0x2000, 8, 0, 0, 0x1d1 },
+ 			}
+ 		},
+ 	},
+-- 
+2.43.0
+

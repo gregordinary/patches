@@ -1,0 +1,116 @@
+From 2d39c7f82ae91b000a2f9dc2c4164bf708fde455 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 23:38:17 -0400
+Subject: [PATCH] clk: rockchip: rk3576: run the SoC clock bring-up at SPL bind
+
+The RK3576 SoC clock bring-up - the CPU cluster PLLs (BPLL/LPLL), the
+CCI clock, and the SPLL/PPLL/AUPLL/CPLL normal-mode switches - sat in
+the clock driver's probe() behind CONFIG_SPL_BUILD, a macro that no
+longer exists since the xPL rename, so it never compiled in. probe()
+also runs only when something in SPL requests a clock, which a
+RAM-booted SPL may never do. Move it to a helper called from bind()
+under CONFIG_XPL_BUILD so it always runs. Same approach as the RK3576
+clock init rework in Jonas Karlman's rk3576 tree.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/clk/rockchip/clk_rk3576.c | 47 ++++++++++++++++++-------------
+ 1 file changed, 27 insertions(+), 20 deletions(-)
+
+diff --git a/drivers/clk/rockchip/clk_rk3576.c b/drivers/clk/rockchip/clk_rk3576.c
+index 1f257055..42fc30bd 100644
+--- a/drivers/clk/rockchip/clk_rk3576.c
++++ b/drivers/clk/rockchip/clk_rk3576.c
+@@ -62,12 +62,10 @@ static struct rockchip_pll_clock rk3576_pll_clks[] = {
+ 		     RK3576_MODE_CON0, 10, 15, 0, rk3576_24m_pll_rates),
+ };
+ 
+-#ifdef CONFIG_SPL_BUILD
+ #ifndef BITS_WITH_WMASK
+ #define BITS_WITH_WMASK(bits, msk, shift) \
+ 	((bits) << (shift)) | ((msk) << ((shift) + 16))
+ #endif
+-#endif
+ 
+ #ifndef CONFIG_SPL_BUILD
+ /*
+@@ -2557,14 +2555,19 @@ static void rk3576_clk_init(struct rk3576_clk_priv *priv)
+ 		      DCLK_EBC_FRAC_SRC_SEL_SHIFT));
+ }
+ 
+-static int rk3576_clk_probe(struct udevice *dev)
++#ifdef CONFIG_XPL_BUILD
++/*
++ * One-time SoC clock bring-up: CPU cluster PLLs (BPLL/LPLL), CCI, and the
++ * PLL normal-mode switches. Runs from the clock driver's bind() so it
++ * cannot be skipped: probe() only happens when something in SPL requests
++ * a clock, and a RAM-booted SPL may request none - leaving the CPU
++ * clusters on the 24 MHz bring-up clock, where the kernel runs two
++ * orders of magnitude slow.
++ */
++static void rk3576_clk_init_spl(void)
+ {
+-	struct rk3576_clk_priv *priv = dev_get_priv(dev);
+-	int ret;
+-
+-	priv->sync_kernel = false;
++	struct rk3576_cru * const cru = (void *)RK3576_CRU_BASE;
+ 
+-#ifdef CONFIG_SPL_BUILD
+ 	/* relase presetn_bigcore_biu/cru/grf */
+ 	writel(0x1c001c00, 0x26010010);
+ 	/* set spll to normal mode */
+@@ -2585,18 +2588,10 @@ static int rk3576_clk_probe(struct udevice *dev)
+ 	       RK3576_CRU_BASE + RK3576_MODE_CON0);
+ 	/* init cci */
+ 	writel(0xffff0000, RK3576_CRU_BASE + RK3576_CCI_CLKSEL_CON(4));
+-	rockchip_pll_set_rate(&rk3576_pll_clks[BPLL], priv->cru,
+-			      BPLL, LPLL_HZ);
+-	if (!priv->armclk_enter_hz) {
+-		ret = rockchip_pll_set_rate(&rk3576_pll_clks[LPLL], priv->cru,
+-					    LPLL, LPLL_HZ);
+-		priv->armclk_enter_hz =
+-			rockchip_pll_get_rate(&rk3576_pll_clks[LPLL],
+-					      priv->cru, LPLL);
+-		priv->armclk_init_hz = priv->armclk_enter_hz;
+-		rk_clrsetreg(&priv->cru->litclksel_con[0], CLK_LITCORE_DIV_MASK,
+-			     0 << CLK_LITCORE_DIV_SHIFT);
+-	}
++	rockchip_pll_set_rate(&rk3576_pll_clks[BPLL], cru, BPLL, LPLL_HZ);
++	rockchip_pll_set_rate(&rk3576_pll_clks[LPLL], cru, LPLL, LPLL_HZ);
++	rk_clrsetreg(&cru->litclksel_con[0], CLK_LITCORE_DIV_MASK,
++		     0 << CLK_LITCORE_DIV_SHIFT);
+ 	/* init cci */
+ 	writel(0xffff20cb, RK3576_CRU_BASE + RK3576_CCI_CLKSEL_CON(4));
+ 
+@@ -2614,8 +2609,16 @@ static int rk3576_clk_probe(struct udevice *dev)
+ 	writel(0x00020000, RK3576_LITCORE_GRF_BASE + 0x38);
+ 	/* Change cci rm form 4 to 3 */
+ 	writel(0x001c000c, RK3576_CCI_GRF_BASE + 0x54);
++}
+ #endif
+ 
++static int rk3576_clk_probe(struct udevice *dev)
++{
++	struct rk3576_clk_priv *priv = dev_get_priv(dev);
++	int ret;
++
++	priv->sync_kernel = false;
++
+ 	rk3576_clk_init(priv);
+ 
+ 	/* Process 'assigned-{clocks/clock-parents/clock-rates}' properties */
+@@ -2643,6 +2646,10 @@ static int rk3576_clk_bind(struct udevice *dev)
+ 	struct udevice *sys_child;
+ 	struct sysreset_reg *priv;
+ 
++#ifdef CONFIG_XPL_BUILD
++	rk3576_clk_init_spl();
++#endif
++
+ 	/* The reset driver does not have a device node, so bind it here */
+ 	ret = device_bind_driver(dev, "rockchip_sysreset", "sysreset",
+ 				 &sys_child);
+-- 
+2.43.0
+

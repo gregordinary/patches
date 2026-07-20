@@ -1,0 +1,516 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 15:16:52 -0400
+Subject: [PATCH] video: rockchip: add DW-HDMI-QP bridge for RK3576
+
+Fixed-mode (CEA VIC 16, 1080p60 RGB 8bpc) display bridge for the RK3576
+DW HDMI QP controller, driving the Samsung HDPTX PHY.
+
+Probe ungates the controller's internal CMU video and link QP clock
+domains (CMU_CONFIG0 VIDQPCLK_OFF/LINKQPCLK_OFF) and sets
+TIMER_BASE_CONFIG0 to the RK3576's 396 MHz reference. Registers inside
+those QP domains (LINK_*, TMDS_FIFO_*, HDCP2LOGIC_*) raise synchronous
+external aborts until the domains are ungated and the HDPTX PLL supplies
+the link clock, so the ungate must precede any enable-path access.
+
+The enable path brings the PHY PLL up on the pixel rate, selects TMDS
+link mode and RGB 8bpc in the VO0 GRF, configures HDMI mode with
+HDCP2_BYPASS and rekey keepout, emits the AVI InfoFrame, powers the
+lanes on, opens the AVP video datapath (SWDISABLE), and clears AVMUTE
+with a re-armed GCP. VIDEO_INTERFACE_CONFIG0 bit 21 is written last:
+the field is HDMI_COLOR_DEPTH_OVR_VALUE and the value is a reserved
+code Rockchip firmware uses as a bootloader-lit-the-display marker;
+it is inert without the (undocumented) override enable. The bridge
+claims the earc clock alongside the others its DT node names.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/video/rockchip/Kconfig               |  10 +
+ drivers/video/rockchip/Makefile              |   1 +
+ drivers/video/rockchip/dw_hdmi_qp_rockchip.c | 444 +++++++++++++++++++
+ 3 files changed, 455 insertions(+)
+ create mode 100644 drivers/video/rockchip/dw_hdmi_qp_rockchip.c
+
+diff --git a/drivers/video/rockchip/Kconfig b/drivers/video/rockchip/Kconfig
+index 96af6d28..d24c8e38 100644
+--- a/drivers/video/rockchip/Kconfig
++++ b/drivers/video/rockchip/Kconfig
+@@ -62,6 +62,16 @@ config DISPLAY_ROCKCHIP_HDMI
+ 	help
+ 	  This enables High-Definition Multimedia Interface display support.
+ 
++config DISPLAY_ROCKCHIP_HDMI_QP
++	bool "HDMI-QP port"
++	depends on VIDEO_ROCKCHIP
++	select DISPLAY
++	select PHY_ROCKCHIP_SAMSUNG_HDPTX
++	help
++	  This enables HDMI/TMDS output through the Synopsys DesignWare
++	  HDMI-QP controller as wired on RK3576, driving the Samsung HDPTX
++	  PHY. It provides a single fixed 1080p60 mode.
++
+ config DISPLAY_ROCKCHIP_MIPI
+ 	bool "MIPI Port"
+ 	depends on VIDEO_ROCKCHIP
+diff --git a/drivers/video/rockchip/Makefile b/drivers/video/rockchip/Makefile
+index f55becee..0a66cb5a 100644
+--- a/drivers/video/rockchip/Makefile
++++ b/drivers/video/rockchip/Makefile
+@@ -14,6 +14,7 @@ obj-hdmi-$(CONFIG_ROCKCHIP_RK3288) += rk3288_hdmi.o
+ obj-hdmi-$(CONFIG_ROCKCHIP_RK3328) += rk3328_hdmi.o
+ obj-hdmi-$(CONFIG_ROCKCHIP_RK3399) += rk3399_hdmi.o
+ obj-$(CONFIG_DISPLAY_ROCKCHIP_HDMI) += rk_hdmi.o $(obj-hdmi-y)
++obj-$(CONFIG_DISPLAY_ROCKCHIP_HDMI_QP) += dw_hdmi_qp_rockchip.o
+ obj-mipi-$(CONFIG_ROCKCHIP_RK3288) += rk3288_mipi.o
+ obj-mipi-$(CONFIG_ROCKCHIP_RK3399) += rk3399_mipi.o
+ obj-$(CONFIG_DISPLAY_ROCKCHIP_MIPI) += rk_mipi.o $(obj-mipi-y)
+diff --git a/drivers/video/rockchip/dw_hdmi_qp_rockchip.c b/drivers/video/rockchip/dw_hdmi_qp_rockchip.c
+new file mode 100644
+index 00000000..8e8f6d48
+--- /dev/null
++++ b/drivers/video/rockchip/dw_hdmi_qp_rockchip.c
+@@ -0,0 +1,444 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Rockchip DesignWare HDMI-QP bridge (RK3576), HDMI/TMDS output.
++ *
++ * Copyright (c) 2021 Rockchip Electronics Co. Ltd.
++ *
++ * A UCLASS_DISPLAY bridge for the Synopsys DW-HDMI-QP controller as wired on
++ * RK3576. It drives the Samsung HDPTX PHY through the generic-phy API: the
++ * pixel-clock/PLL comes up when link_clk (the HDPTX clock child) is set, and
++ * the serializer lanes come up with generic_phy_power_on() once the link is
++ * configured. The VOP2 calls display_read_timing()/display_enable() on this
++ * device across the DT port graph.
++ *
++ * Scope: a single fixed 1080p60 RGB TMDS mode (Milestone "Light"). EDID/DDC
++ * mode selection, audio, CEC, scrambling for >340 MHz, and FRL are out of
++ * scope here and are added later.
++ */
++
++#include <clk.h>
++#include <display.h>
++#include <dm.h>
++#include <edid.h>
++#include <regmap.h>
++#include <reset.h>
++#include <syscon.h>
++#include <asm/io.h>
++#include <dm/device_compat.h>
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <generic-phy.h>
++#include <rockchip_hdptx_phy.h>
++
++/* Controller registers (hdmi->regs relative). */
++#define GLOBAL_SWDISABLE			0x44
++#define AVP_DATAPATH_VIDEO_SWDISABLE		BIT(6)
++#define TIMER_BASE_CONFIG0			0x80
++#define CMU_CONFIG0				0xa0
++#define LINKQPCLK_OFF				BIT(5)
++#define VIDQPCLK_OFF				BIT(3)
++#define FLT_CONFIG0				0x160
++#define VIDEO_INTERFACE_CONFIG0			0x800
++#define FRAME_COMPOSER_CONFIG9			0x864
++#define KEEPOUT_REKEY_CFG			GENMASK(9, 8)
++#define KEEPOUT_REKEY_ALWAYS			(0x2 << 8)
++#define HDCP2LOGIC_CONFIG0			0x8e0
++#define HDCP2_BYPASS				BIT(0)
++#define SCRAMB_CONFIG0				0x960
++#define LINK_CONFIG0				0x968
++#define OPMODE_FRL_4LANES			BIT(8)
++#define OPMODE_DVI				BIT(4)
++#define OPMODE_FRL				BIT(0)
++#define PKTSCHED_PKT_CONFIG1			0xa9c
++#define PKTSCHED_AVI_FIELDRATE			BIT(12)
++#define PKTSCHED_PKT_EN				0xaa8
++#define PKTSCHED_AVI_TX_EN			BIT(13)
++#define PKTSCHED_GCP_TX_EN			BIT(3)
++#define PKTSCHED_PKT_CONTROL0			0xaac
++#define PKT_AVI_CONTENTS0			0xbe0
++#define PKT_AVI_CONTENTS1			0xbe4
++#define MAINUNIT_0_INT_MASK_N			0x3014
++#define MAINUNIT_1_INT_MASK_N			0x3024
++
++/* RK3576 VO0 GRF / IOC GRF registers (regmap relative). */
++#define RK3576_IOC_MISC_CON0			0xa400
++#define RK3576_HDMITX_HPD_INT_MSK		BIT(2)
++#define RK3576_VO0_GRF_SOC_CON1			0x0004
++#define RK3576_HDMITX_FRL_MOD			BIT(0)
++#define RK3576_VO0_GRF_SOC_CON8			0x0020
++#define RK3576_COLOR_FORMAT_MASK		(0xf << 4)
++#define RK3576_COLOR_DEPTH_MASK			(0xf << 8)
++#define RK3576_RGB				(0 << 4)
++#define RK3576_8BPC				(0x0 << 8)
++#define RK3576_VO0_GRF_SOC_CON14		0x0038
++#define RK3576_I2S_SEL_MASK			BIT(0)
++#define RK3576_SCLIN_MASK			BIT(4)
++#define RK3576_SDAIN_MASK			BIT(5)
++#define RK3576_HDMITX_GRANT_SEL			BIT(6)
++
++#define HIWORD_UPDATE(val, mask)		((val) | (mask) << 16)
++
++/* AVI infoframe (CEA-861): HDMI infoframe type/version/length. */
++#define HDMI_INFOFRAME_TYPE_AVI			0x82
++#define HDMI_AVI_INFOFRAME_VERSION		2
++#define HDMI_AVI_INFOFRAME_SIZE			13
++
++/**
++ * struct dw_hdmi_qp_priv - DW-HDMI-QP bridge state.
++ * @dev: the bound UCLASS_DISPLAY device.
++ * @regs: DW-HDMI-QP controller register block.
++ * @grf: RK3576 IOC GRF (HPD interrupt mask).
++ * @vo_grf: RK3576 VO0 GRF (link mode, color format, I/O path).
++ * @phy: generic-phy handle to the Samsung HDPTX PHY.
++ * @link_clk: HDMI link (pixel) clock, sourced from the HDPTX clock child;
++ *            setting its rate locks the PHY PLL.
++ * @pclk: controller APB clock.
++ * @hclk_vo1: VO0 root clock gating the controller.
++ * @ref: HDMI reference clock.
++ * @hdp: HDMI HDP clock.
++ * @earc: eARC clock.
++ */
++struct dw_hdmi_qp_priv {
++	struct udevice *dev;
++	void __iomem *regs;
++	struct regmap *grf;
++	struct regmap *vo_grf;
++	struct phy phy;
++	struct clk link_clk;
++	struct clk pclk;
++	struct clk hclk_vo1;
++	struct clk ref;
++	struct clk hdp;
++	struct clk earc;
++};
++
++static inline void hdmi_writel(struct dw_hdmi_qp_priv *hdmi, u32 val, int offset)
++{
++	writel(val, hdmi->regs + offset);
++}
++
++static inline u32 hdmi_readl(struct dw_hdmi_qp_priv *hdmi, int offset)
++{
++	return readl(hdmi->regs + offset);
++}
++
++static void hdmi_modb(struct dw_hdmi_qp_priv *hdmi, u32 data, u32 mask,
++		      int offset)
++{
++	u32 val = hdmi_readl(hdmi, offset) & ~mask;
++
++	val |= data & mask;
++	hdmi_writel(hdmi, val, offset);
++}
++
++/* Route the DDC/grant/i2s pins to the HDMI-QP and unmask the HPD interrupt. */
++static void rk3576_io_path_init(struct dw_hdmi_qp_priv *hdmi)
++{
++	u32 val;
++
++	val = HIWORD_UPDATE(RK3576_SCLIN_MASK, RK3576_SCLIN_MASK) |
++	      HIWORD_UPDATE(RK3576_SDAIN_MASK, RK3576_SDAIN_MASK) |
++	      HIWORD_UPDATE(RK3576_HDMITX_GRANT_SEL, RK3576_HDMITX_GRANT_SEL) |
++	      HIWORD_UPDATE(RK3576_I2S_SEL_MASK, RK3576_I2S_SEL_MASK);
++	regmap_write(hdmi->vo_grf, RK3576_VO0_GRF_SOC_CON14, val);
++
++	regmap_write(hdmi->grf, RK3576_IOC_MISC_CON0,
++		     HIWORD_UPDATE(0, RK3576_HDMITX_HPD_INT_MSK));
++}
++
++/* TMDS link mode (FRL disabled) and fixed RGB 8bpc color format. */
++static void rk3576_set_grf_cfg(struct dw_hdmi_qp_priv *hdmi)
++{
++	regmap_write(hdmi->vo_grf, RK3576_VO0_GRF_SOC_CON1,
++		     HIWORD_UPDATE(0, RK3576_HDMITX_FRL_MOD));
++
++	regmap_write(hdmi->vo_grf, RK3576_VO0_GRF_SOC_CON8,
++		     HIWORD_UPDATE(RK3576_RGB, RK3576_COLOR_FORMAT_MASK) |
++		     HIWORD_UPDATE(RK3576_8BPC, RK3576_COLOR_DEPTH_MASK));
++}
++
++/*
++ * Emit a fixed AVI InfoFrame for VIC 16 (1080p60), RGB, 16:9. The DW IP takes
++ * the packed CEA-861 bytes (checksum + PB1..PB13) four per PKT_AVI_CONTENTS
++ * register, with version/length in CONTENTS0.
++ */
++static void hdmi_config_avi(struct dw_hdmi_qp_priv *hdmi)
++{
++	u8 buff[17] = {0};
++	u32 val;
++	int i, j;
++	u8 csum = 0;
++
++	buff[0] = HDMI_INFOFRAME_TYPE_AVI;
++	buff[1] = HDMI_AVI_INFOFRAME_VERSION;
++	buff[2] = HDMI_AVI_INFOFRAME_SIZE;
++	/* PB1: RGB, active format information present. */
++	buff[4] = 0x10;
++	/* PB2: no colorimetry, 16:9 picture aspect, same active aspect. */
++	buff[5] = 0x28;
++	/* PB3: no ITC/EC/Q/SC. */
++	buff[6] = 0x00;
++	/* PB4: VIC 16 (1920x1080p60). */
++	buff[7] = 16;
++
++	for (i = 0; i < 17; i++)
++		csum += buff[i];
++	buff[3] = 256 - csum;
++
++	val = (HDMI_AVI_INFOFRAME_VERSION << 8) | (HDMI_AVI_INFOFRAME_SIZE << 16);
++	hdmi_writel(hdmi, val, PKT_AVI_CONTENTS0);
++
++	for (i = 0; i < 4; i++) {
++		val = 0;
++		for (j = 0; j < 4; j++) {
++			if (i * 4 + j >= 14)
++				break;
++			val |= buff[i * 4 + j + 3] << (8 * j);
++		}
++		hdmi_writel(hdmi, val, PKT_AVI_CONTENTS1 + i * 4);
++	}
++
++	hdmi_modb(hdmi, 0, PKTSCHED_AVI_FIELDRATE, PKTSCHED_PKT_CONFIG1);
++	hdmi_modb(hdmi, PKTSCHED_AVI_TX_EN, PKTSCHED_AVI_TX_EN, PKTSCHED_PKT_EN);
++}
++
++static int dw_hdmi_qp_read_timing(struct udevice *dev,
++				  struct display_timing *timing)
++{
++	/* Fixed CEA-861 VIC 16: 1920x1080p60, 148.5 MHz, +hsync +vsync. */
++	memset(timing, 0, sizeof(*timing));
++
++	timing->pixelclock.typ = 148500000;
++	timing->hactive.typ = 1920;
++	timing->hfront_porch.typ = 88;
++	timing->hsync_len.typ = 44;
++	timing->hback_porch.typ = 148;
++	timing->vactive.typ = 1080;
++	timing->vfront_porch.typ = 4;
++	timing->vsync_len.typ = 5;
++	timing->vback_porch.typ = 36;
++	timing->flags = DISPLAY_FLAGS_HSYNC_HIGH | DISPLAY_FLAGS_VSYNC_HIGH |
++			DISPLAY_FLAGS_DE_HIGH;
++	timing->hdmi_monitor = true;
++
++	return 0;
++}
++
++static int dw_hdmi_qp_enable(struct udevice *dev, int panel_bpp,
++			     const struct display_timing *timing)
++{
++	struct dw_hdmi_qp_priv *hdmi = dev_get_priv(dev);
++	struct rockchip_hdptx_phy_cfg cfg = {
++		.rate = timing->pixelclock.typ,
++		.color_depth = false,
++	};
++	int ret;
++
++	/* Bring the PHY PLL up on the pixel rate (runs the ROPLL config). */
++	ret = clk_set_rate(&hdmi->link_clk, timing->pixelclock.typ);
++	if (ret < 0) {
++		dev_err(dev, "failed to set link clock: %d\n", ret);
++		return ret;
++	}
++
++	ret = generic_phy_configure(&hdmi->phy, &cfg);
++	if (ret) {
++		dev_err(dev, "failed to configure phy: %d\n", ret);
++		return ret;
++	}
++
++	/*
++	 * The PLL now delivers dclk, so the (already committed, non-standby)
++	 * VP0 starts its pixel interface; give it a moment - the video QP
++	 * register domain below (HDCP2LOGIC_* among others) only decodes
++	 * once that interface runs.
++	 */
++	mdelay(2);
++
++	/* Select TMDS link mode and RGB 8bpc in the VO0 GRF. */
++	rk3576_set_grf_cfg(hdmi);
++
++	/* HDMI (not DVI) mode. */
++	hdmi_modb(hdmi, 0, OPMODE_DVI, LINK_CONFIG0);
++	hdmi_modb(hdmi, HDCP2_BYPASS, HDCP2_BYPASS, HDCP2LOGIC_CONFIG0);
++	hdmi_modb(hdmi, KEEPOUT_REKEY_ALWAYS, KEEPOUT_REKEY_CFG,
++		  FRAME_COMPOSER_CONFIG9);
++	hdmi_writel(hdmi, 0, FLT_CONFIG0);
++	/* 1080p60 TMDS is <=340 MHz: no scrambling. */
++	hdmi_writel(hdmi, 0, SCRAMB_CONFIG0);
++
++	hdmi_config_avi(hdmi);
++
++	/* TMDS operating mode: clear the FRL bits, then bring the lanes up. */
++	hdmi_modb(hdmi, 0, OPMODE_FRL, LINK_CONFIG0);
++	hdmi_modb(hdmi, 0, OPMODE_FRL_4LANES, LINK_CONFIG0);
++
++	ret = generic_phy_power_on(&hdmi->phy);
++	if (ret) {
++		dev_err(dev, "failed to power on phy: %d\n", ret);
++		return ret;
++	}
++
++	/*
++	 * Connect the VOP pixel output to the TX now the lanes are stable.
++	 * With the datapath switch left disabled the link still transmits
++	 * (the sink sees sync and wakes) but carries no video.
++	 */
++	hdmi_modb(hdmi, 0, AVP_DATAPATH_VIDEO_SWDISABLE, GLOBAL_SWDISABLE);
++
++	/*
++	 * Clear AVMUTE: PKT_CONTROL0 = 2 is the GCP body with CLEAR_AVMUTE
++	 * set; GCP_TX_EN transmits it. Re-arm once after a delay - a lone
++	 * GCP can be lost while the sink settles, leaving it muted.
++	 */
++	mdelay(50);
++	hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
++	hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++	mdelay(50);
++	hdmi_modb(hdmi, 0, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++	hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++
++	/*
++	 * Mark the video interface enabled (bit 21), last: the working
++	 * bring-up state on this hardware reads 0x00200000 here.
++	 */
++	hdmi_writel(hdmi, BIT(21), VIDEO_INTERFACE_CONFIG0);
++
++	return 0;
++}
++
++static int dw_hdmi_qp_get_syscon(struct udevice *dev, const char *prop,
++				 struct regmap **out)
++{
++	struct udevice *syscon;
++	struct regmap *map;
++	int ret;
++
++	ret = uclass_get_device_by_phandle(UCLASS_SYSCON, dev, prop, &syscon);
++	if (ret)
++		return ret;
++
++	map = syscon_get_regmap(syscon);
++	if (IS_ERR(map))
++		return PTR_ERR(map);
++
++	*out = map;
++
++	return 0;
++}
++
++static int dw_hdmi_qp_probe(struct udevice *dev)
++{
++	struct dw_hdmi_qp_priv *hdmi = dev_get_priv(dev);
++	int ret;
++
++	hdmi->dev = dev;
++
++	hdmi->regs = dev_read_addr_ptr(dev);
++	if (!hdmi->regs)
++		return -ENOENT;
++
++	ret = dw_hdmi_qp_get_syscon(dev, "rockchip,grf", &hdmi->grf);
++	if (ret) {
++		dev_err(dev, "failed to get grf: %d\n", ret);
++		return ret;
++	}
++
++	ret = dw_hdmi_qp_get_syscon(dev, "rockchip,vo-grf", &hdmi->vo_grf);
++	if (ret) {
++		dev_err(dev, "failed to get vo-grf: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_get_by_name(dev, "pclk", &hdmi->pclk);
++	if (ret) {
++		dev_err(dev, "failed to get pclk: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_get_by_name(dev, "hclk_vo1", &hdmi->hclk_vo1);
++	if (ret) {
++		dev_err(dev, "failed to get hclk_vo1: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_get_by_name(dev, "ref", &hdmi->ref);
++	if (ret) {
++		dev_err(dev, "failed to get ref clock: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_get_by_name(dev, "hdp", &hdmi->hdp);
++	if (ret) {
++		dev_err(dev, "failed to get hdp clock: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_get_by_name(dev, "earc", &hdmi->earc);
++	if (ret) {
++		dev_err(dev, "failed to get earc clock: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_get_by_name(dev, "link_clk", &hdmi->link_clk);
++	if (ret) {
++		dev_err(dev, "failed to get link clock: %d\n", ret);
++		return ret;
++	}
++
++	clk_enable(&hdmi->pclk);
++	clk_enable(&hdmi->hclk_vo1);
++	clk_enable(&hdmi->ref);
++	clk_enable(&hdmi->hdp);
++	clk_enable(&hdmi->earc);
++
++	ret = generic_phy_get_by_index(dev, 0, &hdmi->phy);
++	if (ret) {
++		dev_err(dev, "failed to get phy: %d\n", ret);
++		return ret;
++	}
++
++	ret = generic_phy_init(&hdmi->phy);
++	if (ret) {
++		dev_err(dev, "failed to init phy: %d\n", ret);
++		return ret;
++	}
++
++	/* Controller init: mask interrupts, program the timer, route I/O. */
++	hdmi_writel(hdmi, 0, MAINUNIT_0_INT_MASK_N);
++	hdmi_writel(hdmi, 0, MAINUNIT_1_INT_MASK_N);
++	/* Internal timing reference: the RK3576 HDMITX ref clock is 396 MHz. */
++	hdmi_writel(hdmi, 396000000, TIMER_BASE_CONFIG0);
++
++	/*
++	 * Ungate the controller-internal video/link QP clock domains. The
++	 * CMU sits in the always-clocked front block, but registers in a
++	 * gated QP domain (LINK_*, TMDS_FIFO_*, HDCP2LOGIC_*) raise a
++	 * synchronous external abort when read; the domains run once these
++	 * gates are clear and the HDPTX PLL supplies the link clock.
++	 */
++	hdmi_modb(hdmi, 0, VIDQPCLK_OFF | LINKQPCLK_OFF, CMU_CONFIG0);
++
++	rk3576_io_path_init(hdmi);
++
++	return 0;
++}
++
++static const struct dm_display_ops dw_hdmi_qp_ops = {
++	.read_timing = dw_hdmi_qp_read_timing,
++	.enable = dw_hdmi_qp_enable,
++};
++
++static const struct udevice_id dw_hdmi_qp_ids[] = {
++	{ .compatible = "rockchip,rk3576-dw-hdmi-qp" },
++	{}
++};
++
++U_BOOT_DRIVER(dw_hdmi_qp_rockchip) = {
++	.name		= "dw_hdmi_qp_rockchip",
++	.id		= UCLASS_DISPLAY,
++	.of_match	= dw_hdmi_qp_ids,
++	.ops		= &dw_hdmi_qp_ops,
++	.probe		= dw_hdmi_qp_probe,
++	.priv_auto	= sizeof(struct dw_hdmi_qp_priv),
++};

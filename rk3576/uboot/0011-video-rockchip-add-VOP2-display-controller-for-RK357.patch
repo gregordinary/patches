@@ -1,0 +1,749 @@
+From b0f5724c05fe66922c6f0cea8c11592fae321937 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 15:17:07 -0400
+Subject: [PATCH] video: rockchip: add VOP2 display controller for RK3576
+
+VP0-plus-Esmart0 driver for the RK3576 VOP2, feeding the DW-HDMI-QP
+bridge. The bring-up contract, each point load-bearing:
+
+- VP0 is committed and running before the bridge is enabled: the
+  controller's video QP register domain only decodes once the VOP
+  pixel interface runs, so the VP free-starts when the bridge's PLL
+  later delivers dclk.
+- Output mode is AAAA (0xf): the VOP-to-HDMI pixel interface carries
+  each 8-bit component on its own 10-bit lane. P888 packs components
+  for parallel-RGB panels and the HDMI IP would sample near-zero on
+  every lane - perfect sync, black screen.
+- The post-display window (POST_DSP_HACT/VACT_INFO, unity scale
+  factors) is always programmed: it powers up zero-sized, and a
+  zero-sized window emits no pixels at all, background included,
+  while the raster keeps running.
+- The driver opts in to the video uclass dcache flush once the
+  pipeline is up; without it video_flush_dcache() is a no-op, console
+  writes stay in the CPU dcache, and the panel shows only stale
+  evictions.
+- The pre-scan delay is computed (background delay plus half the
+  active width; VP0 runs 2 px/clk), not taken from RK3588's static
+  table.
+
+The driver quiesces itself at OS handoff: .remove disables the Esmart0
+window and parks VP0 in standby, and DM_FLAG_OS_PREPARE makes bootm's
+dm_remove_devices_active() call it. Without that the kernel inherits a
+VOP still fetching, whose IOMMU it can then neither stall nor
+force-reset, leaving the VOP interrupt dead and every kernel atomic
+commit waiting on a vblank that never arrives. rk3288 and rk3328 do the
+same thing for the same reason. The MMU that global_init() turned on is
+turned back off once the window is quiet, so the OS does not inherit an
+IOMMU reporting PAGING_ENABLED against u-boot's page tables.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/video/rockchip/Kconfig         |   9 +
+ drivers/video/rockchip/Makefile        |   1 +
+ drivers/video/rockchip/rockchip_vop2.c | 662 +++++++++++++++++++++++++
+ 3 files changed, 672 insertions(+)
+ create mode 100644 drivers/video/rockchip/rockchip_vop2.c
+
+diff --git a/drivers/video/rockchip/Kconfig b/drivers/video/rockchip/Kconfig
+index d24c8e38..c89d7647 100644
+--- a/drivers/video/rockchip/Kconfig
++++ b/drivers/video/rockchip/Kconfig
+@@ -42,6 +42,15 @@ config VIDEO_ROCKCHIP_MAX_YRES
+ 
+ if VIDEO_ROCKCHIP
+ 
++config VIDEO_ROCKCHIP_VOP2
++	bool "VOP2 display controller"
++	depends on VIDEO_ROCKCHIP
++	help
++	  This enables the second-generation Rockchip Visual Output Processor
++	  (VOP2) found on RK3576. It drives a single video port with a
++	  full-screen primary plane at a fixed 1080p60 out to HDMI, paired with
++	  the DW-HDMI-QP bridge and the Samsung HDPTX PHY.
++
+ config DISPLAY_ROCKCHIP_EDP
+ 	bool "EDP Port"
+ 	depends on VIDEO_ROCKCHIP
+diff --git a/drivers/video/rockchip/Makefile b/drivers/video/rockchip/Makefile
+index 0a66cb5a..c991aa47 100644
+--- a/drivers/video/rockchip/Makefile
++++ b/drivers/video/rockchip/Makefile
+@@ -5,6 +5,7 @@
+ 
+ ifdef CONFIG_VIDEO_ROCKCHIP
+ obj-y += rk_vop.o
++obj-$(CONFIG_VIDEO_ROCKCHIP_VOP2) += rockchip_vop2.o
+ obj-$(CONFIG_ROCKCHIP_RK3288) += rk3288_vop.o
+ obj-$(CONFIG_ROCKCHIP_RK3328) += rk3328_vop.o
+ obj-$(CONFIG_ROCKCHIP_RK3399) += rk3399_vop.o
+diff --git a/drivers/video/rockchip/rockchip_vop2.c b/drivers/video/rockchip/rockchip_vop2.c
+new file mode 100644
+index 00000000..eecd5b64
+--- /dev/null
++++ b/drivers/video/rockchip/rockchip_vop2.c
+@@ -0,0 +1,662 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Rockchip VOP2 display controller (RK3576), minimal UCLASS_VIDEO driver.
++ *
++ * Copyright (c) 2021 Rockchip Electronics Co. Ltd.
++ *
++ * Drives a single video port (VP0) with a single primary window (Esmart0)
++ * reading a linear ARGB8888 framebuffer full-screen, at a fixed 1920x1080p60,
++ * out to the on-chip HDMI (the DW-HDMI-QP is a separate UCLASS_DISPLAY bridge).
++ * This is the raster half of the "Light" milestone: bring VP0 + Esmart0 up so
++ * the framebuffer the video uclass fills is scanned out over HDMI.
++ *
++ * Scope, deliberately narrow (Milestone "Light"): one VP, one full-screen
++ * primary plane, no scaling, no overlay blending, no gamma/CSC, no multi-mode.
++ * EDID mode selection, extra planes, and the other VPs are out of scope here.
++ *
++ * VOP2 register model: config registers are double-buffered. Non-"write-mask"
++ * registers are read-modify-written through a software shadow (regsbak) and
++ * latched into the active set by REG_CFG_DONE; a few control registers instead
++ * carry a write-enable mask in their upper 16 bits (write_mask == true). This
++ * driver reproduces the vendor (offset, mask, shift, value, write_mask) writes
++ * for RK3576 exactly, so the shadow model is kept rather than simplified away.
++ *
++ * Clocking: the VP0 pixel clock (DCLK_VP0) is reparented onto the HDMI PHY's
++ * pixel PLL (pll_hdmiphy0 = the HDPTX UCLASS_CLK child). The VOP does not set
++ * that PLL's rate; the DW-HDMI-QP bridge brings the PLL up on the pixel rate in
++ * its display_enable(). VP0 is committed and released from standby BEFORE the
++ * bridge enable: the bridge's video QP register domain only decodes once the
++ * VOP pixel interface runs, and VP0 free-starts the moment the PLL delivers
++ * dclk. See the DCLK<->pll_hdmiphy0 coupling in clk_rk3576.c
++ * (rk3576_dclk_vop_set_parent) and the board-bringup/h96-max-m9 console plan.
++ *
++ * Power: the RK3576 PD_VOP macro power domain is powered by the DM
++ * power-domain attach on probe (no power code here); the Esmart plane's
++ * internal power gate is ungated in the window setup.
++ */
++
++#include <clk.h>
++#include <display.h>
++#include <dm.h>
++#include <edid.h>
++#include <log.h>
++#include <malloc.h>
++#include <video.h>
++#include <asm/global_data.h>
++#include <asm/io.h>
++#include <dm/device_compat.h>
++#include <dm/device-internal.h>
++#include <dm/uclass-internal.h>
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++/*
++ * RK3576 VOP2 register map, minimal subset. Offsets and field shifts match the
++ * Rockchip downstream VOP2 driver; only the registers this bring-up path writes
++ * are declared. The RK3568_ prefix marks the register file's shared base map;
++ * RK3576_ marks RK3576-specific control/interface registers.
++ */
++
++/* SYS / global */
++#define RK3568_REG_CFG_DONE			0x000
++#define CFG_DONE_EN				BIT(15)
++#define RK3568_AUTO_GATING_CTRL			0x008
++#define ACLK_PRE_AUTO_GATING_EN_SHIFT		7
++#define RK3576_SYS_MMU_CTRL			0x020
++#define RKMMU_V2_EN_SHIFT			0
++#define RK3576_SYS_PORT_CTRL			0x028
++#define RK3576_DSP_VS_T_SEL_SHIFT		4
++#define INTERLACE_FRM_REG_DONE_MASK		0x7
++#define INTERLACE_FRM_REG_DONE_SHIFT		0
++#define RK3568_DSP_IF_POL			0x030
++#define IF_CTRL_REG_DONE_IMD_SHIFT		28
++#define RK3576_SYS_ESMART_PD_CTRL		0x034
++#define RK3576_ESMART_PD_EN_SHIFT		0
++#define RK3576_ESMART_LB_MODE_SEL_SHIFT		6
++#define RK3576_ESMART_LB_MODE_SEL_MASK		0x3
++
++/* Overlay (per-VP port block; VP0 = port0) */
++#define RK3576_OVL_CTRL				0x600
++#define OVL_MODE_SEL_SHIFT			0
++#define OVL_PORT_MUX_REG_DONE_IMD_SHIFT		28
++#define RK3576_OVL_PORT0_LAYER_SEL		0x604
++#define LAYER_SEL_MASK				0xf
++#define RK3576_OVL_PORT0_BG_MIX_CTRL		0x670
++#define BG_DLY_SHIFT				24
++
++/* HDMI0 output interface */
++#define RK3576_HDMI0_IF_CTRL			0x184
++#define RK3576_IF_OUT_EN_SHIFT			0
++#define RK3576_IF_CLK_OUT_EN_SHIFT		1
++#define RK3576_IF_PORT_SEL_SHIFT		2
++#define RK3576_IF_PORT_SEL_MASK			0x3
++#define RK3576_IF_PIN_POL_SHIFT			4
++#define RK3576_IF_PIN_POL_MASK			0x7
++#define RK3576_IF_PIX_CLK_SEL_SHIFT		20
++#define RK3576_IF_PIX_CLK_SEL_MASK		0x1
++#define RK3576_IF_DCLK_SEL_SHIFT		21
++#define RK3576_IF_DCLK_SEL_MASK			0x1
++#define RK3576_IF_REGDONE_IMD_EN_SHIFT		31
++
++/* pin polarity bit positions inside RK3576_IF_PIN_POL */
++#define HSYNC_POSITIVE				0
++#define VSYNC_POSITIVE				1
++
++/* VP0 */
++#define RK3568_VP0_DSP_CTRL			0xC00
++#define OUT_MODE_MASK				0xf
++#define OUT_MODE_SHIFT				0
++#define P2I_EN_SHIFT				5
++#define INTERLACE_EN_SHIFT			7
++#define POST_DSP_OUT_R2Y_SHIFT			15
++#define STANDBY_EN_SHIFT			31
++#define RK3568_VP0_DCLK_SEL			0xC0C
++#define RK3576_DCLK_CORE_SEL_SHIFT		0
++#define RK3576_DCLK_OUT_SEL_SHIFT		2
++#define RK3568_VP0_DSP_BG			0xC2C
++#define RK3568_VP0_PRE_SCAN_HTIMING		0xC30
++#define RK3568_VP0_POST_DSP_HACT_INFO		0xC34
++#define RK3568_VP0_POST_DSP_VACT_INFO		0xC38
++#define RK3568_VP0_POST_SCL_FACTOR_YRGB		0xC3C
++#define RK3568_VP0_POST_SCL_CTRL		0xC40
++#define RK3568_VP0_DSP_HTOTAL_HS_END		0xC48
++#define RK3568_VP0_DSP_HACT_ST_END		0xC4C
++#define RK3568_VP0_DSP_VTOTAL_VS_END		0xC50
++#define RK3568_VP0_DSP_VACT_ST_END		0xC54
++
++/* Esmart0 window (primary plane), region 0 */
++#define RK3568_ESMART0_CTRL1			0x1804
++#define YMIRROR_EN_SHIFT			31
++#define RK3568_ESMART0_REGION0_CTRL		0x1810
++#define WIN_EN_SHIFT				0
++#define WIN_FORMAT_MASK				0x1f
++#define WIN_FORMAT_SHIFT			1
++#define REGION0_RB_SWAP_SHIFT			14
++#define RK3568_ESMART0_REGION0_YRGB_MST		0x1814
++#define RK3568_ESMART0_REGION0_VIR		0x181C
++#define RK3568_ESMART0_REGION0_ACT_INFO		0x1820
++#define RK3568_ESMART0_REGION0_DSP_INFO		0x1824
++#define RK3568_ESMART0_REGION0_DSP_ST		0x1828
++#define RK3576_ESMART0_ALPHA_MAP		0x18D8
++#define RK3576_ESMART0_PORT_SEL			0x18F4
++#define ESMART_PORT_SEL_SHIFT			0
++#define ESMART_PORT_SEL_MASK			0x3
++#define RK3576_ESMART0_DLY_NUM			0x18F8
++
++/* single-field mask for the write_mask (upper-16 write-enable) writes */
++#define EN_MASK					1
++
++/*
++ * ARGB8888 window format code (== ROCKCHIP_FMT_ARGB8888 == VOP2_FMT_ARGB8888).
++ * The video uclass framebuffer is 32bpp; VIDEO_BPP32 selects this format.
++ */
++#define VOP2_FMT_ARGB8888			0
++
++/* Fixed opaque per-pixel alpha map for the primary window. */
++#define ESMART_ALPHA_MAP_OPAQUE			0x8000FF00
++
++/*
++ * Esmart0 layer-select mux value on VP0 and the VP0 overlay background delay.
++ * Both come from the RK3576 VOP2 data: Esmart0's layer_sel_win_id on VP0 is 2,
++ * and VP0's background delay is win_dly + layer_mix_dly + hdr_mix_dly = 20.
++ */
++#define ESMART0_LAYER_SEL_VP0			2
++#define RK3576_VP0_BG_DLY			20
++
++/*
++ * struct rk3576_vop2_priv - VOP2 controller state.
++ * @regs:     VOP2 register file (the "vop" reg range).
++ * @regsbak:  software shadow of @regs, sized @reg_len; the read-modify-write
++ *            path edits this rather than reading back double-buffered registers.
++ * @reg_len:  length of the register file, in bytes.
++ * @aclk:     VOP AXI clock.
++ * @hclk:     VOP AHB clock.
++ * @dclk:     VP0 pixel clock (DCLK_VP0); reparented onto @phy_pll.
++ * @phy_pll:  HDMI PHY pixel PLL (pll_hdmiphy0), the DCLK_VP0 source for HDMI.
++ */
++struct rk3576_vop2_priv {
++	void __iomem *regs;
++	u32 *regsbak;
++	u32 reg_len;
++	struct clk aclk;
++	struct clk hclk;
++	struct clk dclk;
++	struct clk phy_pll;
++};
++
++static inline void vop2_writel(struct rk3576_vop2_priv *priv, u32 offset, u32 v)
++{
++	writel(v, priv->regs + offset);
++	priv->regsbak[offset >> 2] = v;
++}
++
++/*
++ * Write a field. write_mask == true targets a register that carries a
++ * write-enable mask in its upper 16 bits (self-masking, no shadow); otherwise
++ * the field is merged into the software shadow and the whole word rewritten.
++ */
++static void vop2_mask_write(struct rk3576_vop2_priv *priv, u32 offset,
++			    u32 mask, u32 shift, u32 v, bool write_mask)
++{
++	if (!mask)
++		return;
++
++	if (write_mask) {
++		v = ((v & mask) << shift) | (mask << (shift + 16));
++	} else {
++		u32 cached = priv->regsbak[offset >> 2];
++
++		v = (cached & ~(mask << shift)) | ((v & mask) << shift);
++		priv->regsbak[offset >> 2] = v;
++	}
++
++	writel(v, priv->regs + offset);
++}
++
++/*
++ * One-time global setup: the RK3576 VOP2 aclk-auto-gating workaround, the
++ * RKIOMMU version select, the vertical-sync source/interlace defaults, the FRC
++ * 2.0 seed, and the immediate-reg-done bits for the overlay and interface
++ * control. RKMMU_V2_EN = 1 selects rkiommu 2.0, matching the vendor's default
++ * (non-reserved-plane) path that scans a physical framebuffer.
++ */
++static void rk3576_vop2_global_init(struct rk3576_vop2_priv *priv)
++{
++	/* Snapshot reset defaults into the shadow before any masked write. */
++	memcpy(priv->regsbak, priv->regs, priv->reg_len);
++
++	/*
++	 * aclk pre-auto-gating can drop the aclk in some cases and corrupt the
++	 * display; disable it (RK3528/RK3562/RK3576 workaround).
++	 */
++	vop2_mask_write(priv, RK3568_AUTO_GATING_CTRL, EN_MASK,
++			ACLK_PRE_AUTO_GATING_EN_SHIFT, 0, false);
++
++	vop2_mask_write(priv, RK3576_SYS_MMU_CTRL, EN_MASK,
++			RKMMU_V2_EN_SHIFT, 1, true);
++
++	vop2_mask_write(priv, RK3576_SYS_PORT_CTRL, EN_MASK,
++			RK3576_DSP_VS_T_SEL_SHIFT, 0, true);
++	vop2_mask_write(priv, RK3576_SYS_PORT_CTRL, INTERLACE_FRM_REG_DONE_MASK,
++			INTERLACE_FRM_REG_DONE_SHIFT, 0, false);
++
++	/* FRC 2.0 config seed (required for a stable RK3576 output). */
++	vop2_writel(priv, 0xca0, 0xc8);
++	vop2_writel(priv, 0xca4, 0x01000100);
++	vop2_writel(priv, 0xca8, 0x03ff0100);
++	vop2_writel(priv, 0xda0, 0xc8);
++	vop2_writel(priv, 0xda4, 0x01000100);
++	vop2_writel(priv, 0xda8, 0x03ff0100);
++
++	/* Latch overlay port-mux and interface-control writes immediately. */
++	vop2_mask_write(priv, RK3576_OVL_CTRL, EN_MASK,
++			OVL_PORT_MUX_REG_DONE_IMD_SHIFT, 1, false);
++	vop2_mask_write(priv, RK3568_DSP_IF_POL, EN_MASK,
++			IF_CTRL_REG_DONE_IMD_SHIFT, 1, false);
++}
++
++/*
++ * Program VP0 for @timing and route it to HDMI0, attach Esmart0 as the primary
++ * plane reading @fbbase full-screen, then commit and take VP0 out of standby.
++ * VP0 runs at 2 pixels/clock, so dclk_core is half the pixel clock; the HDMI
++ * interface consumes the full-rate pixel clock (pix_clk_sel = 0).
++ */
++static void rk3576_vop2_mode_set(struct rk3576_vop2_priv *priv,
++				 const struct display_timing *timing,
++				 ulong fbbase)
++{
++	u32 hactive = timing->hactive.typ;
++	u32 vactive = timing->vactive.typ;
++	u32 hsync_len = timing->hsync_len.typ;
++	u32 hback_porch = timing->hback_porch.typ;
++	u32 hfront_porch = timing->hfront_porch.typ;
++	u32 vsync_len = timing->vsync_len.typ;
++	u32 vback_porch = timing->vback_porch.typ;
++	u32 vfront_porch = timing->vfront_porch.typ;
++	u32 htotal = hactive + hfront_porch + hsync_len + hback_porch;
++	u32 hact_st = hsync_len + hback_porch;
++	u32 hact_end = hact_st + hactive;
++	u32 vtotal = vactive + vfront_porch + vsync_len + vback_porch;
++	u32 vact_st = vsync_len + vback_porch;
++	u32 vact_end = vact_st + vactive;
++	u32 pin_pol = 0;
++	u32 bg_dly = RK3576_VP0_BG_DLY;
++	u32 pre_scan_dly;
++
++	if (timing->flags & DISPLAY_FLAGS_HSYNC_HIGH)
++		pin_pol |= BIT(HSYNC_POSITIVE);
++	if (timing->flags & DISPLAY_FLAGS_VSYNC_HIGH)
++		pin_pol |= BIT(VSYNC_POSITIVE);
++
++	rk3576_vop2_global_init(priv);
++
++	/* Attach Esmart0 as VP0's layer 0 (bottom). */
++	vop2_mask_write(priv, RK3576_OVL_PORT0_LAYER_SEL, LAYER_SEL_MASK,
++			0, ESMART0_LAYER_SEL_VP0, false);
++
++	/* Overlay in RGB mode for VP0. */
++	vop2_mask_write(priv, RK3576_OVL_CTRL, EN_MASK,
++			OVL_MODE_SEL_SHIFT, 0, false);
++
++	/*
++	 * DCLK: 2 px/clk -> dclk_core = dclk/2 (core_sel = 1), interface at full
++	 * pixel rate (out_sel = 0, pix_clk_sel = 0, dclk_sel = 0).
++	 */
++	vop2_mask_write(priv, RK3568_VP0_DCLK_SEL, EN_MASK,
++			RK3576_DCLK_CORE_SEL_SHIFT, 1, false);
++	vop2_mask_write(priv, RK3568_VP0_DCLK_SEL, EN_MASK,
++			RK3576_DCLK_OUT_SEL_SHIFT, 0, false);
++
++	/* Route VP0 to the HDMI0 interface. */
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, RK3576_IF_DCLK_SEL_MASK,
++			RK3576_IF_DCLK_SEL_SHIFT, 0, false);
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, RK3576_IF_PIX_CLK_SEL_MASK,
++			RK3576_IF_PIX_CLK_SEL_SHIFT, 0, false);
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, EN_MASK,
++			RK3576_IF_REGDONE_IMD_EN_SHIFT, 1, false);
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, EN_MASK,
++			RK3576_IF_CLK_OUT_EN_SHIFT, 1, false);
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, EN_MASK,
++			RK3576_IF_OUT_EN_SHIFT, 1, false);
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, RK3576_IF_PORT_SEL_MASK,
++			RK3576_IF_PORT_SEL_SHIFT, 0, false);
++	vop2_mask_write(priv, RK3576_HDMI0_IF_CTRL, RK3576_IF_PIN_POL_MASK,
++			RK3576_IF_PIN_POL_SHIFT, pin_pol, false);
++
++	/*
++	 * VP0 output mode AAAA (0xf): each 8-bit component rides its own
++	 * 10-bit lane of the VOP-to-HDMI pixel interface, which is how the
++	 * DW-HDMI-QP samples it. P888 (0) packs the components for
++	 * parallel-RGB panels instead; the HDMI IP then reads near-zero
++	 * values on every lane - sync stays perfect, every pixel black.
++	 * Progressive, no post R2Y.
++	 */
++	vop2_mask_write(priv, RK3568_VP0_DSP_CTRL, OUT_MODE_MASK,
++			OUT_MODE_SHIFT, 0xf, false);
++	vop2_mask_write(priv, RK3568_VP0_DSP_CTRL, EN_MASK,
++			INTERLACE_EN_SHIFT, 0, false);
++	vop2_mask_write(priv, RK3568_VP0_DSP_CTRL, EN_MASK,
++			P2I_EN_SHIFT, 0, false);
++	vop2_mask_write(priv, RK3568_VP0_DSP_CTRL, EN_MASK,
++			POST_DSP_OUT_R2Y_SHIFT, 0, false);
++	vop2_writel(priv, RK3568_VP0_DSP_BG, 0);
++
++	/* VP0 display timing. */
++	vop2_writel(priv, RK3568_VP0_DSP_HTOTAL_HS_END,
++		    (htotal << 16) | hsync_len);
++	vop2_writel(priv, RK3568_VP0_DSP_HACT_ST_END,
++		    (hact_st << 16) | hact_end);
++	vop2_writel(priv, RK3568_VP0_DSP_VTOTAL_VS_END,
++		    (vtotal << 16) | vsync_len);
++	vop2_writel(priv, RK3568_VP0_DSP_VACT_ST_END,
++		    (vact_st << 16) | vact_end);
++
++	/*
++	 * Post-display window: the VP emits the composed frame only inside
++	 * this window. It powers up zero-sized, which outputs no pixels at
++	 * all while the raster keeps running (the sink syncs, the screen
++	 * stays black), so it must always be programmed. 1:1 output: window
++	 * = the active area, unity scale factors, no post scaling.
++	 */
++	vop2_writel(priv, RK3568_VP0_POST_DSP_HACT_INFO,
++		    (hact_st << 16) | hact_end);
++	vop2_writel(priv, RK3568_VP0_POST_DSP_VACT_INFO,
++		    (vact_st << 16) | vact_end);
++	vop2_writel(priv, RK3568_VP0_POST_SCL_FACTOR_YRGB, 0x10001000);
++	vop2_writel(priv, RK3568_VP0_POST_SCL_CTRL, 0);
++
++	/*
++	 * RK3576 uses a computed pipe delay (not RK3588's static table): the
++	 * pre-scan delay is the background delay plus half the active width
++	 * (VP0 is 2 px/clk), less one.
++	 */
++	pre_scan_dly = bg_dly + (hactive >> 1) - 1;
++	vop2_mask_write(priv, RK3576_OVL_PORT0_BG_MIX_CTRL, 0xff,
++			BG_DLY_SHIFT, bg_dly, false);
++	vop2_writel(priv, RK3568_VP0_PRE_SCAN_HTIMING,
++		    (pre_scan_dly << 16) | hsync_len);
++
++	/* Ungate the Esmart plane's internal power domain. */
++	vop2_mask_write(priv, RK3576_SYS_ESMART_PD_CTRL, EN_MASK,
++			RK3576_ESMART_PD_EN_SHIFT, 0, true);
++	udelay(10);
++
++	/* Esmart0 -> VP0, no delay, no Y mirror. */
++	vop2_mask_write(priv, RK3576_ESMART0_PORT_SEL, ESMART_PORT_SEL_MASK,
++			ESMART_PORT_SEL_SHIFT, 0, false);
++	vop2_writel(priv, RK3576_ESMART0_DLY_NUM, 0);
++	vop2_mask_write(priv, RK3568_ESMART0_CTRL1, EN_MASK,
++			YMIRROR_EN_SHIFT, 0, false);
++
++	/* ARGB8888, no R/B swap, opaque; full-screen source and destination. */
++	vop2_mask_write(priv, RK3568_ESMART0_REGION0_CTRL, WIN_FORMAT_MASK,
++			WIN_FORMAT_SHIFT, VOP2_FMT_ARGB8888, false);
++	vop2_mask_write(priv, RK3568_ESMART0_REGION0_CTRL, EN_MASK,
++			REGION0_RB_SWAP_SHIFT, 0, false);
++	vop2_writel(priv, RK3576_ESMART0_ALPHA_MAP, ESMART_ALPHA_MAP_OPAQUE);
++	vop2_writel(priv, RK3568_ESMART0_REGION0_YRGB_MST, fbbase);
++	vop2_writel(priv, RK3568_ESMART0_REGION0_VIR, hactive);
++	vop2_writel(priv, RK3568_ESMART0_REGION0_ACT_INFO,
++		    ((vactive - 1) << 16) | ((hactive - 1) & 0xffff));
++	vop2_writel(priv, RK3568_ESMART0_REGION0_DSP_INFO,
++		    ((vactive - 1) << 16) | ((hactive - 1) & 0xffff));
++	vop2_writel(priv, RK3568_ESMART0_REGION0_DSP_ST, 0);
++	vop2_mask_write(priv, RK3568_ESMART0_REGION0_CTRL, EN_MASK,
++			WIN_EN_SHIFT, 1, false);
++}
++
++/*
++ * Latch the programmed configuration into the active register bank, then take
++ * VP0 out of standby. STANDBY_EN takes effect immediately (it is not
++ * double-buffered), so committing the config first means the VP starts
++ * scanning the freshly latched timing and window rather than the stale active
++ * bank -- releasing standby before the commit would flash a frame of it.
++ */
++static void rk3576_vop2_enable(struct rk3576_vop2_priv *priv)
++{
++	vop2_writel(priv, RK3568_REG_CFG_DONE,
++		    CFG_DONE_EN | BIT(0) | (BIT(0) << 16));
++	vop2_mask_write(priv, RK3568_VP0_DSP_CTRL, EN_MASK,
++			STANDBY_EN_SHIFT, 0, false);
++}
++
++/*
++ * Bring up the display connected to VP0's endpoint @ep_node: find the
++ * downstream UCLASS_DISPLAY bridge, publish the VP as its source, read the
++ * fixed timing, reparent DCLK_VP0 onto the HDMI PHY pixel PLL, program the
++ * raster, enable the bridge (which brings the PHY PLL up on the pixel rate),
++ * then commit VP0. Mirrors rk_vop.c's rk_display_init for the VOP2 register
++ * model and the RK3576 clocking.
++ */
++static int rk3576_vop2_display_init(struct udevice *dev, ulong fbbase,
++				    ofnode ep_node)
++{
++	struct rk3576_vop2_priv *priv = dev_get_priv(dev);
++	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
++	struct display_timing timing;
++	struct display_plat *disp_uc_plat;
++	struct udevice *disp = NULL;
++	u32 remote_phandle;
++	ofnode remote;
++	int ret;
++
++	ret = ofnode_read_u32(ep_node, "remote-endpoint", &remote_phandle);
++	if (ret)
++		return ret;
++
++	remote = ofnode_get_by_phandle(remote_phandle);
++	if (!ofnode_valid(remote))
++		return -EINVAL;
++
++	/* Walk up from the remote endpoint to its enclosing UCLASS_DISPLAY. */
++	while (ofnode_valid(remote)) {
++		remote = ofnode_get_parent(remote);
++		if (!ofnode_valid(remote))
++			return -EINVAL;
++		uclass_find_device_by_ofnode(UCLASS_DISPLAY, remote, &disp);
++		if (disp)
++			break;
++	}
++	if (!disp)
++		return -ENODEV;
++
++	disp_uc_plat = dev_get_uclass_plat(disp);
++	if (display_in_use(disp))
++		return -EBUSY;
++	disp_uc_plat->source_id = 0;
++	disp_uc_plat->src_dev = dev;
++
++	ret = device_probe(disp);
++	if (ret)
++		return ret;
++
++	ret = display_read_timing(disp, &timing);
++	if (ret) {
++		dev_err(dev, "failed to read timing: %d\n", ret);
++		return ret;
++	}
++
++	/*
++	 * Point DCLK_VP0 at the HDMI PHY pixel PLL. The rate is set by the
++	 * bridge (below); the reparent only selects the mux leg, which is why
++	 * the HDPTX clock child must be named "hdmiphypll_clk0".
++	 */
++	ret = clk_set_parent(&priv->dclk, &priv->phy_pll);
++	if (ret < 0) {
++		dev_err(dev, "failed to reparent dclk_vp0: %d\n", ret);
++		return ret;
++	}
++	clk_enable(&priv->dclk);
++
++	rk3576_vop2_mode_set(priv, &timing, fbbase);
++
++	/*
++	 * Commit VP0 and release standby before enabling the bridge: the
++	 * bridge's video QP register domain only decodes once the VOP pixel
++	 * interface runs, and VP0 free-starts the moment the PHY PLL (brought
++	 * up by the bridge enable below) delivers dclk.
++	 */
++	rk3576_vop2_enable(priv);
++
++	/* Bridge enable brings the PHY PLL up on the pixel rate. */
++	ret = display_enable(disp, VNBITS(VIDEO_BPP32), &timing);
++	if (ret)
++		return ret;
++
++	uc_priv->xsize = timing.hactive.typ;
++	uc_priv->ysize = timing.vactive.typ;
++	uc_priv->bpix = VIDEO_BPP32;
++
++	return 0;
++}
++
++static int rk3576_vop2_probe(struct udevice *dev)
++{
++	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
++	struct rk3576_vop2_priv *priv = dev_get_priv(dev);
++	ofnode ports, port, ep;
++	fdt_addr_t addr;
++	fdt_size_t size;
++	int ret;
++
++	/* Before relocation there is nothing to do. */
++	if (!(gd->flags & GD_FLG_RELOC))
++		return 0;
++
++	addr = dev_read_addr_size_index(dev, 0, &size);
++	if (addr == FDT_ADDR_T_NONE)
++		return -EINVAL;
++	priv->regs = (void __iomem *)(uintptr_t)addr;
++	priv->reg_len = size;
++	priv->regsbak = malloc(priv->reg_len);
++	if (!priv->regsbak)
++		return -ENOMEM;
++
++	ret = clk_get_by_name(dev, "aclk", &priv->aclk);
++	if (ret) {
++		dev_err(dev, "failed to get aclk: %d\n", ret);
++		return ret;
++	}
++	ret = clk_get_by_name(dev, "hclk", &priv->hclk);
++	if (ret) {
++		dev_err(dev, "failed to get hclk: %d\n", ret);
++		return ret;
++	}
++	ret = clk_get_by_name(dev, "dclk_vp0", &priv->dclk);
++	if (ret) {
++		dev_err(dev, "failed to get dclk_vp0: %d\n", ret);
++		return ret;
++	}
++	ret = clk_get_by_name(dev, "pll_hdmiphy0", &priv->phy_pll);
++	if (ret) {
++		dev_err(dev, "failed to get pll_hdmiphy0: %d\n", ret);
++		return ret;
++	}
++	clk_enable(&priv->aclk);
++	clk_enable(&priv->hclk);
++
++	/*
++	 * The VOP2 exposes its VPs as port@N subnodes under "ports"; each
++	 * carries the OF-graph endpoint to its downstream encoder. This driver
++	 * brings up VP0, so use the first endpoint that reaches a bridge.
++	 */
++	ports = dev_read_subnode(dev, "ports");
++	if (!ofnode_valid(ports)) {
++		dev_err(dev, "'ports' subnode not found\n");
++		return -EINVAL;
++	}
++
++	ofnode_for_each_subnode(port, ports) {
++		ofnode_for_each_subnode(ep, port) {
++			ret = rk3576_vop2_display_init(dev, plat->base, ep);
++			if (!ret) {
++				/*
++				 * The console draws through the CPU dcache;
++				 * opt in to the uclass flush so every
++				 * video_sync pushes the frame buffer to RAM
++				 * where the VOP fetches it. Without this,
++				 * video_flush_dcache() is a no-op and the
++				 * panel shows only stale evictions.
++				 */
++				video_set_flush_dcache(dev, true);
++				return 0;
++			}
++		}
++	}
++
++	dev_err(dev, "no usable display endpoint\n");
++	return -ENODEV;
++}
++
++static int rk3576_vop2_bind(struct udevice *dev)
++{
++	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
++
++	plat->size = 4 * (CONFIG_VIDEO_ROCKCHIP_MAX_XRES *
++			  CONFIG_VIDEO_ROCKCHIP_MAX_YRES);
++
++	return 0;
++}
++
++/*
++ * Quiesce the controller before the OS jump: disable the Esmart0 window so
++ * the VOP stops fetching, then park VP0 in standby.
++ *
++ * A VOP left scanning out across the handoff is not recoverable by the
++ * kernel. Its IOMMU (the "vop-mmu" sharing the VOP's interrupt) cannot be
++ * stalled or force-reset while a window is still fetching, so rk_iommu's
++ * probe times out; the VOP then raises no interrupt at all and every atomic
++ * commit the kernel makes waits forever on a vblank that never arrives.
++ * The in-tree rk3288 and rk3328 VOP drivers quiesce for the same reason.
++ *
++ * DM_FLAG_OS_PREPARE is what gets this called: announce_and_cleanup() runs
++ * dm_remove_devices_active() on the way into bootm.
++ */
++static int rk3576_vop2_remove(struct udevice *dev)
++{
++	struct rk3576_vop2_priv *priv = dev_get_priv(dev);
++
++	vop2_mask_write(priv, RK3568_ESMART0_REGION0_CTRL, EN_MASK,
++			WIN_EN_SHIFT, 0, false);
++	vop2_mask_write(priv, RK3568_VP0_DSP_CTRL, EN_MASK,
++			STANDBY_EN_SHIFT, 1, false);
++	vop2_writel(priv, RK3568_REG_CFG_DONE,
++		    CFG_DONE_EN | BIT(0) | (BIT(0) << 16));
++
++	/* One 60 Hz frame, so the commit lands before the kernel starts. */
++	mdelay(17);
++
++	/*
++	 * Now that nothing is fetching, turn the VOP's own MMU back off.
++	 * global_init() enabled it, so leaving it paging would hand the kernel
++	 * an IOMMU already reporting PAGING_ENABLED against page tables that
++	 * live in memory the OS is about to reuse.
++	 */
++	vop2_mask_write(priv, RK3576_SYS_MMU_CTRL, EN_MASK,
++			RKMMU_V2_EN_SHIFT, 0, true);
++
++	return 0;
++}
++
++static const struct video_ops rk3576_vop2_ops = {
++};
++
++static const struct udevice_id rk3576_vop2_ids[] = {
++	{ .compatible = "rockchip,rk3576-vop" },
++	{ }
++};
++
++U_BOOT_DRIVER(rockchip_vop2) = {
++	.name		= "rockchip_vop2",
++	.id		= UCLASS_VIDEO,
++	.of_match	= rk3576_vop2_ids,
++	.ops		= &rk3576_vop2_ops,
++	.bind		= rk3576_vop2_bind,
++	.probe		= rk3576_vop2_probe,
++	.remove		= rk3576_vop2_remove,
++	.priv_auto	= sizeof(struct rk3576_vop2_priv),
++	.flags		= DM_FLAG_OS_PREPARE,
++};
+-- 
+2.43.0
+

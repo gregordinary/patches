@@ -1,0 +1,140 @@
+From 8ce418f2862bbe2f3708cb48e126377ca7a42d84 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 22:23:28 -0400
+Subject: [PATCH] usb: hub: poll for port reset completion instead of re-arming
+
+The port reset loop issued SetPortFeature(PORT_RESET) on every
+iteration and sampled the status exactly once per arming. On a
+controller whose port reset takes longer than the sample delay, each
+new arming knocks the port - possibly just enabled - straight back
+into reset, so the loop can never observe the enabled state it is
+waiting for: the reset it armed last always completes after the loop
+has given up, leaving the port enabled in hardware while the scan
+reported failure.
+
+Arm the reset once per try and poll the status until the reset
+completes and the port enables, up to a one-second budget per arming.
+The retry structure and its device-quirk tolerance are unchanged.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ common/usb_hub.c | 84 ++++++++++++++++++++++++++++++------------------
+ 1 file changed, 52 insertions(+), 32 deletions(-)
+
+diff --git a/common/usb_hub.c b/common/usb_hub.c
+index 6a4bcec0..e758b341 100644
+--- a/common/usb_hub.c
++++ b/common/usb_hub.c
+@@ -46,6 +46,8 @@
+ 
+ #define HUB_SHORT_RESET_TIME	20
+ #define HUB_LONG_RESET_TIME	200
++/* Total time to wait for one armed reset to complete and enable the port */
++#define HUB_PORT_RESET_TIMEOUT	1000
+ 
+ #define HUB_DEBOUNCE_TIMEOUT	CONFIG_USB_HUB_DEBOUNCE_TIMEOUT
+ 
+@@ -284,50 +286,68 @@ static int usb_hub_port_reset(struct usb_device *dev, int port,
+ 	debug("%s: resetting port %d...\n", __func__, port + 1);
+ #endif
+ 	for (tries = 0; tries < MAX_TRIES; tries++) {
++		int elapsed;
++
+ 		err = usb_set_port_feature(dev, port + 1, USB_PORT_FEAT_RESET);
+ 		if (err < 0)
+ 			return err;
+ 
+-		mdelay(delay);
++		/*
++		 * Arm the reset once, then poll for its completion. Re-arming
++		 * the reset on every status check (the previous behaviour)
++		 * knocks a just-enabled port back into reset on controllers
++		 * whose port reset takes longer than the poll interval, so
++		 * the loop never observes the enabled state it is waiting
++		 * for.
++		 */
++		for (elapsed = 0; elapsed < HUB_PORT_RESET_TIMEOUT;
++		     elapsed += delay) {
++			mdelay(delay);
++
++			if (usb_get_port_status(dev, port + 1, portsts) < 0) {
++				debug("get_port_status failed status %lX\n",
++				      dev->status);
++				return -1;
++			}
++			portstatus = le16_to_cpu(portsts->wPortStatus);
++			portchange = le16_to_cpu(portsts->wPortChange);
+ 
+-		if (usb_get_port_status(dev, port + 1, portsts) < 0) {
+-			debug("get_port_status failed status %lX\n",
+-			      dev->status);
+-			return -1;
+-		}
+-		portstatus = le16_to_cpu(portsts->wPortStatus);
+-		portchange = le16_to_cpu(portsts->wPortChange);
++			debug("portstatus %x, change %x, %s\n", portstatus,
++			      portchange, portspeed(portstatus));
+ 
+-		debug("portstatus %x, change %x, %s\n", portstatus, portchange,
+-							portspeed(portstatus));
++			debug("STAT_C_CONNECTION = %d STAT_CONNECTION = %d" \
++			      "  USB_PORT_STAT_ENABLE %d\n",
++			      (portchange & USB_PORT_STAT_C_CONNECTION) ? 1 : 0,
++			      (portstatus & USB_PORT_STAT_CONNECTION) ? 1 : 0,
++			      (portstatus & USB_PORT_STAT_ENABLE) ? 1 : 0);
+ 
+-		debug("STAT_C_CONNECTION = %d STAT_CONNECTION = %d" \
+-		      "  USB_PORT_STAT_ENABLE %d\n",
+-		      (portchange & USB_PORT_STAT_C_CONNECTION) ? 1 : 0,
+-		      (portstatus & USB_PORT_STAT_CONNECTION) ? 1 : 0,
+-		      (portstatus & USB_PORT_STAT_ENABLE) ? 1 : 0);
++			/*
++			 * Perhaps we should check for the following here:
++			 * - C_CONNECTION hasn't been set.
++			 * - CONNECTION is still set.
++			 *
++			 * Doing so would ensure that the device is still
++			 * connected to the bus, and hasn't been unplugged or
++			 * replaced while the USB bus reset was going on.
++			 *
++			 * However, if we do that, then (at least) a San Disk
++			 * Ultra USB 3.0 16GB device fails to reset on (at
++			 * least) an NVIDIA Tegra Jetson TK1 board. For some
++			 * reason, the device appears to briefly drop off the
++			 * bus when this second bus reset is executed, yet if
++			 * we retry this loop, it'll eventually come back after
++			 * another reset or two.
++			 */
+ 
+-		/*
+-		 * Perhaps we should check for the following here:
+-		 * - C_CONNECTION hasn't been set.
+-		 * - CONNECTION is still set.
+-		 *
+-		 * Doing so would ensure that the device is still connected
+-		 * to the bus, and hasn't been unplugged or replaced while the
+-		 * USB bus reset was going on.
+-		 *
+-		 * However, if we do that, then (at least) a San Disk Ultra
+-		 * USB 3.0 16GB device fails to reset on (at least) an NVIDIA
+-		 * Tegra Jetson TK1 board. For some reason, the device appears
+-		 * to briefly drop off the bus when this second bus reset is
+-		 * executed, yet if we retry this loop, it'll eventually come
+-		 * back after another reset or two.
+-		 */
++			if (!(portstatus & USB_PORT_STAT_RESET) &&
++			    (portstatus & USB_PORT_STAT_ENABLE))
++				break;
++		}
+ 
+ 		if (portstatus & USB_PORT_STAT_ENABLE)
+ 			break;
+ 
+-		/* Switch to long reset delay for the next round */
++		/* Switch to long poll interval for the next round */
+ 		delay = HUB_LONG_RESET_TIME;
+ 	}
+ 
+-- 
+2.43.0
+

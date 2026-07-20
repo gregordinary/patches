@@ -1,0 +1,48 @@
+From b0000000000000000000000000000000000000023 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 19 Jul 2026 12:00:00 -0400
+Subject: [PATCH] clk: rockchip: rk3576: keep the CNTPCT source on the 24 MHz
+ oscillator
+
+The high-precision timer at 0x27400000 drives the ARM generic counter
+(CNTPCT), and rockchip_stimer_init() advertises it to the kernel as
+24 MHz via CNTFRQ_EL0. Its clock, CLK_HPTIMER_SRC, muxes between CPLL
+and the 24 MHz oscillator (PMU_CLKSEL_CON(11) bit 6) and selects CPLL
+out of reset. That is only 24 MHz while CPLL is in slow mode; once the
+SoC bring-up puts CPLL in normal mode the counter runs at the full CPLL
+rate while CNTFRQ still reads 24 MHz. The kernel then scales every
+timestamp by the PLL multiple - a fast boot logs as tens of minutes -
+and every time-derived hardware operation (USB reset and timeout
+windows, I2C transfer timeouts, udelay) is off by the same factor and
+fails.
+
+Point CLK_HPTIMER_SRC at the 24 MHz oscillator, divided by one, so
+CNTPCT stays 24 MHz regardless of CPLL's mode.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/clk/rockchip/clk_rk3576.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/clk/rockchip/clk_rk3576.c b/drivers/clk/rockchip/clk_rk3576.c
+index 42fc30bd..43fc30be 100644
+--- a/drivers/clk/rockchip/clk_rk3576.c
++++ b/drivers/clk/rockchip/clk_rk3576.c
+@@ -2586,6 +2586,14 @@ static void rk3576_clk_init_spl(void)
+ 	       RK3576_CRU_BASE + RK3576_MODE_CON0);
+ 	writel(BITS_WITH_WMASK(1, 0x3U, 8),
+ 	       RK3576_CRU_BASE + RK3576_MODE_CON0);
++	/*
++	 * The high-precision timer feeding the ARM generic counter (CNTPCT)
++	 * selects CPLL by default; with CPLL now in normal mode it would
++	 * clock the counter far above the 24 MHz that CNTFRQ advertises and
++	 * inflate every kernel timestamp. Pin it to the 24 MHz oscillator.
++	 */
++	writel(BITS_WITH_WMASK(1, 0x1U, 6) | BITS_WITH_WMASK(0, 0x1fU, 1),
++	       RK3576_CRU_BASE + RK3576_PMU_CLKSEL_CON(11));
+ 	/* init cci */
+ 	writel(0xffff0000, RK3576_CRU_BASE + RK3576_CCI_CLKSEL_CON(4));
+ 	rockchip_pll_set_rate(&rk3576_pll_clks[BPLL], cru, BPLL, LPLL_HZ);
+--
+2.43.0
+

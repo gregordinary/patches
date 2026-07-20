@@ -1,0 +1,256 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 15:16:36 -0400
+Subject: [PATCH] power: domain: add a Rockchip RK3576 PMU power-domain driver
+
+Minimal PMU power-domain driver for the RK3576: power a domain up or
+down via the PMU gate, then always de-assert the idle request, wait for
+the ack, and ungate the fabric clocks - including when the domain
+already reads as powered, so on() is idempotent and a domain left
+half-configured by an earlier boot stage still gets de-idled. The
+display stack uses it for PD_VO0.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ configs/generic-rk3576_defconfig           |   2 +
+ drivers/power/domain/Kconfig               |   9 +
+ drivers/power/domain/Makefile              |   1 +
+ drivers/power/domain/rk3576-power-domain.c | 184 +++++++++++++++++++++
+ 4 files changed, 196 insertions(+)
+ create mode 100644 drivers/power/domain/rk3576-power-domain.c
+
+diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
+index 94f6a84a..95b44e80 100644
+--- a/configs/generic-rk3576_defconfig
++++ b/configs/generic-rk3576_defconfig
+@@ -41,6 +41,8 @@ CONFIG_MMC_SDHCI=y
+ CONFIG_MMC_SDHCI_SDMA=y
+ CONFIG_MMC_SDHCI_ROCKCHIP=y
+ CONFIG_PHY_ROCKCHIP_INNO_USB2=y
++CONFIG_POWER_DOMAIN=y
++CONFIG_RK3576_POWER_DOMAIN=y
+ CONFIG_BAUDRATE=1500000
+ CONFIG_DEBUG_UART_SHIFT=2
+ CONFIG_SYS_NS16550_MEM32=y
+diff --git a/drivers/power/domain/Kconfig b/drivers/power/domain/Kconfig
+index 935f282d..4c545429 100644
+--- a/drivers/power/domain/Kconfig
++++ b/drivers/power/domain/Kconfig
+@@ -133,6 +133,15 @@ config TI_OMAP_PRM_POWER_DOMAIN
+ 	  The driver is currently a stub to be able to probe devices that
+ 	  require this type of power domain device.
+ 
++config RK3576_POWER_DOMAIN
++	bool "Enable the Rockchip RK3576 power domain driver"
++	depends on POWER_DOMAIN && ARCH_ROCKCHIP
++	help
++	  Enable the PMU power-domain driver for the Rockchip RK3576. It
++	  ungates the SoC power domains referenced by <&power ...> phandles
++	  in the device tree -- notably VO0 and VOP for the HDMI display
++	  path. Only powering domains up is supported.
++
+ config ZYNQMP_POWER_DOMAIN
+ 	bool "Enable the Xilinx ZynqMP Power domain driver"
+ 	depends on POWER_DOMAIN && ZYNQMP_FIRMWARE
+diff --git a/drivers/power/domain/Makefile b/drivers/power/domain/Makefile
+index b2c0bd8a..7bbb3d64 100644
+--- a/drivers/power/domain/Makefile
++++ b/drivers/power/domain/Makefile
+@@ -7,6 +7,7 @@ obj-$(CONFIG_$(PHASE_)POWER_DOMAIN) += power-domain-uclass.o
+ obj-$(CONFIG_APPLE_PMGR_POWER_DOMAIN) += apple-pmgr.o
+ obj-$(CONFIG_AGILEX5_PMGR_POWER_DOMAIN) += altr-pmgr-agilex5.o
+ obj-$(CONFIG_BCM6328_POWER_DOMAIN) += bcm6328-power-domain.o
++obj-$(CONFIG_RK3576_POWER_DOMAIN) += rk3576-power-domain.o
+ obj-$(CONFIG_IMX8_POWER_DOMAIN) += imx8-power-domain-legacy.o imx8-power-domain.o
+ obj-$(CONFIG_IMX8M_POWER_DOMAIN) += imx8m-power-domain.o
+ obj-$(CONFIG_IMX8MP_HSIOMIX_BLKCTRL) += imx8mp-hsiomix.o
+diff --git a/drivers/power/domain/rk3576-power-domain.c b/drivers/power/domain/rk3576-power-domain.c
+new file mode 100644
+index 00000000..777c6d5f
+--- /dev/null
++++ b/drivers/power/domain/rk3576-power-domain.c
+@@ -0,0 +1,184 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Rockchip RK3576 PMU power-domain driver.
++ *
++ * u-boot's driver model powers a device's domains on probe
++ * (dev_power_domain_on(), drivers/core/device.c), so binding this driver to the
++ * "rockchip,rk3576-power-controller" node is enough to bring up VO0 and VOP for
++ * the HDMI/VOP2 display path -- the display drivers carry no power code of their
++ * own. The mainline RK3576 device tree already wires those domains through
++ * <&power ...> phandles.
++ *
++ * Only powering domains up is implemented: bring-up brings a domain up and never
++ * gates it back down. A domain an earlier boot stage already powered skips the
++ * power-gate write but still gets its bus idle-request de-asserted: firmware can
++ * leave a domain powered with ports idled, and accesses through an idled port
++ * raise a synchronous external abort.
++ *
++ * The register offsets and per-domain masks come from the vendor BSP kernel
++ * drivers/soc/rockchip/pm_domains.c (rk3576_pmu + rk3576_pm_domains[]).
++ */
++
++#include <dm.h>
++#include <power-domain-uclass.h>
++#include <asm/io.h>
++#include <dm/ofnode.h>
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/iopoll.h>
++#include <dt-bindings/power/rockchip,rk3576-power.h>
++
++/* PMU register offsets (rk3576_pmu, pm_domains.c). */
++#define RK3576_PMU_PWR_GATE		0x210
++#define RK3576_PMU_REQ			0x110
++#define RK3576_PMU_ACK			0x120
++#define RK3576_PMU_IDLE			0x128
++#define RK3576_PMU_CLK_UNGATE		0x140
++#define RK3576_PMU_REPAIR_STATUS	0x570
++
++#define RK3576_PD_POLL_US		10000
++
++/*
++ * Every PMU domain register is hiword write-enable: to act on data bit n write
++ * bit n plus the write-enable bit n+16. A set power-gate bit means "powered
++ * down", so writing only the write-enable half clears the gate and powers the
++ * domain up.
++ */
++struct rk3576_pd_info {
++	u32 pwr_mask;		/* bit in the power-gate register */
++	u32 repair_mask;	/* bit in the power-status register (0 = virtual) */
++	u32 req_mask;		/* bus idle-request bit(s) */
++	u32 idle_mask;		/* bus idle/ack bit(s) */
++	u32 ungate_mask;	/* clocks auto-ungated across the transition */
++	u16 pwr_off;		/* per-domain offset added to the gate register */
++	u16 req_off;		/* per-domain offset added to the request register */
++	u16 delay_us;		/* settle delay after power-up */
++};
++
++#define PD(_pwr, _repair, _req, _idle, _ungate, _poff, _roff, _delay) {	\
++	.pwr_mask = (_pwr), .repair_mask = (_repair), .req_mask = (_req),\
++	.idle_mask = (_idle), .ungate_mask = (_ungate), .pwr_off = (_poff),\
++	.req_off = (_roff), .delay_us = (_delay),			\
++}
++
++static const struct rk3576_pd_info rk3576_pd_infos[] = {
++	[RK3576_PD_NPU]    = PD(BIT(0),  0,       0,       0,       0,       0x0, 0x0, 0),
++	[RK3576_PD_NVM]    = PD(BIT(6),  BIT(6),  BIT(2),  BIT(18), BIT(2),  0x0, 0x4, 0),
++	[RK3576_PD_SDGMAC] = PD(BIT(7),  BIT(7),  BIT(1),  BIT(17), 0x6,     0x0, 0x4, 0),
++	[RK3576_PD_AUDIO]  = PD(BIT(8),  BIT(8),  BIT(0),  BIT(16), BIT(0),  0x0, 0x4, 0),
++	[RK3576_PD_PHP]    = PD(BIT(9),  BIT(9),  BIT(15), BIT(15), BIT(15), 0x0, 0x0, 0),
++	[RK3576_PD_SUBPHP] = PD(BIT(10), BIT(10), 0,       0,       0,       0x0, 0x0, 0),
++	[RK3576_PD_VOP]    = PD(BIT(11), BIT(11), 0x6000,  0x6000,  0x6000,  0x0, 0x0, 15),
++	[RK3576_PD_VO1]    = PD(BIT(14), BIT(14), BIT(12), BIT(12), 0x7000,  0x0, 0x0, 0),
++	[RK3576_PD_VO0]    = PD(BIT(15), BIT(15), BIT(11), BIT(11), 0x6800,  0x0, 0x0, 0),
++	[RK3576_PD_USB]    = PD(BIT(0),  BIT(16), BIT(10), BIT(10), 0x6400,  0x4, 0x0, 0),
++	[RK3576_PD_VI]     = PD(BIT(1),  BIT(17), BIT(9),  BIT(9),  BIT(9),  0x4, 0x0, 0),
++	[RK3576_PD_VEPU0]  = PD(BIT(2),  BIT(18), BIT(7),  BIT(7),  0x280,   0x4, 0x0, 0),
++	[RK3576_PD_VEPU1]  = PD(BIT(3),  BIT(19), BIT(8),  BIT(8),  BIT(8),  0x4, 0x0, 0),
++	[RK3576_PD_VDEC]   = PD(BIT(4),  BIT(20), BIT(6),  BIT(6),  BIT(6),  0x4, 0x0, 0),
++	[RK3576_PD_VPU]    = PD(BIT(5),  BIT(21), BIT(5),  BIT(5),  BIT(5),  0x4, 0x0, 0),
++	[RK3576_PD_NPUTOP] = PD(BIT(6),  BIT(22), 0x18,    0x18,    0x18,    0x4, 0x0, 15),
++	[RK3576_PD_NPU0]   = PD(BIT(7),  BIT(23), BIT(1),  BIT(1),  0x1a,    0x4, 0x0, 0),
++	[RK3576_PD_NPU1]   = PD(BIT(8),  BIT(24), BIT(2),  BIT(2),  0x1c,    0x4, 0x0, 0),
++	[RK3576_PD_GPU]    = PD(BIT(9),  BIT(25), BIT(0),  BIT(0),  BIT(0),  0x4, 0x0, 0),
++};
++
++struct rk3576_power_domain_priv {
++	void __iomem *base;
++};
++
++static int rk3576_power_domain_on(struct power_domain *power_domain)
++{
++	struct rk3576_power_domain_priv *priv =
++		dev_get_priv(power_domain->dev);
++	void __iomem *base = priv->base;
++	const struct rk3576_pd_info *pd;
++	u32 val;
++	int ret;
++
++	if (power_domain->id >= ARRAY_SIZE(rk3576_pd_infos))
++		return -EINVAL;
++	pd = &rk3576_pd_infos[power_domain->id];
++
++	/* A virtual/parent domain has no power-status bit. */
++	if (!pd->repair_mask)
++		return 0;
++
++	/* Auto-ungate the domain's clocks across the transition. */
++	writel((pd->ungate_mask << 16) | pd->ungate_mask,
++	       base + RK3576_PMU_CLK_UNGATE);
++
++	/*
++	 * A domain an earlier boot stage already powered skips only the
++	 * power-gate write: its bus ports may still be idled or gated, which
++	 * makes accesses through them abort, so the de-idle below runs
++	 * regardless (it is a no-op on an already-active fabric).
++	 */
++	if (!(readl(base + RK3576_PMU_REPAIR_STATUS) & pd->repair_mask)) {
++		/* Clear the power-gate bit (write-enable half) to power up. */
++		writel(pd->pwr_mask << 16,
++		       base + RK3576_PMU_PWR_GATE + pd->pwr_off);
++
++		ret = readl_poll_timeout(base + RK3576_PMU_REPAIR_STATUS, val,
++					 val & pd->repair_mask,
++					 RK3576_PD_POLL_US);
++		if (ret)
++			return ret;
++	}
++
++	/* De-assert the bus idle request and wait for the fabric to wake. */
++	writel(pd->req_mask << 16, base + RK3576_PMU_REQ + pd->req_off);
++
++	ret = readl_poll_timeout(base + RK3576_PMU_ACK, val,
++				 !(val & pd->idle_mask), RK3576_PD_POLL_US);
++	if (ret)
++		return ret;
++
++	ret = readl_poll_timeout(base + RK3576_PMU_IDLE, val,
++				 (val & pd->idle_mask) != pd->idle_mask,
++				 RK3576_PD_POLL_US);
++	if (ret)
++		return ret;
++
++	if (pd->delay_us)
++		udelay(pd->delay_us);
++
++	/* Restore clock-gate control now the domain is up. */
++	writel(pd->ungate_mask << 16, base + RK3576_PMU_CLK_UNGATE);
++
++	return 0;
++}
++
++static int rk3576_power_domain_probe(struct udevice *dev)
++{
++	struct rk3576_power_domain_priv *priv = dev_get_priv(dev);
++	fdt_addr_t base;
++
++	/* The power-controller shares its parent PMU syscon's register block. */
++	base = ofnode_get_addr(ofnode_get_parent(dev_ofnode(dev)));
++	if (base == FDT_ADDR_T_NONE)
++		return -EINVAL;
++
++	priv->base = (void __iomem *)(uintptr_t)base;
++
++	return 0;
++}
++
++static const struct udevice_id rk3576_power_domain_ids[] = {
++	{ .compatible = "rockchip,rk3576-power-controller" },
++	{ }
++};
++
++static const struct power_domain_ops rk3576_power_domain_ops = {
++	.on = rk3576_power_domain_on,
++};
++
++U_BOOT_DRIVER(rk3576_power_domain) = {
++	.name = "rk3576_power_domain",
++	.id = UCLASS_POWER_DOMAIN,
++	.of_match = rk3576_power_domain_ids,
++	.ops = &rk3576_power_domain_ops,
++	.probe = rk3576_power_domain_probe,
++	.priv_auto = sizeof(struct rk3576_power_domain_priv),
++};

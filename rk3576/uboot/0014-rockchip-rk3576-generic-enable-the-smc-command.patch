@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 01:45:13 -0400
+Subject: [PATCH] rockchip: rk3576-generic: enable the smc command
+
+The console image talks to a Rockchip BL31 that implements the SIP
+register-access service (SIP_ACCESS_REG, 0x82000002): a1 = value,
+a2 = physical address, a3 = 0 to read / 1 to write, result in x1.
+The smc command exposes it at the prompt, giving the bring-up console
+read/write access to secure-world registers (SECURECRU, SGRF,
+firewall) that md/mw cannot reach from EL2.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ configs/generic-rk3576_defconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
+index a3e4c991..251e015a 100644
+--- a/configs/generic-rk3576_defconfig
++++ b/configs/generic-rk3576_defconfig
+@@ -68,3 +68,4 @@ CONFIG_VIDEO_ROCKCHIP_VOP2=y
+ CONFIG_DISPLAY_ROCKCHIP_HDMI_QP=y
+ CONFIG_ERRNO_STR=y
+ # CONFIG_CMD_CLS is not set
++CONFIG_CMD_SMC=y

@@ -1,0 +1,51 @@
+From de7a5e07989750691e93f65bc8cdf338afc3df9c Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 18 Jul 2026 22:12:20 -0400
+Subject: [PATCH] clk: rockchip: rk3576: report the USB3 OTG reference clock
+ rate
+
+CLK_REF_USB3OTG0/1 are plain xin24m gates, but get_rate had no case for
+them and returned -ENOENT. The dwc3 core derives the controller's
+reference-clock calibration from clk_get_rate() on exactly this clock
+and only guards against a zero rate: the error value reads as a huge
+rate, the computed period truncates to zero, and dwc3_ref_clk_period()
+overwrites the correct silicon calibration in GUCTL.REFCLKPER and
+GFLADJ with garbage. Every controller timer then runs an order of
+magnitude slow - port resets take ~500 ms instead of ~50 ms, so the
+hub reset loop (which re-arms the reset each 200 ms try) never observes
+the port enabled, and the controller cannot halt within the 16 ms
+usb-stop timeout. Both hosts on the SoC were unusable.
+
+Report 24 MHz and the calibration comes out right.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/clk/rockchip/clk_rk3576.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/clk/rockchip/clk_rk3576.c b/drivers/clk/rockchip/clk_rk3576.c
+index 69d59586..1f257055 100644
+--- a/drivers/clk/rockchip/clk_rk3576.c
++++ b/drivers/clk/rockchip/clk_rk3576.c
+@@ -2148,6 +2148,18 @@ static ulong rk3576_clk_get_rate(struct clk *clk)
+ 	case CLK_REF_OSC_MPHY:
+ 		rate = rk3576_ufs_ref_get_rate(priv, clk->id);
+ 		break;
++	/*
++	 * Plain xin24m gates. The dwc3 core derives the controller's
++	 * reference-clock calibration (GUCTL.REFCLKPER, GFLADJ) from this
++	 * rate and only guards against 0: an error return here reads as a
++	 * huge rate, computes a zero period, and overwrites the correct
++	 * silicon calibration - after which every controller timer (port
++	 * reset, halt handshake, SOF) runs an order of magnitude slow.
++	 */
++	case CLK_REF_USB3OTG0:
++	case CLK_REF_USB3OTG1:
++		rate = OSC_HZ;
++		break;
+ 
+ 	default:
+ 		return -ENOENT;
+-- 
+2.43.0
+

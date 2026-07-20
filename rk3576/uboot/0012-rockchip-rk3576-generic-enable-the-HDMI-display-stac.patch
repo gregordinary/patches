@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 17 Jul 2026 19:16:41 -0400
+Subject: [PATCH] rockchip: rk3576-generic: enable the HDMI display stack
+
+Turn on the RK3576 HDMI output path now that all three drivers are in
+place. The defconfig enables the video uclass (CONFIG_VIDEO), the
+Rockchip video support and the VOP2 controller, and the DW-HDMI-QP output
+(which selects DISPLAY and the Samsung HDPTX PHY). CYCLIC and CMD_CLS,
+which the video uclass would otherwise imply on, are kept off to stay
+lean.
+
+The generic control DTB enables the vop, hdmi, and hdmiphy nodes (all
+disabled upstream) and wires the OF-graph endpoint from VOP2 video port 0
+to the HDMI input, so the VOP2 driver finds the bridge across the port
+graph. The hdmi node gains the HDPTX pixel clock as a named "link_clk"
+input: the bridge sets its rate to bring the PHY PLL up on the pixel
+clock, and the VOP2 reparents DCLK_VP0 onto the same PLL. Upstream lists
+every other HDMI clock but not this one, so the whole list is restated (a
+DT property override replaces, it cannot append).
+
+The video stack grows the FIT, so the SPL-to-FIT load offset
+(CONFIG_SPL_LOAD_FIT_ADDRESS) is lowered by 1 MiB. That reclaims most of
+the fixed padding in the streamed maskrom image, keeping usb472 well
+under the proven CODE472 ceiling; the FIT still loads clear of the SPL
+BSS/stack and u-boot's relocation base.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ arch/arm/dts/rk3576-generic-u-boot.dtsi | 48 +++++++++++++++++++++++++
+ configs/generic-rk3576_defconfig        |  7 ++++
+ 2 files changed, 55 insertions(+)
+
+diff --git a/arch/arm/dts/rk3576-generic-u-boot.dtsi b/arch/arm/dts/rk3576-generic-u-boot.dtsi
+index 1380235c..0c2a0cde 100644
+--- a/arch/arm/dts/rk3576-generic-u-boot.dtsi
++++ b/arch/arm/dts/rk3576-generic-u-boot.dtsi
+@@ -38,3 +38,51 @@
+ &usb_drd0_dwc3 {
+ 	dr_mode = "host";
+ };
++
++/*
++ * HDMI display path for the on-device console: enable the VOP2, the DW-HDMI-QP
++ * bridge, and the Samsung HDPTX PHY (all disabled in the upstream rk3576.dtsi),
++ * and wire the OF-graph endpoint from VOP2 video port 0 to the HDMI input so
++ * the VOP2 driver finds the bridge across the port graph.
++ */
++&vop {
++	/*
++	 * Bind pre-relocation so video_reserve() accounts for the framebuffer;
++	 * otherwise the VOP binds only after relocation and video_post_bind()
++	 * cannot allocate it (-ENOSPC, "set up the device before relocation").
++	 */
++	bootph-some-ram;
++	status = "okay";
++};
++
++&vp0 {
++	vp0_out_hdmi: endpoint {
++		remote-endpoint = <&hdmi_in_vp0>;
++	};
++};
++
++/*
++ * Add the HDPTX pixel clock as a named "link_clk" input: the bridge sets its
++ * rate to bring the PHY PLL up on the pixel clock, and the VOP2 reparents
++ * DCLK_VP0 onto the same PLL. The upstream node lists every other HDMI clock
++ * but not this one, so the whole list is restated (a DT property override
++ * replaces, it cannot append).
++ */
++&hdmi {
++	clocks = <&cru PCLK_HDMITX0>, <&cru CLK_HDMITX0_EARC>,
++		 <&cru CLK_HDMITX0_REF>, <&cru MCLK_SAI6_8CH>,
++		 <&cru CLK_HDMITXHDP>, <&cru HCLK_VO0_ROOT>, <&hdptxphy>;
++	clock-names = "pclk", "earc", "ref", "aud", "hdp", "hclk_vo1",
++		      "link_clk";
++	status = "okay";
++};
++
++&hdmi_in {
++	hdmi_in_vp0: endpoint {
++		remote-endpoint = <&vp0_out_hdmi>;
++	};
++};
++
++&hdptxphy {
++	status = "okay";
++};
+diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
+index 95b44e80..3a6044b5 100644
+--- a/configs/generic-rk3576_defconfig
++++ b/configs/generic-rk3576_defconfig
+@@ -13,6 +13,7 @@ CONFIG_DEBUG_UART=y
+ CONFIG_DEFAULT_FDT_FILE="rockchip/rk3576-generic.dtb"
+ # CONFIG_DISPLAY_CPUINFO is not set
+ CONFIG_SPL_MAX_SIZE=0x40000
++CONFIG_SPL_LOAD_FIT_ADDRESS=0x40100000
+ # CONFIG_SPL_RAW_IMAGE_SUPPORT is not set
+ CONFIG_CMD_MEMINFO=y
+ CONFIG_CMD_MEMINFO_MAP=y
+@@ -59,4 +60,10 @@ CONFIG_USB_STORAGE=y
+ CONFIG_USB_KEYBOARD=y
+ CONFIG_DM_KEYBOARD=y
+ CONFIG_CONSOLE_MUX=y
++CONFIG_VIDEO=y
++# CONFIG_CYCLIC is not set
++CONFIG_VIDEO_ROCKCHIP=y
++CONFIG_VIDEO_ROCKCHIP_VOP2=y
++CONFIG_DISPLAY_ROCKCHIP_HDMI_QP=y
+ CONFIG_ERRNO_STR=y
++# CONFIG_CMD_CLS is not set
