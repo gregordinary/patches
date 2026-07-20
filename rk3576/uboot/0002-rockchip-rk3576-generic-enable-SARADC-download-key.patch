@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Fri, 10 Jul 2026 16:40:34 -0400
-Subject: [PATCH 2/3] rockchip: rk3576-generic: enable SARADC download key
+Subject: [PATCH] rockchip: rk3576-generic: enable SARADC download key
 
 Enable the SARADC driver and turn on the saradc node in the generic
 control DTB so setup_boot_mode()'s weak rockchip_dnl_key_pressed() can
@@ -10,6 +10,8 @@ then drops the board into BootROM download mode, reproducing the vendor
 loader's physical recovery-button trigger on mainline u-boot. A
 self-contained fixed 1.8V vref lets the ADC probe without a PMIC; the
 key check is raw-threshold based, so its exact value is immaterial.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  arch/arm/dts/rk3576-generic-u-boot.dtsi | 22 ++++++++++++++++++++++
  configs/generic-rk3576_defconfig        |  4 +++-

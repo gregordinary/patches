@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 17 Jul 2026 05:50:07 -0400
+Subject: [PATCH] arm64: emit the current phase's text base in _TEXT_BASE
+
+_TEXT_BASE holds CONFIG_TEXT_BASE, u-boot proper's link address, even in an
+SPL or TPL build whose code is linked at CONFIG_SPL_TEXT_BASE /
+CONFIG_TPL_TEXT_BASE. Nothing in SPL/TPL reads _TEXT_BASE -- relocate_code()
+and the crt0 relocation that consume it are compiled only for u-boot proper
+(!CONFIG_XPL_BUILD) -- so the stale value is normally dead data and the bug
+goes unnoticed.
+
+It stops being dead data for CONFIG_ROCKCHIP_MASKROM_IMAGE. That image places
+the SPL binary at file offset 0, and _TEXT_BASE lands at offset 8, where the
+arm64 image header carries the load address. The RK3576 BootROM reads that
+field to place the CODE472 download: with CONFIG_TEXT_BASE (8 MiB above the
+SPL's real base on rk3576) it loads the SPL where the code was not linked to
+run, faults before U-Boot ever starts, and also puts the appended FIT 8 MiB
+off from SPL_LOAD_FIT_ADDRESS.
+
+Use CONFIG_VAL(TEXT_BASE), which resolves to the text base of the phase
+actually being built, so each stage's _TEXT_BASE matches its link address.
+U-Boot proper is unchanged.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ arch/arm/cpu/armv8/start.S | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm/cpu/armv8/start.S b/arch/arm/cpu/armv8/start.S
+index 40c342e9..c0aa81c5 100644
+--- a/arch/arm/cpu/armv8/start.S
++++ b/arch/arm/cpu/armv8/start.S
+@@ -35,7 +35,7 @@ _start:
+ 
+ .globl	_TEXT_BASE
+ _TEXT_BASE:
+-	.quad	CONFIG_TEXT_BASE
++	.quad	CONFIG_VAL(TEXT_BASE)
+ 
+ /*
+  * These are defined in the linker script.

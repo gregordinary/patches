@@ -3,7 +3,7 @@
 #
 # RK3576 u-boot USB-flash-mode profile. Mainline u-boot on RK3576 can already
 # speak the rockusb protocol (2207:350e) but never reaches it from a running
-# system or a physical key. This profile adds the two missing triggers so a
+# system or a physical key. This profile adds the missing triggers so a
 # board keeps a case-free path back into USB flashing after mainline u-boot
 # replaces the vendor bootloader:
 #
@@ -12,6 +12,11 @@
 #   * a SARADC download key, so grounding the recovery/jack button at boot
 #     drops into BootROM download mode -- the hardware path, works even when
 #     Linux will not boot (u-boot only).
+#   * the maskrom USB boot images (u-boot-rockchip-usb471/472.bin), so this
+#     u-boot can be pushed into RAM over the BootROM download protocol and
+#     run with nothing written to storage -- the floor below both of the
+#     above: an honest rockusb gadget and a USB test-boot on a box whose
+#     eMMC carries no (or a broken) bootloader.
 #
 # The patches touch only SoC-generic u-boot (the reboot-mode dispatch and the
 # rk3576-generic control DTB/defconfig), so the profile applies to any RK3576
@@ -29,11 +34,17 @@ ffmpeg    = []
 userspace = []
 
 # u-boot tree: enter rockusb on the BOOT_LOADER reboot flag, enable the SARADC
-# download key on the rk3576-generic control DTB, then make the key's ADC lookup
+# download key on the rk3576-generic control DTB, make the key's ADC lookup
 # find the RK3576 SARADC at all -- upstream matches it by device-tree node name
-# ("saradc"), which no SoC since rk3568 uses. Applied with `git am`.
+# ("saradc"), which no SoC since rk3568 uses -- have binman emit the
+# CODE471/CODE472 maskrom USB boot images alongside the storage image, and fix
+# the SPL's advertised load address so the RK3576 BootROM runs the CODE472 from
+# the base the SPL is actually linked at (RK3576-hardware-confirmed: without it
+# the ROM places the image 8 MiB high and it never boots). Applied with `git am`.
 uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
+    "rk3576/uboot/0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i.patch",
+    "rk3576/uboot/0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA.patch",
 ]
