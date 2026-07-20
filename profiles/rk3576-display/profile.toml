@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3576-display/profile.toml
+#
+# RK3576 shipping u-boot profile: USB host, HDMI console, the SoC clock
+# bring-up and timer fix, and an autoboot the operator can interrupt from
+# either console. This is the u-boot an image ships with.
+#
+# Its purpose beyond booting is recovery without a serial cable. The panel
+# shows the u-boot console and a USB keyboard drives it, so a user whose OS
+# will not boot can still reach a prompt, inspect the board, and boot a
+# rescue stick -- with no UART adapter and no case opened.
+#
+# The three RK3576 u-boot profiles differ by what drd0 does and whether the
+# build autoboots:
+#
+#   * rk3576-loader  -- drd0 = device (rockusb/ums). Flash and dump driven
+#                       from a laptop. No USB host, no display.
+#   * rk3576-console -- drd0 = host, HDMI console, never autoboots
+#                       (bootdelay -1) and carries the developer commands.
+#                       A bring-up tool, normally streamed into RAM over
+#                       maskrom rather than installed.
+#   * rk3576-display -- this profile. Same hardware support as the console
+#                       variant, but it autoboots and drops the developer
+#                       commands.
+#
+# Both host-mode profiles quiesce the VOP before the OS jump (patch 0011).
+# A bootloader that lights the panel and hands Linux a VOP still scanning
+# out costs the kernel the display entirely -- see the display reference,
+# section 5, in the board-research tree.
+#
+# The patches touch only SoC-generic u-boot (the rk3576-generic control DTB
+# and defconfig), so the profile applies to any RK3576 board on this kernel.
+
+# Declared intent; the builder's verify-applies gate is the enforcement.
+applies_to_kernel = ">=7.0, <7.2"
+
+# The kernel/ffmpeg/userspace trees are built pristine -- RK3576 HW decode is
+# native mainline and encode is out of scope, so there are no patches there.
+kernel    = []
+ffmpeg    = []
+userspace = []
+
+# u-boot tree, applied with `git am`. Filenames keep their rk3576-console
+# series numbers; the gap at 0014-0015 is the developer commands (`smc` and
+# the cache commands), which a shipped image has no use for.
+#
+#   0001-0005  the rk3576-loader patches, shared verbatim (reboot-loader,
+#              SARADC download key + driver-name match, maskrom USB boot
+#              images, SPL text base).
+#   0006       USB host/storage/keyboard stack; drd0 forced to dr_mode "host".
+#   0007-0009  display infrastructure: HDMITX/VO0/HDPTX clock handling in the
+#              CRU driver, the RK3576 PMU power-domain driver (PD_VO0), and
+#              the Samsung HDPTX TMDS PHY (ROPLL config, PLL_LOCK_DONE poll).
+#   0010-0011  the display drivers: DW-HDMI-QP bridge (UCLASS_DISPLAY, fixed
+#              CEA VIC 16 1080p60 RGB) and the VOP2 controller (UCLASS_VIDEO,
+#              VP0 + Esmart0), the latter quiescing itself at OS handoff.
+#   0012       enablement: defconfig display stack, vop/hdmi/hdmiphy DT nodes
+#              and port graph, SPL load-offset release valve for the
+#              video-carrying CODE472 payload.
+#   0013*      autoboot with a ten-second interruptible delay. The console
+#              profile's own 0013 sets bootdelay -1 instead; the two are
+#              alternatives at the same point in the series. Ten seconds is
+#              sized for a television's source-lock time, not for serial.
+#   0016       the default console muxed over serial + vidconsole (stdin
+#              serial + usbkbd) so the panel shows the console with no setenv.
+#   0017       inno-usb2 PHY fix: kernel-mirrored RK3576 bring-up (full
+#              UTMI force field on power-on; probe-time IDDQ exit + CRU
+#              PHY reset + HS tuning). The reset clears the BootROM's
+#              device-mode session state, which otherwise reads as a
+#              phantom host-port connect that fails every port reset.
+#   0018       USB host runs on drd1 (u2phy1 + naneng combphy + PC7 VBUS
+#              regulator) - the upstream-proven RK3576 host path; on the
+#              EVB-derived boards that is the USB 2.0 Type-A port, so the
+#              USB 3.0 port stays free for the maskrom download cable.
+#   0019       CRU get_rate reports CLK_REF_USB3OTG0/1 as 24 MHz; without
+#              it the dwc3 core computes a garbage reference-clock period
+#              and every controller timer runs ~10x slow (port resets,
+#              halt, SOF).
+#   0020       usb_hub port-reset loop arms the reset once per try and
+#              polls to completion instead of re-arming (which knocked a
+#              nearly-enabled port back into reset forever).
+#   0021       dwc3 generic host carries DM_FLAG_ACTIVE_DMA so bootm
+#              halts the xhci before the OS jump - a live event ring in
+#              u-boot's malloc arena otherwise corrupts the loaded
+#              initrd/FDT ("Starting kernel ..." then silence).
+#   0022       the SoC clock bring-up (CPU cluster PLLs, CCI, and the
+#              SPLL/PPLL/AUPLL/CPLL normal-mode switches) runs at SPL
+#              bind under CONFIG_XPL_BUILD; the old CONFIG_SPL_BUILD
+#              guard was dead code since the xPL rename, so it never ran.
+#   0023       keeps the ARM generic counter (CNTPCT) source on the
+#              24 MHz oscillator: its HP-timer clock muxes CPLL, which
+#              0022 puts in normal mode, so without it the counter runs
+#              at the CPLL rate while CNTFRQ still reads 24 MHz - which
+#              inflates every kernel timestamp ~70x and breaks all
+#              time-derived logic (USB reset/timeout windows, I2C, delays).
+uboot = [
+    "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
+    "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
+    "rk3576/uboot/0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i.patch",
+    "rk3576/uboot/0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA.patch",
+    "rk3576/uboot/0006-rockchip-rk3576-generic-enable-USB-host-storage-and-.patch",
+    "rk3576/uboot/0007-clk-rockchip-rk3576-handle-the-HDMITX-VO0-and-HDPTX-.patch",
+    "rk3576/uboot/0008-power-domain-add-a-Rockchip-RK3576-PMU-power-domain-.patch",
+    "rk3576/uboot/0009-phy-rockchip-add-Samsung-HDPTX-HDMI-TMDS-PHY-driver.patch",
+    "rk3576/uboot/0010-video-rockchip-add-DW-HDMI-QP-bridge-for-RK3576.patch",
+    "rk3576/uboot/0011-video-rockchip-add-VOP2-display-controller-for-RK357.patch",
+    "rk3576/uboot/0012-rockchip-rk3576-generic-enable-the-HDMI-display-stac.patch",
+    "rk3576/uboot/0013-rockchip-rk3576-generic-give-autoboot-an-interruptib.patch",
+    "rk3576/uboot/0016-rockchip-rk3576-mux-the-console-over-serial-and-vidc.patch",
+    "rk3576/uboot/0017-phy-rockchip-inno-usb2-mirror-the-kernel-s-RK3576-PH.patch",
+    "rk3576/uboot/0018-rockchip-rk3576-generic-run-USB-host-on-the-second-c.patch",
+    "rk3576/uboot/0019-clk-rockchip-rk3576-report-the-USB3-OTG-reference-cl.patch",
+    "rk3576/uboot/0020-usb-hub-poll-for-port-reset-completion-instead-of-re.patch",
+    "rk3576/uboot/0021-usb-dwc3-mark-the-generic-host-as-DMA-active-for-OS-.patch",
+    "rk3576/uboot/0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP.patch",
+    "rk3576/uboot/0023-clk-rockchip-rk3576-keep-the-CNTPCT-source-on-the-24.patch",
+]
