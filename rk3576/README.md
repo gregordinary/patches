@@ -4,15 +4,17 @@
 Out-of-tree u-boot patches for the RK3576: recovery paths back into USB flashing, a
 USB host stack, and an HDMI display stack, on top of mainline u-boot.
 
-Three profiles select subsets of one series. They differ by what the first USB
-controller (`drd0`) does and whether the build autoboots — u-boot has no runtime OTG
-role switch on these nodes, so one build cannot be both a device gadget and a host:
+Three profiles select subsets of one series. `drd0` (the USB 3.0 OTG port) is the
+rockusb/ums device port in all three; the USB host runs on `drd1` — u-boot has no
+runtime OTG role switch on these nodes, so a single controller cannot be both a host
+and a gadget, and splitting the roles across the two controllers gives both at once.
+The profiles differ by how far each goes beyond booting:
 
-| profile | drd0 | display | autoboots | what it is for |
+| profile | drd0 | host + display | autoboots | what it is for |
 |---|---|---|---|---|
 | `rk3576-loader` | device (rockusb/ums) | no | — | flash and dump driven from a laptop |
-| `rk3576-console` | host | yes | never | bring-up tool, streamed into RAM over maskrom |
-| `rk3576-display` | host | yes | 10 s | the u-boot an image ships with |
+| `rk3576-display` | device (rockusb/ums) | yes | 10 s | the u-boot an image ships with |
+| `rk3576-util` | device (rockusb/ums) | yes | never | recovery/bring-up tool: boot menu, diagnostics, verification |
 
 The list in each `profile.toml` is the authoritative apply order; the numeric filename
 prefixes only make the directory read in that order. Two files share prefix `0013` — they
@@ -27,14 +29,14 @@ are alternatives at the same point in the series, and no profile takes both.
 | `0003-rockchip-match-the-SARADC-by-driver-not-by-node-name` | the download key's ADC lookup finds the RK3576 SARADC at all; upstream matches by DT node name, which no SoC since rk3568 uses |
 | `0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i` | binman emits the CODE471/CODE472 payloads, so this u-boot can run from RAM with nothing written to storage |
 | `0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA` | each phase advertises the text base it is linked at, which the BootROM honours when placing the CODE472 download |
-| `0006-rockchip-rk3576-generic-enable-USB-host-storage-and-` | USB host, mass storage, and keyboard; drd0 forced to `dr_mode = "host"` |
+| `0006-rockchip-rk3576-generic-enable-USB-host-storage-and-` | USB host, mass storage, and keyboard; host runs on drd1, drd0 stays the rockusb/ums device port |
 | `0007-clk-rockchip-rk3576-handle-the-HDMITX-VO0-and-HDPTX-` | HDMITX/VO0/HDPTX clock get/set/parent in the CRU driver |
 | `0008-power-domain-add-a-Rockchip-RK3576-PMU-power-domain-` | the PMU power-domain driver, for PD_VO0 |
 | `0009-phy-rockchip-add-Samsung-HDPTX-HDMI-TMDS-PHY-driver` | the Samsung HDPTX TMDS PHY (ROPLL config, PLL_LOCK_DONE poll) |
 | `0010-video-rockchip-add-DW-HDMI-QP-bridge-for-RK3576` | the DW-HDMI-QP bridge, as UCLASS_DISPLAY |
 | `0011-video-rockchip-add-VOP2-display-controller-for-RK357` | the VOP2 controller (VP0 + Esmart0), which also quiesces itself at OS handoff |
 | `0012-rockchip-rk3576-generic-enable-the-HDMI-display-stac` | display-stack defconfig, the vop/hdmi/hdmiphy DT nodes and port graph |
-| `0013-rockchip-rk3576-generic-drop-to-the-u-boot-prompt-by` | never autoboot (`bootdelay -1`) — the console profile's alternative at 0013 |
+| `0013-rockchip-rk3576-generic-drop-to-the-u-boot-prompt-by` | never autoboot (`bootdelay -1`) — the util profile's alternative at 0013 |
 | `0013-rockchip-rk3576-generic-give-autoboot-an-interruptib` | autoboot after an interruptible delay — the display profile's alternative at 0013 |
 | `0014-rockchip-rk3576-generic-enable-the-smc-command` | the `smc` developer command |
 | `0015-rockchip-rk3576-generic-enable-the-cache-commands` | the cache developer commands |
@@ -46,5 +48,6 @@ are alternatives at the same point in the series, and no profile takes both.
 | `0021-usb-dwc3-mark-the-generic-host-as-DMA-active-for-OS-` | `DM_FLAG_ACTIVE_DMA` so bootm halts the xhci before the OS jump; a live event ring otherwise corrupts the loaded initrd and FDT |
 | `0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP` | the SoC clock bring-up runs at SPL bind under `CONFIG_XPL_BUILD`; the old `CONFIG_SPL_BUILD` guard was dead code after the xPL rename |
 | `0023-clk-rockchip-rk3576-keep-the-CNTPCT-source-on-the-24` | pins the ARM generic counter to the 24 MHz oscillator; its HP-timer clock muxes CPLL, which 0022 puts in normal mode |
+| `0024-rockchip-rk3576-generic-enable-the-util-command-set` | the util command set: `bootmenu`, `clk`, `memtest`, `md5sum`, `sha1sum` |
 
 License: GPL-2.0-only (u-boot code); see `LICENSES/` at the repo root.

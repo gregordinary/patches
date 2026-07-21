@@ -32,12 +32,12 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  2 files changed, 55 insertions(+)
 
 diff --git a/arch/arm/dts/rk3576-generic-u-boot.dtsi b/arch/arm/dts/rk3576-generic-u-boot.dtsi
-index 1380235c..0c2a0cde 100644
+index 98edec7f..0c2a0cde 100644
 --- a/arch/arm/dts/rk3576-generic-u-boot.dtsi
 +++ b/arch/arm/dts/rk3576-generic-u-boot.dtsi
-@@ -38,3 +38,51 @@
- &usb_drd0_dwc3 {
- 	dr_mode = "host";
+@@ -23,3 +23,51 @@
+ 	vref-supply = <&vref_1v8>;
+ 	status = "okay";
  };
 +
 +/*

@@ -8,25 +8,27 @@
 # Its purpose beyond booting is recovery without a serial cable. The panel
 # shows the u-boot console and a USB keyboard drives it, so a user whose OS
 # will not boot can still reach a prompt, inspect the board, and boot a
-# rescue stick -- with no UART adapter and no case opened.
+# rescue stick -- with no UART adapter and no case opened. drd0 stays the
+# rockusb/ums gadget port, so `reboot loader` and `ums` reach a laptop from
+# the same image (see the rk3576-loader profile for the port-role rationale).
 #
-# The three RK3576 u-boot profiles differ by what drd0 does and whether the
-# build autoboots:
+# The RK3576 u-boot profiles differ by what drd0 does and how far the build
+# goes beyond booting:
 #
 #   * rk3576-loader  -- drd0 = device (rockusb/ums). Flash and dump driven
-#                       from a laptop. No USB host, no display.
-#   * rk3576-console -- drd0 = host, HDMI console, never autoboots
-#                       (bootdelay -1) and carries the developer commands.
-#                       A bring-up tool, normally streamed into RAM over
-#                       maskrom rather than installed.
-#   * rk3576-display -- this profile. Same hardware support as the console
-#                       variant, but it autoboots and drops the developer
-#                       commands.
+#                       from a laptop. No USB host, no display. Serial only.
+#   * rk3576-display -- this profile. drd0 = device, plus USB host on drd1,
+#                       HDMI console, and an autoboot the operator can
+#                       interrupt. The shipped u-boot.
+#   * rk3576-util    -- rk3576-display plus a boot menu, the developer
+#                       commands, and image-verification and diagnostic
+#                       commands; never autoboots. A recovery and bring-up
+#                       tool, normally streamed into RAM over maskrom.
 #
-# Both host-mode profiles quiesce the VOP before the OS jump (patch 0011).
-# A bootloader that lights the panel and hands Linux a VOP still scanning
-# out costs the kernel the display entirely -- see the display reference,
-# section 5, in the board-research tree.
+# The profile quiesces the VOP before the OS jump (patch 0011). A bootloader
+# that lights the panel and hands Linux a VOP still scanning out costs the
+# kernel the display entirely -- see the display reference, section 5, in the
+# board-research tree.
 #
 # The patches touch only SoC-generic u-boot (the rk3576-generic control DTB
 # and defconfig), so the profile applies to any RK3576 board on this kernel.
@@ -40,14 +42,15 @@ kernel    = []
 ffmpeg    = []
 userspace = []
 
-# u-boot tree, applied with `git am`. Filenames keep their rk3576-console
-# series numbers; the gap at 0014-0015 is the developer commands (`smc` and
-# the cache commands), which a shipped image has no use for.
+# u-boot tree, applied with `git am`. The gap at 0014-0015 is the developer
+# commands (`smc` and the cache commands), which a shipped image has no use
+# for; the rk3576-util profile carries them.
 #
 #   0001-0005  the rk3576-loader patches, shared verbatim (reboot-loader,
 #              SARADC download key + driver-name match, maskrom USB boot
 #              images, SPL text base).
-#   0006       USB host/storage/keyboard stack; drd0 forced to dr_mode "host".
+#   0006       USB host/storage/keyboard stack (host on drd1; drd0 stays the
+#              rockusb/ums device port).
 #   0007-0009  display infrastructure: HDMITX/VO0/HDPTX clock handling in the
 #              CRU driver, the RK3576 PMU power-domain driver (PD_VO0), and
 #              the Samsung HDPTX TMDS PHY (ROPLL config, PLL_LOCK_DONE poll).

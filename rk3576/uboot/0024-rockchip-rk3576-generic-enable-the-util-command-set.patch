@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 21 Jul 2026 12:00:00 -0400
+Subject: [PATCH] rockchip: rk3576-generic: enable the util command set
+
+The rk3576-util image is a recovery and bring-up tool driven at the
+prompt. Add the commands that job needs beyond a booting image:
+
+  * bootmenu  -- an interactive menu on the muxed console (serial +
+    HDMI), so an operator with a dead OS picks a boot target with the
+    keyboard instead of typing.
+  * clk       -- `clk dump` reads the live clock tree; the RK3576
+    bring-up turned on the CPU/DDR/USB PLLs and the CNTPCT source, and
+    this is how their rates are confirmed on the board.
+  * memtest   -- a DRAM walk from the prompt before trusting a board.
+  * md5sum,
+    sha1sum   -- hash a rescue image loaded over USB or the network
+    before it is written to storage.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ configs/generic-rk3576_defconfig | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
+index b0466e3c..c1a7f0d2 100644
+--- a/configs/generic-rk3576_defconfig
++++ b/configs/generic-rk3576_defconfig
+@@ -70,3 +70,8 @@ CONFIG_ERRNO_STR=y
+ # CONFIG_CMD_CLS is not set
+ CONFIG_CMD_SMC=y
+ CONFIG_CMD_CACHE=y
++CONFIG_CMD_BOOTMENU=y
++CONFIG_CMD_CLK=y
++CONFIG_CMD_MEMTEST=y
++CONFIG_CMD_MD5SUM=y
++CONFIG_CMD_SHA1SUM=y

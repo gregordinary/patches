@@ -4,52 +4,27 @@ Date: Fri, 17 Jul 2026 15:30:00 -0400
 Subject: [PATCH] rockchip: rk3576-generic: enable USB host, storage, and
  keyboard
 
-Add the USB host stack so a maskrom-RAM u-boot can be driven on the box
-itself with a USB keyboard and boot or flash from a USB mass-storage
-stick, with no laptop and no serial console. USB_XHCI_HCD is the
-load-bearing symbol: the dwc3-generic host driver calls xhci_register(),
-so without an XHCI HCD there is no host, and it selects USB_HOST for us.
-USB_KEYBOARD (+ DM_KEYBOARD) and CONSOLE_MUX let the keyboard join serial
-as console input.
+Add the USB host stack so the box can be driven with a USB keyboard and
+boot or flash from a USB mass-storage stick with no laptop and no serial
+console. USB_XHCI_HCD is the load-bearing symbol: the dwc3-generic host
+driver calls xhci_register(), so without an XHCI HCD there is no host,
+and it selects USB_HOST for us. USB_KEYBOARD (+ DM_KEYBOARD) and
+CONSOLE_MUX let the keyboard join serial as console input.
 
-The USB 3.0 port (drd0) is forced to dr_mode = "host" in the generic
-control DTB. u-boot has no runtime OTG role switch on these nodes -- with
-the download gadget built, "otg" binds the gadget identically to
-"peripheral", so only "host" reaches the xhci stack. The port stays
-USB2/high-speed on the already-built inno-usb2 PHY (SuperSpeed would
-additionally need the usbdp combo PHY). This build is therefore not
-simultaneously a rockusb/ums device -- which is the intent: it is driven
-on-device rather than from a host.
+The host runs on drd1 (patch "run USB host on the second controller").
+drd0 stays a peripheral: rk3576-generic.dts sets it to "peripheral", so
+it remains the rockusb/ums gadget port -- a `reboot loader` from Linux
+comes back up in rockusb, and the `ums` command exports a block device
+to a laptop. u-boot has no runtime OTG role switch on these nodes, so a
+single controller cannot be both a host and a gadget; keeping drd0 the
+device port and running host on drd1 gives both roles at once, one per
+connector.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- arch/arm/dts/rk3576-generic-u-boot.dtsi | 15 +++++++++++++++
- configs/generic-rk3576_defconfig        |  7 +++++++
- 2 files changed, 22 insertions(+)
+ configs/generic-rk3576_defconfig | 7 +++++++
+ 1 file changed, 7 insertions(+)
 
-diff --git a/arch/arm/dts/rk3576-generic-u-boot.dtsi b/arch/arm/dts/rk3576-generic-u-boot.dtsi
-index 98edec7f..1380235c 100644
---- a/arch/arm/dts/rk3576-generic-u-boot.dtsi
-+++ b/arch/arm/dts/rk3576-generic-u-boot.dtsi
-@@ -23,3 +23,18 @@
- 	vref-supply = <&vref_1v8>;
- 	status = "okay";
- };
-+
-+/*
-+ * Drive the USB 3.0 port (drd0) as a fixed USB host so a keyboard and a
-+ * mass-storage stick work at the u-boot prompt. rk3576-generic.dts sets this
-+ * controller to "peripheral" (the rockusb/ums gadget); overriding dr_mode here
-+ * wins. u-boot has no runtime OTG role switch on these nodes -- "otg" would bind
-+ * the gadget, so "host" must be stated explicitly. The port stays USB2/high-speed
-+ * on the already-built inno-usb2 PHY (rk3576-generic.dts keeps phys =
-+ * <&u2phy0_otg>); SuperSpeed would additionally need the usbdp combo PHY. Forcing
-+ * host means this build is not simultaneously a rockusb/ums device -- that is the
-+ * point: this variant is driven on-device, not from a laptop.
-+ */
-+&usb_drd0_dwc3 {
-+	dr_mode = "host";
-+};
 diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
 index 501b1951..94f6a84a 100644
 --- a/configs/generic-rk3576_defconfig
