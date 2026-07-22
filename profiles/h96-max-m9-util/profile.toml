@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/h96-max-m9-util/profile.toml
+#
+# The H96 MAX M9's board-specific recovery u-boot: the SoC-generic
+# rk3576-util tool plus one board patch that brings up the H96's GMAC0
+# RGMII ethernet, so a rescue session can pull an image over the network
+# (dhcp/tftp) and ping. Everything else is identical to rk3576-util --
+# drd0 = the rockusb/ums device port, USB host on drd1, HDMI console, a
+# boot menu, the developer commands, and the diagnostic and verification
+# commands; it never autoboots.
+#
+# This is the first RK3576 u-boot profile that is NOT SoC-generic: the
+# ethernet patch carries the H96's PHY address, reset GPIO, and RGMII TX
+# delay. The SoC-generic loader/util/display profiles stay board-neutral
+# and ethernet-free; a board that wants ethernet gets a profile like this
+# one. See the rk3576-util profile for the shared drd0/drd1 port rationale
+# and the VOP-quiesce-at-handoff contract.
+
+# No version envelope. This profile patches only u-boot, so it makes no kernel
+# claim (no applies_to_kernel). The u-boot series targets the one u-boot
+# generation the board runs, so it declares no applies_to_uboot either; the
+# builder's git-am pass is what enforces that the series applies.
+
+# The kernel/ffmpeg/userspace trees are built pristine -- RK3576 HW decode is
+# native mainline and encode is out of scope, so there are no patches there.
+kernel    = []
+ffmpeg    = []
+userspace = []
+
+# u-boot tree, applied with `git am`: the SoC-generic rk3576-util series
+# (0001-0024, see that profile for the per-patch notes) plus the H96 board
+# patch.
+#
+#   boards/h96-max-m9/0001  enable the H96's GMAC0 RGMII ethernet: the RK3576
+#                           dwc_eth_qos glue and the RTL8211F PHY driver are
+#                           already in u-boot, so this enables the MAC/PHY DT
+#                           nodes (RTL8211F at MDIO address 1, reset gpio2 PB3,
+#                           tx_delay 0x1b, rgmii-rxid) and the driver, PHY, and
+#                           net commands (dhcp, ping, mii), dropping the generic
+#                           defconfig's CONFIG_NO_NET.
+uboot = [
+    "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
+    "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
+    "rk3576/uboot/0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i.patch",
+    "rk3576/uboot/0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA.patch",
+    "rk3576/uboot/0006-rockchip-rk3576-generic-enable-USB-host-storage-and-.patch",
+    "rk3576/uboot/0007-clk-rockchip-rk3576-handle-the-HDMITX-VO0-and-HDPTX-.patch",
+    "rk3576/uboot/0008-power-domain-add-a-Rockchip-RK3576-PMU-power-domain-.patch",
+    "rk3576/uboot/0009-phy-rockchip-add-Samsung-HDPTX-HDMI-TMDS-PHY-driver.patch",
+    "rk3576/uboot/0010-video-rockchip-add-DW-HDMI-QP-bridge-for-RK3576.patch",
+    "rk3576/uboot/0011-video-rockchip-add-VOP2-display-controller-for-RK357.patch",
+    "rk3576/uboot/0012-rockchip-rk3576-generic-enable-the-HDMI-display-stac.patch",
+    "rk3576/uboot/0013-rockchip-rk3576-generic-drop-to-the-u-boot-prompt-by.patch",
+    "rk3576/uboot/0014-rockchip-rk3576-generic-enable-the-smc-command.patch",
+    "rk3576/uboot/0015-rockchip-rk3576-generic-enable-the-cache-commands.patch",
+    "rk3576/uboot/0016-rockchip-rk3576-mux-the-console-over-serial-and-vidc.patch",
+    "rk3576/uboot/0017-phy-rockchip-inno-usb2-mirror-the-kernel-s-RK3576-PH.patch",
+    "rk3576/uboot/0018-rockchip-rk3576-generic-run-USB-host-on-the-second-c.patch",
+    "rk3576/uboot/0019-clk-rockchip-rk3576-report-the-USB3-OTG-reference-cl.patch",
+    "rk3576/uboot/0020-usb-hub-poll-for-port-reset-completion-instead-of-re.patch",
+    "rk3576/uboot/0021-usb-dwc3-mark-the-generic-host-as-DMA-active-for-OS-.patch",
+    "rk3576/uboot/0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP.patch",
+    "rk3576/uboot/0023-clk-rockchip-rk3576-keep-the-CNTPCT-source-on-the-24.patch",
+    "rk3576/uboot/0024-rockchip-rk3576-generic-enable-the-util-command-set.patch",
+    "rk3576/uboot/boards/h96-max-m9/0001-enable-gmac0-ethernet.patch",
+]

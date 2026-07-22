@@ -20,6 +20,15 @@ The list in each `profile.toml` is the authoritative apply order; the numeric fi
 prefixes only make the directory read in that order. Two files share prefix `0013` — they
 are alternatives at the same point in the series, and no profile takes both.
 
+Those three are SoC-generic: they patch only the `rk3576-generic` control DTB and
+defconfig, so their payload is identical on any RK3576 board. A board that needs
+board-specific u-boot support gets its own profile that layers a board patch (from
+`uboot/boards/<board>/`) on a SoC-generic series:
+
+| profile | base | adds |
+|---|---|---|
+| `h96-max-m9-util` | `rk3576-util` | the H96 MAX M9's GMAC0 ethernet (`dhcp`/`tftp`/`ping`) |
+
 ## uboot/
 
 | patch | what it does |
@@ -49,5 +58,17 @@ are alternatives at the same point in the series, and no profile takes both.
 | `0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP` | the SoC clock bring-up runs at SPL bind under `CONFIG_XPL_BUILD`; the old `CONFIG_SPL_BUILD` guard was dead code after the xPL rename |
 | `0023-clk-rockchip-rk3576-keep-the-CNTPCT-source-on-the-24` | pins the ARM generic counter to the 24 MHz oscillator; its HP-timer clock muxes CPLL, which 0022 puts in normal mode |
 | `0024-rockchip-rk3576-generic-enable-the-util-command-set` | the util command set: `bootmenu`, `clk`, `memtest`, `md5sum`, `sha1sum` |
+
+## uboot/boards/
+
+Board-specific u-boot patches, one directory per board. Unlike the SoC-generic series
+above, these carry values true only of one board (PHY address, reset GPIO, RGMII delay),
+so they ship only in that board's profile, never in a SoC-generic one.
+
+### uboot/boards/h96-max-m9/
+
+| patch | what it does |
+|---|---|
+| `0001-enable-gmac0-ethernet` | the H96 MAX M9's GMAC0 RGMII ethernet: enables the MAC/PHY DT nodes (RTL8211F at MDIO 1, reset gpio2 PB3, `tx_delay 0x1b`, `rgmii-rxid`) and the driver, PHY, and net commands (`dhcp`, `ping`, `mii`), dropping the generic defconfig's `CONFIG_NO_NET` |
 
 License: GPL-2.0-only (u-boot code); see `LICENSES/` at the repo root.

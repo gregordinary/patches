@@ -1,0 +1,128 @@
+From ee5cca7e2a1c2ae0bee6026dfcac53da6edcd8a9 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 22 Jul 2026 05:59:38 -0400
+Subject: [PATCH] rockchip: rk3576: enable GMAC0 ethernet for the H96 MAX M9
+
+Bring up the RGMII ethernet port on the H96 MAX M9 so its recovery tool
+can pull a rescue image over the network and ping. The RK3576
+dwc_eth_qos glue and the in-tree RTL8211F PHY driver are all present in
+u-boot; the port just needs the MAC/PHY DT nodes enabled and the driver,
+PHY, and net commands in the defconfig (the generic defconfig sets
+CONFIG_NO_NET, which this drops).
+
+This is a board patch: unlike the rest of the RK3576 u-boot series it
+carries H96-specific values, so it ships in a board profile rather than
+the SoC-generic ones. The RTL8211F sits at MDIO address 1 and is reset
+on gpio2 PB3, the SoC feeds its 25 MHz reference (clock_in_out =
+"output"), and the RGMII TX clock skew is driven from the SoC at
+tx_delay 0x1b (a board trace-length property); rgmii-rxid leaves the RX
+skew to the PHY. The dwc_eth_qos rockchip glue reads tx_delay and
+clock_in_out from the MAC node, and the DM_ETH_PHY uclass resets the PHY
+from the phy node's reset-gpios.
+
+The nodes are added to the shared rk3576-generic control DTB (the H96
+has no board control DTB of its own yet), so a board profile is what
+scopes them to this board -- the generic loader/util/display images do
+not include this patch and stay ethernet-free.
+
+The net commands added are dhcp, ping, and mii (the last for PHY link
+diagnostics), on top of the tftp/bootp that come up with CONFIG_NET.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ arch/arm/dts/rk3576-generic-u-boot.dtsi | 52 +++++++++++++++++++++++++
+ configs/generic-rk3576_defconfig        |  7 +++-
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/dts/rk3576-generic-u-boot.dtsi b/arch/arm/dts/rk3576-generic-u-boot.dtsi
+index 4cecf136..e8511611 100644
+--- a/arch/arm/dts/rk3576-generic-u-boot.dtsi
++++ b/arch/arm/dts/rk3576-generic-u-boot.dtsi
+@@ -107,3 +107,55 @@
+ 	vbus-supply = <&vcc5v0_usb_host>;
+ 	status = "okay";
+ };
++
++/*
++ * GMAC0 RGMII ethernet, so the recovery tool can fetch a rescue image over
++ * the network (dhcp/tftp) and ping. The board carries a Realtek RTL8211F at
++ * MDIO address 1, reset on gpio2 PB3; the SoC feeds the PHY its 25 MHz
++ * reference (clock_in_out = "output" -- no PHY crystal), and the RGMII TX
++ * clock skew is driven from the SoC at tx_delay 0x1b, a board trace-length
++ * property. rgmii-rxid has the PHY apply the RX skew, so no rx_delay is set.
++ * The dwc_eth_qos rockchip glue reads tx_delay/clock_in_out here, and the
++ * DM_ETH_PHY uclass resets the PHY from the phy node's reset-gpios.
++ *
++ * These are the EVB-family / H96 wiring, not SoC-generic: ethernet is a
++ * board property. This is acceptable for a maskrom bring-up tool, which is
++ * streamed to a specific board to bring it up.
++ */
++&gmac0 {
++	clock_in_out = "output";
++	phy-mode = "rgmii-rxid";
++	phy-handle = <&rgmii_phy0>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&eth0m0_miim
++		     &eth0m0_tx_bus2
++		     &eth0m0_rx_bus2
++		     &eth0m0_rgmii_clk
++		     &eth0m0_rgmii_bus
++		     &ethm0_clk0_25m_out>;
++	tx_delay = <0x1b>;
++	status = "okay";
++};
++
++&mdio0 {
++	rgmii_phy0: ethernet-phy@1 {
++		compatible = "ethernet-phy-id001c.c916";
++		reg = <0x1>;
++		clocks = <&cru REFCLKO25M_GMAC0_OUT>;
++		assigned-clocks = <&cru REFCLKO25M_GMAC0_OUT>;
++		assigned-clock-rates = <25000000>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&rgmii_phy0_rst>;
++		reset-assert-us = <20000>;
++		reset-deassert-us = <100000>;
++		reset-gpios = <&gpio2 RK_PB3 GPIO_ACTIVE_LOW>;
++	};
++};
++
++&pinctrl {
++	network {
++		rgmii_phy0_rst: rgmii-phy0-rst {
++			rockchip,pins = <2 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>;
++		};
++	};
++};
+diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
+index f994cd0a..2978ed06 100644
+--- a/configs/generic-rk3576_defconfig
++++ b/configs/generic-rk3576_defconfig
+@@ -31,7 +31,6 @@ CONFIG_CMD_ADC=y
+ # CONFIG_SPL_DOS_PARTITION is not set
+ # CONFIG_OF_UPSTREAM is not set
+ CONFIG_OF_SPL_REMOVE_PROPS="clock-names interrupt-parent assigned-clocks assigned-clock-rates assigned-clock-parents"
+-CONFIG_NO_NET=y
+ CONFIG_ADC=y
+ CONFIG_SARADC_ROCKCHIP=y
+ # CONFIG_USB_FUNCTION_FASTBOOT is not set
+@@ -44,6 +43,9 @@ CONFIG_MMC_SDHCI_SDMA=y
+ CONFIG_MMC_SDHCI_ROCKCHIP=y
+ CONFIG_PHY_ROCKCHIP_INNO_USB2=y
+ CONFIG_PHY_ROCKCHIP_NANENG_COMBOPHY=y
++CONFIG_DWC_ETH_QOS=y
++CONFIG_DWC_ETH_QOS_ROCKCHIP=y
++CONFIG_PHY_REALTEK=y
+ CONFIG_POWER_DOMAIN=y
+ CONFIG_RK3576_POWER_DOMAIN=y
+ CONFIG_BAUDRATE=1500000
+@@ -76,3 +78,6 @@ CONFIG_CMD_CLK=y
+ CONFIG_CMD_MEMTEST=y
+ CONFIG_CMD_MD5SUM=y
+ CONFIG_CMD_SHA1SUM=y
++CONFIG_CMD_DHCP=y
++CONFIG_CMD_MII=y
++CONFIG_CMD_PING=y
+-- 
+2.43.0
+
