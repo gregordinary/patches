@@ -38,8 +38,10 @@
 # The patches touch only SoC-generic u-boot (the rk3576-generic control DTB
 # and defconfig), so the profile applies to any RK3576 board on this kernel.
 
-# Declared intent; the builder's verify-applies gate is the enforcement.
-applies_to_kernel = ">=7.0, <7.2"
+# No version envelope. This profile patches only u-boot, so it makes no kernel
+# claim (no applies_to_kernel). The u-boot series targets the one u-boot
+# generation the board runs, so it declares no applies_to_uboot either; the
+# builder's git-am pass is what enforces that the series applies.
 
 # The kernel/ffmpeg/userspace trees are built pristine -- RK3576 HW decode is
 # native mainline and encode is out of scope, so there are no patches there.
