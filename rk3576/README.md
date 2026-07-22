@@ -29,7 +29,7 @@ are alternatives at the same point in the series, and no profile takes both.
 | `0003-rockchip-match-the-SARADC-by-driver-not-by-node-name` | the download key's ADC lookup finds the RK3576 SARADC at all; upstream matches by DT node name, which no SoC since rk3568 uses |
 | `0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i` | binman emits the CODE471/CODE472 payloads, so this u-boot can run from RAM with nothing written to storage |
 | `0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA` | each phase advertises the text base it is linked at, which the BootROM honours when placing the CODE472 download |
-| `0006-rockchip-rk3576-generic-enable-USB-host-storage-and-` | USB host, mass storage, and keyboard; host runs on drd1, drd0 stays the rockusb/ums device port |
+| `0006-rockchip-rk3576-generic-enable-USB-host-storage-and-` | USB host, mass storage, and keyboard; host runs on drd1, drd0 stays the rockusb/ums device port; `USE_PREBOOT` auto-runs `usb start` before the prompt, so the keyboard works with no UART |
 | `0007-clk-rockchip-rk3576-handle-the-HDMITX-VO0-and-HDPTX-` | HDMITX/VO0/HDPTX clock get/set/parent in the CRU driver |
 | `0008-power-domain-add-a-Rockchip-RK3576-PMU-power-domain-` | the PMU power-domain driver, for PD_VO0 |
 | `0009-phy-rockchip-add-Samsung-HDPTX-HDMI-TMDS-PHY-driver` | the Samsung HDPTX TMDS PHY (ROPLL config, PLL_LOCK_DONE poll) |
