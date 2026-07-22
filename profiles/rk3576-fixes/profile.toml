@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3576-fixes/profile.toml
+#
+# RK3576 kernel-fix profile: fixes a mainline 7.1 kernel needs on RK3576 boards,
+# each written to upstream standards and meant to leave this repo. Referenced by
+# kernels/rk3576-mainline-7.1. The list is the authoritative apply order for the
+# kernel tree, applied with `git am --3way`; paths are relative to this repo's root.
+
+# Declared intent; the builder's verify-applies gate is the enforcement.
+applies_to_kernel = ">=7.1, <7.2"
+
+# Kernel tree: the RK3576 GPU power domain is supplied by an external regulator
+# (vdd_gpu_s0 on the RK806), but -- unlike the RK3588 GPU domain -- it was never
+# flagged as needing one, so the pmdomain core powers the domain without first
+# enabling the rail. A deferred GPU-consumer (panfrost) probe then races the
+# regulator core's disable-unused pass: if the boot-on rail has been torn down,
+# the domain never acks its power-up ("failed to get ack on domain 'gpu'") and
+# panfrost's first register write aborts asynchronously (SError -> panic). 100
+# gives the RK3576 GPU domain a regulator like RK3588's; 101 labels the domain so
+# a board can attach vdd_gpu_s0 with domain-supply (the H96 board DTS does).
+# Upstream-destined; retire from this series once it reaches the 7.1.y stable tree.
+kernel = [
+    "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
+    "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
+]
+
+ffmpeg    = []
+userspace = []
+uboot     = []

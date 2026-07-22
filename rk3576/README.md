@@ -1,5 +1,25 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-# rk3576/ — RK3576 u-boot support
+# rk3576/ — RK3576 support
+
+Patches the RK3576 needs on top of mainline: a kernel-fix profile (`rk3576-fixes`)
+and out-of-tree u-boot profiles (recovery/USB-flash, USB host, HDMI display).
+
+## kernel/
+
+Standalone fixes for the RK3576's upstream drivers, applied on top of a mainline
+kernel by the `rk3576-fixes` profile. Written to upstream standards (mbox format)
+and meant to leave this repo once they reach the stable series the profile targets.
+
+| patch | what it fixes |
+|---|---|
+| `kernel/100-pmdomain-rockchip-rk3576-gpu-regulator` | GPU power-domain SError panic. `RK3576_PD_GPU` is fed by `vdd_gpu_s0` but, unlike the RK3588 GPU domain, was never flagged as needing a regulator, so the domain is powered before the rail is enabled. A deferred panfrost probe then races the regulator core's disable-unused pass: with the boot-on rail torn down the domain never acks (`failed to get ack on domain 'gpu'`) and panfrost's soft-reset faults the unpowered block (`SError` → panic). Flags the GPU domain `need_regulator`, as RK3588 already does. |
+| `kernel/101-arm64-dts-rk3576-gpu-power-domain-label` | adds a `pd_gpu` label to the RK3576 GPU power-domain node so a board can attach `vdd_gpu_s0` with `domain-supply` (the H96 board DTS does). |
+
+When upstreaming 100, the in-tree RK3576 boards with a GPU rail (e.g. armsom-sige5)
+should also gain `domain-supply = <&vdd_gpu_s0>` in the same series, so they use the
+real rail rather than a dummy regulator.
+
+## u-boot
 
 Out-of-tree u-boot patches for the RK3576: recovery paths back into USB flashing, a
 USB host stack, and an HDMI display stack, on top of mainline u-boot.
@@ -71,4 +91,4 @@ so they ship only in that board's profile, never in a SoC-generic one.
 |---|---|
 | `0001-enable-gmac0-ethernet` | the H96 MAX M9's GMAC0 RGMII ethernet: enables the MAC/PHY DT nodes (RTL8211F at MDIO 1, reset gpio2 PB3, `tx_delay 0x1b`, `rgmii-rxid`) and the driver, PHY, and net commands (`dhcp`, `ping`, `mii`), dropping the generic defconfig's `CONFIG_NO_NET` |
 
-License: GPL-2.0-only (u-boot code); see `LICENSES/` at the repo root.
+License: GPL-2.0-only (kernel and u-boot code); see `LICENSES/` at the repo root.
