@@ -62,10 +62,11 @@ userspace = []
 #   0012       enablement: defconfig display stack, vop/hdmi/hdmiphy DT nodes
 #              and port graph, SPL load-offset release valve for the
 #              video-carrying CODE472 payload.
-#   0013*      autoboot with a ten-second interruptible delay. The console
+#   0013*      autoboot with a five-second interruptible delay. The util
 #              profile's own 0013 sets bootdelay -1 instead; the two are
-#              alternatives at the same point in the series. Ten seconds is
-#              sized for a television's source-lock time, not for serial.
+#              alternatives at the same point in the series. Five seconds is
+#              sized for a television's source-lock time (pre-boot brings the
+#              keyboard and panel up before the countdown), not for serial.
 #   0016       the default console muxed over serial + vidconsole (stdin
 #              serial + usbkbd) so the panel shows the console with no setenv.
 #   0017       inno-usb2 PHY fix: kernel-mirrored RK3576 bring-up (full

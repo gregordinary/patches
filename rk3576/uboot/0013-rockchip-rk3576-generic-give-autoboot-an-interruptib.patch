@@ -4,16 +4,17 @@ Date: Mon, 20 Jul 2026 00:49:54 -0400
 Subject: [PATCH] rockchip: rk3576-generic: give autoboot an interruptible
  delay
 
-Set CONFIG_BOOTDELAY=10. This build autoboots, but leaves a window wide
+Set CONFIG_BOOTDELAY=5. This build autoboots, but leaves a window wide
 enough to reach the prompt from either console.
 
-Ten seconds is chosen for the HDMI path, not the serial one. A television
+Five seconds is sized for the HDMI path, not the serial one. A television
 or AV receiver takes roughly two to five seconds to lock a newly active
-source and put pixels on screen, so a conventional two- or three-second
-delay expires before the operator can see that there is anything to
-interrupt -- which defeats the whole point of a display-carrying rescue
-build. Serial users pay the extra seconds; they are the ones who least
-need them.
+source and put pixels on screen. Pre-boot brings the USB keyboard and the
+display up before the countdown starts, so by the time it runs the panel
+is showing and the operator has a real window to interrupt -- a
+conventional two- or three-second delay would expire first, defeating the
+point of a display-carrying rescue build. Serial users pay the extra
+seconds; they are the ones who least need them.
 
 The board keeps no persistent u-boot environment ("Loading Environment
 from nowhere"), so the delay cannot be adjusted at runtime and has to be
@@ -32,7 +33,7 @@ index 3a6044b5..ab3d4f14 100644
  CONFIG_DEBUG_UART_BASE=0x2AD40000
  CONFIG_DEBUG_UART_CLOCK=24000000
  CONFIG_DEBUG_UART=y
-+CONFIG_BOOTDELAY=10
++CONFIG_BOOTDELAY=5
  # CONFIG_BOOTMETH_VBE is not set
  CONFIG_DEFAULT_FDT_FILE="rockchip/rk3576-generic.dtb"
  # CONFIG_DISPLAY_CPUINFO is not set
