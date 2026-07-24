@@ -56,6 +56,7 @@ board-specific u-boot support gets its own profile that layers a board patch (fr
 | `0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re` | `reboot loader` from Linux comes back up in rockusb mode — the software path back to USB flashing |
 | `0002-rockchip-rk3576-generic-enable-SARADC-download-key` | grounding the recovery button at boot enters BootROM download mode — the hardware path, works when Linux will not boot |
 | `0003-rockchip-match-the-SARADC-by-driver-not-by-node-name` | the download key's ADC lookup finds the RK3576 SARADC at all; upstream matches by DT node name, which no SoC since rk3568 uses |
+| `0025-rockchip-widen-the-download-key-ADC-window-for-12-bi` | the pressed key actually registers: the raw 0..30 window was sized for 10-bit SARADCs, but RK3576's 12-bit ADC reads a press at ~41, so the window is widened to 100 |
 | `0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i` | binman emits the CODE471/CODE472 payloads, so this u-boot can run from RAM with nothing written to storage |
 | `0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA` | each phase advertises the text base it is linked at, which the BootROM honours when placing the CODE472 download |
 | `0006-rockchip-rk3576-generic-enable-USB-host-storage-and-` | USB host, mass storage, and keyboard; host runs on drd1, drd0 stays the rockusb/ums device port; `USE_PREBOOT` auto-runs `usb start` before the prompt, so the keyboard works with no UART |

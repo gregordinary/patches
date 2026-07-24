@@ -42,6 +42,7 @@ uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
+    "rk3576/uboot/0025-rockchip-widen-the-download-key-ADC-window-for-12-bi.patch",
     "rk3576/uboot/0004-rockchip-rk3576-generic-build-the-maskrom-USB-boot-i.patch",
     "rk3576/uboot/0005-arm64-emit-the-current-phase-s-text-base-in-_TEXT_BA.patch",
     "rk3576/uboot/0006-rockchip-rk3576-generic-enable-USB-host-storage-and-.patch",
