@@ -22,12 +22,16 @@ applies_to_kernel = ">=7.0, <7.2"
 # accept the v1 struct size. Applying 086 without 085 builds a kernel that rejects
 # any userspace declaring the pre-@flags size. The npu-clk and BO-use-after-free
 # patches are the ones that matter; the rest raise the performance ceiling.
+#
+# The RGA driver (070/071) is SoC-neutral and shared with profiles/rk3576-rga; 072
+# is this SoC's own DT wiring for it, which is why the two are separate patches.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
     "media-accel/kernel/060-vepu580-rcawston-v3.patch",
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
     "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
+    "media-accel/kernel/072-rk3588-rga-dts.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",

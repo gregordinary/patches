@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3576-rga/profile.toml
+#
+# RK3576 2D raster accelerator (RGA) patch profile: the out-of-tree vendor
+# multicore RGA driver plus the RK3576 device-tree nodes that bind it.
+#
+# The driver is shared verbatim with the RK3588 series (profiles/rk3588-accel) --
+# it matches on the generic vendor compatible strings and derives each core's
+# scheduler index from probe order, so one driver serves both topologies and each
+# SoC contributes only its own DT patch. RK3576 has two RGA2 cores; RK3588 has two
+# RGA3 plus one RGA2.
+#
+# What this buys, stated plainly: the /dev/rga vendor ABI, which librga speaks.
+# It does *not* reach FFmpeg -- the rkrga filters require --enable-rkmpp
+# (nyanmisaka's own configure check) and MPP needs the vendor mpp_service kernel
+# framework, which is not mainline. So RGA here serves direct librga consumers,
+# not a transcode graph.
+#
+# Capability note for anything planning around this SoC: the RGA2 generation's
+# colour-space conversion covers BT.601 limited/full and BT.709 only -- no
+# BT.2020, which the RK3588's RGA3 does have.
+
+# Declared intent; the builder's verify-applies gate is the enforcement.
+applies_to_kernel = ">=7.1, <7.2"
+
+# Kernel tree: the shared vendor driver, its 7.1 forward-port fixups, then this
+# SoC's DT nodes.
+kernel = [
+    "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
+    "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
+    "rk3576/kernel/110-arm64-dts-rk3576-rga2-nodes.patch",
+]
+
+ffmpeg    = []
+userspace = []
+uboot     = []

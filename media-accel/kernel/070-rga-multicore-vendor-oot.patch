@@ -24,9 +24,6 @@ This commit produces the file shape only:
   - drivers/video/rockchip/rga3/{Kconfig, Makefile, *.c, include/*.h}
   - drivers/video/rockchip/{Kconfig, Makefile} stubs sourcing rga3/
   - drivers/video/{Kconfig, Makefile} hooks descending into rockchip/
-  - DT: replaces the mainline rga@fdb80000 (V4L2 rockchip-rga compat)
-        with vendor-compat rga2_core0; adds rga3_core0 (fdb60000) +
-        rga3_core1 (fdb70000) + per-core IOMMU nodes.
 
 Compilation against mainline 7.1 is NOT attempted here. Forward-port
 work (dma-buf/iommu attach/clk_bulk/dev_pm_opp drift, vendor-only
@@ -39,7 +36,6 @@ fail to bind (compat strings replaced) but its module will still build.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- arch/arm64/boot/dts/rockchip/rk3588-base.dtsi |   55 +-
  drivers/video/Kconfig                         |    2 +
  drivers/video/Makefile                        |    2 +
  drivers/video/rockchip/Kconfig                |    2 +
@@ -70,7 +66,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  drivers/video/rockchip/rga3/rga_job.c         | 1558 ++++++++
  drivers/video/rockchip/rga3/rga_mm.c          | 2483 ++++++++++++
  drivers/video/rockchip/rga3/rga_policy.c      |  512 +++
- 31 files changed, 19090 insertions(+), 4 deletions(-)
+ 30 files changed, 19039 insertions(+)
  create mode 100644 drivers/video/rockchip/Kconfig
  create mode 100644 drivers/video/rockchip/Makefile
  create mode 100644 drivers/video/rockchip/rga3/Kconfig
@@ -100,74 +96,6 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  create mode 100644 drivers/video/rockchip/rga3/rga_mm.c
  create mode 100644 drivers/video/rockchip/rga3/rga_policy.c
 
-diff --git a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
-index 013728279a34..897f6639682d 100644
---- a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
-+++ b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
-@@ -1264,12 +1264,59 @@ vpu121_mmu: iommu@fdb50800 {
- 		#iommu-cells = <0>;
- 	};
- 
--	rga: rga@fdb80000 {
--		compatible = "rockchip,rk3588-rga", "rockchip,rk3288-rga";
--		reg = <0x0 0xfdb80000 0x0 0x180>;
-+	rga3_core0: rga@fdb60000 {
-+		compatible = "rockchip,rga3_core0";
-+		reg = <0x0 0xfdb60000 0x0 0x1000>;
-+		interrupts = <GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH 0>;
-+		interrupt-names = "rga3_core0_irq";
-+		clocks = <&cru ACLK_RGA3_0>, <&cru HCLK_RGA3_0>,
-+			 <&cru CLK_RGA3_0_CORE>;
-+		clock-names = "aclk_rga3_0", "hclk_rga3_0", "clk_rga3_0";
-+		power-domains = <&power RK3588_PD_RGA30>;
-+		iommus = <&rga3_0_mmu>;
-+	};
-+
-+	rga3_0_mmu: iommu@fdb60f00 {
-+		compatible = "rockchip,rk3588-iommu", "rockchip,rk3568-iommu";
-+		reg = <0x0 0xfdb60f00 0x0 0x100>;
-+		interrupts = <GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH 0>;
-+		interrupt-names = "rga3_0_mmu";
-+		clocks = <&cru ACLK_RGA3_0>, <&cru HCLK_RGA3_0>;
-+		clock-names = "aclk", "iface";
-+		power-domains = <&power RK3588_PD_RGA30>;
-+		#iommu-cells = <0>;
-+	};
-+
-+	rga3_core1: rga@fdb70000 {
-+		compatible = "rockchip,rga3_core1";
-+		reg = <0x0 0xfdb70000 0x0 0x1000>;
-+		interrupts = <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH 0>;
-+		interrupt-names = "rga3_core1_irq";
-+		clocks = <&cru ACLK_RGA3_1>, <&cru HCLK_RGA3_1>,
-+			 <&cru CLK_RGA3_1_CORE>;
-+		clock-names = "aclk_rga3_1", "hclk_rga3_1", "clk_rga3_1";
-+		power-domains = <&power RK3588_PD_RGA31>;
-+		iommus = <&rga3_1_mmu>;
-+	};
-+
-+	rga3_1_mmu: iommu@fdb70f00 {
-+		compatible = "rockchip,rk3588-iommu", "rockchip,rk3568-iommu";
-+		reg = <0x0 0xfdb70f00 0x0 0x100>;
-+		interrupts = <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH 0>;
-+		interrupt-names = "rga3_1_mmu";
-+		clocks = <&cru ACLK_RGA3_1>, <&cru HCLK_RGA3_1>;
-+		clock-names = "aclk", "iface";
-+		power-domains = <&power RK3588_PD_RGA31>;
-+		#iommu-cells = <0>;
-+	};
-+
-+	rga2: rga@fdb80000 {
-+		compatible = "rockchip,rga2_core0";
-+		reg = <0x0 0xfdb80000 0x0 0x1000>;
- 		interrupts = <GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH 0>;
-+		interrupt-names = "rga2_irq";
- 		clocks = <&cru ACLK_RGA2>, <&cru HCLK_RGA2>, <&cru CLK_RGA2_CORE>;
--		clock-names = "aclk", "hclk", "sclk";
-+		clock-names = "aclk_rga2", "hclk_rga2", "clk_rga2";
- 		resets = <&cru SRST_RGA2_CORE>, <&cru SRST_A_RGA2>, <&cru SRST_H_RGA2>;
- 		reset-names = "core", "axi", "ahb";
- 		power-domains = <&power RK3588_PD_VDPU>;
 diff --git a/drivers/video/Kconfig b/drivers/video/Kconfig
 index a7144d275f54..7f2f3cc74921 100644
 --- a/drivers/video/Kconfig
