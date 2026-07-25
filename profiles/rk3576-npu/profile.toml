@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# profiles/rk3576-npu/profile.toml
+#
+# RK3576 NPU (rocket) enablement profile: the ordered kernel series that makes the
+# mainline in-tree `rocket` DRM-accel driver bind the RK3576 NPU and expose the
+# accel uAPI (/dev/accel). Referenced by a board that opts in via
+# `device_patch_profiles`; composed after rk3576-fixes on the RK3576 kernel.
+#
+# EXPERIMENTAL, and deliberately so: this is a bring-up and reverse-engineering
+# scaffold, not a working accelerator. The RK3576 NPU register map is shifted and
+# re-packed relative to the RK3588, and the compute datapath does not yet run
+# inference correctly -- only the first operation in a power session returns the
+# right answer; later ops engage and DMA their input but the compute output never
+# lands. Enabling this profile gives userspace a bound device to submit jobs
+# against and dump registers from; it does not deliver NPU acceleration.
+#
+# The series is patches 1-7 of the linux-rockchip RFC v2 "accel/rocket: RK3576 NPU
+# (RKNN) enablement" (Jiaxing Hu). Patch 0002 is rebased over rk3576-fixes (both
+# extend the pm-domains.c DOMAIN_RK3576 macro and table; the merge carries both the
+# .delay_us and .need_regulator arguments -- see rk3576/npu/README.md); the rest are
+# verbatim. Patch 8 of that series (enable NPU on the Radxa Rock 4D) is dropped:
+# the board enable is board-specific, and the H96 wires its own via its device
+# `.dts` (npu-supply = vdd_npu_s0, the NPU power domains, and status = "okay").
+#
+# Patch 6 gates the RK3576 support behind of_device_id match data
+# (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
+# profile is unaffected. Patches 4-5 touch the shared Rockchip IOMMU driver; that
+# is contained because only a kernel built with this profile carries them.
+#
+# The list is the authoritative apply order for the kernel tree, applied with
+# `git am --3way`; paths are relative to this repo's root.
+
+# Declared intent; the builder's verify-applies gate is the enforcement.
+applies_to_kernel = ">=7.1, <7.2"
+
+kernel = [
+    "rk3576/npu/0001-dt-bindings-npu-rockchip-add-rk3576-rknn-core.patch",
+    "rk3576/npu/0002-pmdomain-rockchip-add-optional-power-on-settle-delay.patch",
+    "rk3576/npu/0003-pmdomain-rockchip-cycle-power-domain-resets-on-power-on.patch",
+    "rk3576/npu/0004-iommu-rockchip-take-all-dt-clocks.patch",
+    "rk3576/npu/0005-iommu-rockchip-clear-stale-page-faults-before-stall.patch",
+    "rk3576/npu/0006-accel-rocket-add-rk3576-npu-support.patch",
+    "rk3576/npu/0007-arm64-dts-rockchip-rk3576-add-npu-nodes.patch",
+]
+
+ffmpeg    = []
+userspace = []
+uboot     = []
