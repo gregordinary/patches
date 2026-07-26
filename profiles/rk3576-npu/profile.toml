@@ -7,25 +7,34 @@
 # `device_patch_profiles`; composed after rk3576-fixes on the RK3576 kernel.
 #
 # EXPERIMENTAL, and deliberately so: this is a bring-up and reverse-engineering
-# scaffold, not a working accelerator. The RK3576 NPU register map is shifted and
-# re-packed relative to the RK3588, and the compute datapath does not yet run
-# inference correctly -- only the first operation in a power session returns the
-# right answer; later ops engage and DMA their input but the compute output never
-# lands. Enabling this profile gives userspace a bound device to submit jobs
-# against and dump registers from; it does not deliver NPU acceleration.
+# scaffold rather than a drop-in accelerator. The RK3576 NPU register map is
+# shifted and re-packed relative to the RK3588, so a register program written for
+# the RK3588 geometry does not run here -- a userspace has to carry its own RK3576
+# encoder. What the kernel side does deliver is a device that submits and completes
+# jobs one after another: an int8 convolution encoded for this part is bit-exact on
+# real silicon, including multi-task row-windowed programs submitted with no gap
+# between tasks.
 #
 # The series is patches 1-7 of the linux-rockchip RFC v2 "accel/rocket: RK3576 NPU
-# (RKNN) enablement" (Jiaxing Hu). Patch 0002 is rebased over rk3576-fixes (both
-# extend the pm-domains.c DOMAIN_RK3576 macro and table; the merge carries both the
-# .delay_us and .need_regulator arguments -- see rk3576/npu/README.md); the rest are
-# verbatim. Patch 8 of that series (enable NPU on the Radxa Rock 4D) is dropped:
-# the board enable is board-specific, and the H96 wires its own via its device
-# `.dts` (npu-supply = vdd_npu_s0, the NPU power domains, and status = "okay").
+# (RKNN) enablement" (Jiaxing Hu), plus 0008 from this repo. Patch 0002 is rebased
+# over rk3576-fixes (both extend the pm-domains.c DOMAIN_RK3576 macro and table; the
+# merge carries both the .delay_us and .need_regulator arguments -- see
+# rk3576/npu/README.md); patches 1 and 3-7 are verbatim. Patch 8 of that RFC (enable
+# NPU on the Radxa Rock 4D) is dropped: the board enable is board-specific, and the
+# H96 wires its own via its device `.dts` (npu-supply = vdd_npu_s0, the NPU power
+# domains, and status = "okay").
+#
+# 0008 is ours and is required for back-to-back submits. It gives rocket_soc_data a
+# task_number_bits field, because PC_TASK_CON's TASK_NUMBER is 12 bits wide on the
+# RK3588 and 16 on the RK3576; the driver's fixed RK3588 word asks this part for a
+# task count of 28673, which leaves the PC mid-program so only the first submit of
+# each power session computes.
 #
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
-# profile is unaffected. Patches 4-5 touch the shared Rockchip IOMMU driver; that
-# is contained because only a kernel built with this profile carries them.
+# profile is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
+# emits its original 0x7001. Patches 4-5 touch the shared Rockchip IOMMU driver;
+# that is contained because only a kernel built with this profile carries them.
 #
 # The list is the authoritative apply order for the kernel tree, applied with
 # `git am --3way`; paths are relative to this repo's root.
@@ -41,6 +50,7 @@ kernel = [
     "rk3576/npu/0005-iommu-rockchip-clear-stale-page-faults-before-stall.patch",
     "rk3576/npu/0006-accel-rocket-add-rk3576-npu-support.patch",
     "rk3576/npu/0007-arm64-dts-rockchip-rk3576-add-npu-nodes.patch",
+    "rk3576/npu/0008-accel-rocket-program-pc-task-con-per-soc-task-number.patch",
 ]
 
 ffmpeg    = []

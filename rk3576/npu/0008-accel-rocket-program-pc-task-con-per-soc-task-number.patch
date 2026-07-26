@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sat, 25 Jul 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: program PC_TASK_CON with the per-SoC
+ TASK_NUMBER width
+
+PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits
+directly above it: TASK_PP_EN, then TASK_COUNT_CLEAR, then a bit the TRM
+marks reserved.  The field accessors in rocket_registers.h describe the
+RK3588 layout, where TASK_NUMBER is 12 bits wide, and the driver builds
+the submit word from them unconditionally:
+
+  RESERVED_0(1) | TASK_COUNT_CLEAR(1) | TASK_NUMBER(1) | TASK_PP_EN(1)
+
+which is 0x7001.
+
+On RK3576 TASK_NUMBER is 16 bits wide (the vendor rknpu driver carries it
+as pc_task_number_bits, 12 for RK3588 and RK356x, 16 for RK3576, RV1106,
+RK3562 and RV1126B).  The same word therefore programs a task count of
+28673, with every control bit landing above the register's defined
+fields.  The PC starts a 28673-task program, runs the task it was given
+and is left mid-stream: the first submit of each NPU power session
+computes, and every later submit in that session leaves its output buffer
+untouched.  A gap past the runtime-PM autosuspend delay hides it, because
+the power cycle resets the PC.
+
+Carry the width in rocket_soc_data and build the word from it.  RK3588
+keeps task_number_bits = 12, so its word is still 0x7001, bit for bit.
+RK3576 gets 0x70001.
+
+Measured on an H96 MAX M9 (RK3576), int8 convolution submitted back to
+back with no gap: 1 of 8 submits produced output before, 8 of 8 after,
+byte-identical to each other and bit-exact against a CPU model.  A
+multi-task row-windowed 112x112 k3 convolution is bit-exact over the whole
+surface with no inter-task gap, where it previously needed a power cycle
+per window.  Sweeping the control field at each width isolates the cause
+to TASK_NUMBER alone: with the field correctly placed every control-bit
+value tried (0x0-0x3, 0x5-0x7) passes, and with it misplaced every non-unit
+task count fails.
+
+The two remaining per-SoC PC parameters in the vendor config are not
+needed for this and are not added: rocket never reads PC_TASK_STATUS, so
+pc_task_status_offset (0x3c vs 0x48) is inert, and the RK3576 runs
+correctly without pc_dma_ctrl's IRQ-locked PC_DATA_ADDR write.  The
+RK3576-only state_init hook is likewise not required.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h |  1 +
+ drivers/accel/rocket/rocket_drv.c  |  2 ++
+ drivers/accel/rocket/rocket_job.c  | 21 +++++++++++++++++----
+ 3 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 2ab389c4b..b08836bb8 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -37,6 +37,7 @@
+ struct rocket_soc_data {
+ 	unsigned int num_clks;		/* clk_bulk count: 4 base, 6 with CBUF */
+ 	unsigned int num_resets;	/* reset_bulk count: 2 base, 1 on RK3576 */
++	unsigned int task_number_bits;	/* PC_TASK_CON TASK_NUMBER width: 12 base, 16 on RK3576 */
+ 	bool multi_power_domain;	/* device spans more than one PM domain */
+ 	bool poll_completion;		/* PC_DONE not routable to the GIC; poll it */
+ };
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 7f7dfa374..39f675a3c 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -217,6 +217,7 @@ static void rocket_remove(struct platform_device *pdev)
+ static const struct rocket_soc_data rk3588_soc_data = {
+ 	.num_clks = 4,
+ 	.num_resets = 2,
++	.task_number_bits = 12,
+ 	.multi_power_domain = false,
+ 	.poll_completion = false,
+ };
+@@ -224,6 +225,7 @@ static const struct rocket_soc_data rk3588_soc_data = {
+ static const struct rocket_soc_data rk3576_soc_data = {
+ 	.num_clks = 6,
+ 	.num_resets = 1,
++	.task_number_bits = 16,
+ 	.multi_power_domain = true,
+ 	.poll_completion = true,
+ };
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index b4866d090..135ffb2ed 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -31,6 +31,22 @@
+ #define PC_INTERRUPT_MASK_RK3576_PC_DONE_1  0x20000000u
+ #define RK3576_POLL_INTERVAL_NS  1000000LL  /* 1 ms */
+ 
++/*
++ * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
++ * above it: TASK_PP_EN, then TASK_COUNT_CLEAR, then a bit the TRM marks
++ * reserved.  rocket_registers.h describes the RK3588 layout, where TASK_NUMBER
++ * is 12 bits wide; on RK3576 it is 16, which moves all three control bits up by
++ * four.  Build the word from the per-SoC width rather than from the fixed
++ * accessors, which would otherwise land the control bits inside TASK_NUMBER and
++ * ask the PC for a task count of 28673 instead of 1.
++ */
++#define PC_TASK_CON_CTRL  0x7u  /* PP_EN | COUNT_CLEAR | RESERVED_0, relative */
++
++static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
++{
++	return (PC_TASK_CON_CTRL << core->soc->task_number_bits) | task_number;
++}
++
+ static struct rocket_job *
+ to_rocket_job(struct drm_sched_job *sched_job)
+ {
+@@ -167,10 +183,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 				 PC_INTERRUPT_CLEAR_DPU_0 | PC_INTERRUPT_CLEAR_DPU_1);
+ 	}
+ 
+-	rocket_pc_writel(core, TASK_CON, PC_TASK_CON_RESERVED_0(1) |
+-					 PC_TASK_CON_TASK_COUNT_CLEAR(1) |
+-					 PC_TASK_CON_TASK_NUMBER(1) |
+-					 PC_TASK_CON_TASK_PP_EN(1));
++	rocket_pc_writel(core, TASK_CON, rocket_pc_task_con(core, 1));
+ 
+ 	rocket_pc_writel(core, TASK_DMA_BASE_ADDR, PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
+ 
