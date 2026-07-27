@@ -6,11 +6,10 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch profile (`profiles/rk3576-npu/`).
 
 ## Origin
 
-Patches 8 and 9 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8, 9 and 10 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
-`rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`. Patch 0008 is
-ours.
+`rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
 
 Patch 0002 is the one non-verbatim file: `rk3576-fixes` and this series both extend
 `drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
@@ -32,6 +31,44 @@ a future RFC re-sync.
 | 0007 | arm64: dts: rockchip: rk3576: add NPU (RKNN) nodes |
 | 0008 | accel/rocket: program PC_TASK_CON with the per-SoC TASK_NUMBER width (ours) |
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
+| 0010 | accel/rocket: complete jobs that never reach the hardware (ours) |
+
+## What 0010 fixes, and why it is not RK3576-specific
+
+`rocket_job_run()` takes a runtime-PM reference and then attaches the IOMMU group.
+Both of its early returns leave the job half-started, and each of the two leaks that
+follow is enough on its own to pin the NPU runtime-active for good:
+
+- **The usage counter ratchets.** `pm_runtime_get_sync()` keeps its reference when the
+  resume fails, and the IOMMU path has already resumed successfully; neither is put.
+  `core->in_flight_job` is still `NULL`, so the completion path in
+  `rocket_job_handle_irq()` and the timeout path in `rocket_reset()` — both of which
+  only put when a job is in flight — never balance it.
+- **The scheduler never gets its credit back.** The fence handed to the scheduler is
+  one nothing will ever signal, so the job stays pending, and
+  `rocket_device_runtime_suspend()` returns `-EBUSY` for as long as a credit is
+  outstanding.
+
+The usage-counter half **outlives the driver**: the reference is on the platform
+device, which the OF core owns, so `rmmod`/`insmod` does not clear it — the freshly
+probed device comes back `active` and stays there until a reboot. That is the state
+in which the NPU's int32 output path silently writes nothing (its hazard is cleared
+by the power domain cycling, which a device that cannot suspend never does) while
+every other workload still passes, so it reads as a compute bug rather than a
+machine state.
+
+Measured on an H96 MAX M9 by failing the attach on one job [HW sweep]. Before, a
+single failure became self-sustaining — the job timed out at 500 ms, `rocket_reset()`
+called `rocket_core_reset()`, which takes the IOMMU down (`MMU_DTE_ADDR is not
+functioning`), so the next attach failed for real: one injected failure produced
+seven and leaked seven references, and the device then stayed `active` across a
+module reload. After, the injected failure is the only one — the job is retired with
+its error, the caller's next submit attaches and computes normally, no timeout fires,
+and the device suspends.
+
+The error paths are identical on the RK3588, which reaches them through the same
+`rocket_core_reset()`; the patch is in this series only because this is the part that
+wedges often enough to notice.
 
 ## What 0009 is for, and why its default changes nothing
 

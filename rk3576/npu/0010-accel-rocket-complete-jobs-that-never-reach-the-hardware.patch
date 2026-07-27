@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 27 Jul 2026 20:00:00 +0000
+Subject: [PATCH] accel/rocket: complete jobs that never reach the hardware
+
+rocket_job_run() takes a runtime-PM reference and then attaches the IOMMU
+group.  Both of its early returns leave the job half-started: the fence
+handed back to the scheduler is one nothing will ever signal, and the
+runtime-PM reference is one nothing will ever drop.  core->in_flight_job
+is still NULL at that point, and both paths that would balance the
+reference -- the completion in rocket_job_handle_irq() and the timeout in
+rocket_reset() -- only put when a job is in flight.
+
+Two separate things then pin the NPU runtime-active, and each is enough on
+its own:
+
+  - The usage counter ratchets.  pm_runtime_get_sync() takes its reference
+    before it tries to resume and keeps it when the resume fails, so the
+    caller owes a put; the IOMMU path has already resumed successfully and
+    owes an ordinary put.  Neither happens.  The counter never returns to
+    zero, so the device can never runtime-suspend again.
+
+  - The scheduler never gets its credit back.  The unsignalled fence keeps
+    the job pending forever, and rocket_device_runtime_suspend() returns
+    -EBUSY for as long as a credit is outstanding.  This one holds the
+    device active even with the usage counter balanced.
+
+The usage-counter half outlives the driver.  The reference is on the
+platform device, which the OF core owns, so rmmod/insmod does not clear
+it: the freshly probed device comes back active and stays there until a
+reboot.
+
+Measured on an H96 MAX M9 (RK3576) by failing the attach on one job.
+Before, a single failure became a self-sustaining storm -- the job timed
+out at 500 ms, rocket_reset() called rocket_core_reset(), which takes the
+IOMMU down ("MMU_DTE_ADDR is not functioning"), so the next attach failed
+for real.  One injected failure produced seven, and leaked seven
+references; the device then stayed active across a module reload.  After,
+the injected failure is the only one: the job is retired with its error,
+the caller's next submit attaches and computes normally, no timeout fires,
+and the device suspends.  RK3576 gates are unchanged (conv 102/102, conv
+library 111 + 1 refused, matmul 43/43, refusal 9/9).
+
+This is not RK3576-specific -- the error paths are the same on RK3588, and
+that part reaches them through the same rocket_core_reset().  It is in
+this series only because this is where a part that wedges often enough to
+notice lives.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -372,12 +372,26 @@
+ 	job->done_fence = dma_fence_get(fence);
+ 
+ 	ret = pm_runtime_get_sync(core->dev);
+-	if (ret < 0)
+-		return fence;
++	if (ret < 0) {
++		/*
++		 * pm_runtime_get_sync() takes the usage reference before it
++		 * tries to resume and keeps it when the resume fails, so the
++		 * caller owes the put.
++		 */
++		pm_runtime_put_noidle(core->dev);
++		goto err_unstarted;
++	}
+ 
+ 	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
+-	if (ret < 0)
+-		return fence;
++	if (ret < 0) {
++		/*
++		 * core->in_flight_job is still NULL, so neither the completion
++		 * path nor the timeout path will drop this reference.
++		 */
++		pm_runtime_mark_last_busy(core->dev);
++		pm_runtime_put_autosuspend(core->dev);
++		goto err_unstarted;
++	}
+ 
+ 	scoped_guard(mutex, &core->job_lock) {
+ 		core->in_flight_job = job;
+@@ -385,6 +399,19 @@
+ 	}
+ 
+ 	return fence;
++
++err_unstarted:
++	/*
++	 * The job never reached the hardware, so nothing will ever signal this
++	 * fence.  Complete it with the error, or the scheduler keeps the job
++	 * pending and never takes its credit back -- and
++	 * rocket_device_runtime_suspend() refuses for as long as a credit is
++	 * outstanding, which pins the NPU runtime-active for good.
++	 */
++	dma_fence_set_error(fence, ret);
++	dma_fence_signal(fence);
++
++	return fence;
+ }
+ 
+ static void rocket_job_handle_irq(struct rocket_core *core);
