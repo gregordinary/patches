@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 27 Jul 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: make the RK3576 completion poll period tunable
+
+PC_DONE is read-only in INTERRUPT_MASK on RK3576, so it cannot be routed
+to the GIC and the driver polls it on an hrtimer instead of taking a
+completion interrupt.  The period is hardcoded at 1 ms, and because a
+submit cannot complete faster than one poll, that period IS the
+per-submit floor on this SoC: every cost table for this part is a
+submit-count table because of it.
+
+Measured on an H96 MAX M9 by the wall time of a one-task 8x8 int8
+convolution, five repetitions per point:
+
+  poll period   1000us  500us  250us  200us  150us  100us
+  per-submit     1.2ms  0.65ms 0.45ms 0.40ms 0.32ms wedges
+
+The floor tracks the period one for one down to about 150 us, where
+roughly 0.15 ms of non-poll cost is left (the ioctl round trips, the job
+setup, the completion readback).  So the stock 1 ms is worth 3.75x on
+every submit-bound workload, and on a part whose dispatch floor dominates
+its cost model that is the single largest lever the driver holds.
+
+It is a parameter rather than a shorter default because the two failures
+below it are not understood:
+
+  - At 100 us the IOMMU wedges with "Enable stall request timed out",
+    and every later submit times out with its output buffer untouched.
+    Whether that is the poll rate or the stale-page-fault clear not
+    covering a job that completes this fast is not decoded.
+
+  - At 200 us a convolution workload is unaffected (102 gate shapes
+    bit-exact, no dmesg) while a matmul workload that drives the DPU's
+    32-bit output writer starts failing.  That path already carries a
+    known hazard whose clear is a runtime-PM power cycle, and the
+    interaction between the two has not been separated.
+
+Default 1000, so behaviour is unchanged unless the period is set.  RK3588
+does not poll at all and is untouched.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -29,7 +29,21 @@
+  */
+ #define PC_INTERRUPT_MASK_RK3576_PC_DONE_0  0x10000000u
+ #define PC_INTERRUPT_MASK_RK3576_PC_DONE_1  0x20000000u
+-#define RK3576_POLL_INTERVAL_NS  1000000LL  /* 1 ms */
++#define RK3576_POLL_INTERVAL_US_DEFAULT  1000u  /* 1 ms */
++
++static unsigned int rocket_poll_interval_us = RK3576_POLL_INTERVAL_US_DEFAULT;
++module_param_named(poll_interval_us, rocket_poll_interval_us, uint, 0644);
++MODULE_PARM_DESC(poll_interval_us,
++		 "RK3576 PC_DONE completion poll period, in microseconds (default 1000)");
++
++static inline ktime_t rocket_poll_period(void)
++{
++	unsigned int us = READ_ONCE(rocket_poll_interval_us);
++
++	if (!us)
++		us = 1;
++	return ns_to_ktime((s64)us * NSEC_PER_USEC);
++}
+ 
+ /*
+  * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
+@@ -191,7 +205,7 @@
+ 
+ 	if (core->soc->poll_completion) {
+ 		atomic_set(&core->poll_active, 1);
+-		hrtimer_start(&core->poll_timer, ns_to_ktime(RK3576_POLL_INTERVAL_NS),
++		hrtimer_start(&core->poll_timer, rocket_poll_period(),
+ 			      HRTIMER_MODE_REL);
+ 	} else {
+ 		dev_dbg(core->dev, "Submitted regcmd at 0x%llx to core %d",
+@@ -395,7 +409,7 @@
+ 		return HRTIMER_NORESTART;
+ 	}
+ 
+-	hrtimer_forward_now(timer, ns_to_ktime(RK3576_POLL_INTERVAL_NS));
++	hrtimer_forward_now(timer, rocket_poll_period());
+ 	return HRTIMER_RESTART;
+ }
+ 
+-- 
+2.51.0

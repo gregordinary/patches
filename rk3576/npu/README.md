@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch profile (`profiles/rk3576-npu/`).
 
 ## Origin
 
-Patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 and 9 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`. Patch 0008 is
@@ -31,6 +31,21 @@ a future RFC re-sync.
 | 0006 | accel/rocket: add RK3576 NPU (RKNN) support |
 | 0007 | arm64: dts: rockchip: rk3576: add NPU (RKNN) nodes |
 | 0008 | accel/rocket: program PC_TASK_CON with the per-SoC TASK_NUMBER width (ours) |
+| 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
+
+## What 0009 is for, and why its default changes nothing
+
+`PC_DONE` is read-only in `INTERRUPT_MASK` on this SoC, so 0006 polls it on a 1 ms
+hrtimer where the RK3588 takes an interrupt. A submit cannot complete faster than one
+poll, so that period is the per-submit floor and every RK3576 cost table is a
+submit-count table because of it. Measured on an H96 MAX M9, the floor tracks the
+period one for one — 1.2 ms at the stock 1000 us down to 0.32 ms at 150 us, a 3.75x
+cut on any submit-bound workload.
+
+It ships as a parameter at the stock default rather than as a shorter default because
+the two failures below it are not decoded: at 100 us the IOMMU wedges, and at 200 us a
+matmul driving the DPU's 32-bit output writer starts failing while a convolution
+workload stays bit-exact. Set `rocket.poll_interval_us=` to spend it.
 
 Patch 8 of the RFC (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`) is **not**
 carried: the board enable is board-specific. See below for what a board owes.
