@@ -1,14 +1,14 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # rk3576/ — RK3576 support
 
-Patches the RK3576 needs on top of mainline: a kernel-fix profile (`rk3576-fixes`)
-and out-of-tree u-boot profiles (recovery/USB-flash, USB host, HDMI display).
+Patches the RK3576 needs on top of mainline: a kernel-fix series (`rk3576-fixes`)
+and out-of-tree u-boot series (recovery/USB-flash, USB host, HDMI display).
 
 ## kernel/
 
 Standalone fixes for the RK3576's upstream drivers, applied on top of a mainline
-kernel by the `rk3576-fixes` profile. Written to upstream standards (mbox format)
-and meant to leave this repo once they reach the stable series the profile targets.
+kernel by the `rk3576-fixes` series. Written to upstream standards (mbox format)
+and meant to leave this repo once they reach the stable series the series targets.
 
 | patch | what it fixes |
 |---|---|
@@ -24,28 +24,28 @@ real rail rather than a dummy regulator.
 Out-of-tree u-boot patches for the RK3576: recovery paths back into USB flashing, a
 USB host stack, and an HDMI display stack, on top of mainline u-boot.
 
-Three profiles select subsets of one series. `drd0` (the USB 3.0 OTG port) is the
+Three series select subsets of one patch set. `drd0` (the USB 3.0 OTG port) is the
 rockusb/ums device port in all three; the USB host runs on `drd1` — u-boot has no
 runtime OTG role switch on these nodes, so a single controller cannot be both a host
 and a gadget, and splitting the roles across the two controllers gives both at once.
-The profiles differ by how far each goes beyond booting:
+The series differ by how far each goes beyond booting:
 
-| profile | drd0 | host + display | autoboots | what it is for |
+| series | drd0 | host + display | autoboots | what it is for |
 |---|---|---|---|---|
 | `rk3576-loader` | device (rockusb/ums) | no | — | flash and dump driven from a laptop |
 | `rk3576-display` | device (rockusb/ums) | yes | 10 s | the u-boot an image ships with |
 | `rk3576-util` | device (rockusb/ums) | yes | never | recovery/bring-up tool: boot menu, diagnostics, verification |
 
-The list in each `profile.toml` is the authoritative apply order; the numeric filename
+The list in each `series` file is the authoritative apply order; the numeric filename
 prefixes only make the directory read in that order. Two files share prefix `0013` — they
-are alternatives at the same point in the series, and no profile takes both.
+are alternatives at the same point in the apply order, and no series takes both.
 
 Those three are SoC-generic: they patch only the `rk3576-generic` control DTB and
 defconfig, so their payload is identical on any RK3576 board. A board that needs
-board-specific u-boot support gets its own profile that layers a board patch (from
+board-specific u-boot support gets its own series that layers a board patch (from
 `uboot/boards/<board>/`) on a SoC-generic series:
 
-| profile | base | adds |
+| series | base | adds |
 |---|---|---|
 | `h96-max-m9-util` | `rk3576-util` | the H96 MAX M9's GMAC0 ethernet (`dhcp`/`tftp`/`ping`) |
 
@@ -66,8 +66,8 @@ board-specific u-boot support gets its own profile that layers a board patch (fr
 | `0010-video-rockchip-add-DW-HDMI-QP-bridge-for-RK3576` | the DW-HDMI-QP bridge, as UCLASS_DISPLAY |
 | `0011-video-rockchip-add-VOP2-display-controller-for-RK357` | the VOP2 controller (VP0 + Esmart0), which also quiesces itself at OS handoff |
 | `0012-rockchip-rk3576-generic-enable-the-HDMI-display-stac` | display-stack defconfig, the vop/hdmi/hdmiphy DT nodes and port graph |
-| `0013-rockchip-rk3576-generic-drop-to-the-u-boot-prompt-by` | never autoboot (`bootdelay -1`) — the util profile's alternative at 0013 |
-| `0013-rockchip-rk3576-generic-give-autoboot-an-interruptib` | autoboot after an interruptible delay — the display profile's alternative at 0013 |
+| `0013-rockchip-rk3576-generic-drop-to-the-u-boot-prompt-by` | never autoboot (`bootdelay -1`) — the util series' alternative at 0013 |
+| `0013-rockchip-rk3576-generic-give-autoboot-an-interruptib` | autoboot after an interruptible delay — the display series' alternative at 0013 |
 | `0014-rockchip-rk3576-generic-enable-the-smc-command` | the `smc` developer command |
 | `0015-rockchip-rk3576-generic-enable-the-cache-commands` | the cache developer commands |
 | `0016-rockchip-rk3576-mux-the-console-over-serial-and-vidc` | the default console muxed over serial + vidconsole, so the panel shows it with no `setenv` |
@@ -84,7 +84,7 @@ board-specific u-boot support gets its own profile that layers a board patch (fr
 
 Board-specific u-boot patches, one directory per board. Unlike the SoC-generic series
 above, these carry values true only of one board (PHY address, reset GPIO, RGMII delay),
-so they ship only in that board's profile, never in a SoC-generic one.
+so they ship only in that board's series, never in a SoC-generic one.
 
 ### uboot/boards/h96-max-m9/
 

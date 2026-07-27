@@ -3,7 +3,7 @@
 
 Canonical, version-controlled home for the out-of-tree patches and helpers used
 across the device-builder ecosystem (kernel, u-boot, ffmpeg, userspace). Build
-systems reference patch sets from here by scope/profile rather than vendoring
+systems reference patch sets from here by scope/series rather than vendoring
 their own copies, so a fix lands in one place.
 
 ## Scopes
@@ -18,19 +18,19 @@ Each scope is **self-contained** and need not share a common internal layout —
 video-codec accel, ffmpeg-rockchip, MPP userspace) will be added as the generic
 builder is built out.
 
-## Profiles
+## Series
 
-[`profiles/<name>/profile.toml`](profiles/) manifests bind a kernel-version range
+[`series/<name>.toml`](series/) manifests bind a kernel-version range
 (`applies_to_kernel`) to an ordered, per-tree patch series drawn from the scopes
 above — the unit a builder consumes.
-[`profiles/rk3588-accel`](profiles/rk3588-accel/) is the RK3588 mainline-7.1 media
-+ NPU series: kernel `040`–`086`, ffmpeg `0001`, userspace `001`. A profile's
+[`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline-7.1 media
++ NPU series: kernel `040`–`086`, ffmpeg `0001`, userspace `001`. A series'
 `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*` then
 `rocket/*`).
 
 ## Consuming patches
 
-boot2deb selects a profile by name (from its kernel definition), pins this repo to
+boot2deb selects a series by name (from its kernel definition), pins this repo to
 an exact commit in the recipe lock (`[patches] commit`), and runs a verify-applies
 gate that dry-runs the series with `git am --3way`, hard-erroring on any patch that
 does not apply. Offline builds fetch the pinned revision manually.
@@ -42,9 +42,9 @@ license, and each patch is a derivative work that inherits the license of the tr
 modifies.
 
 - **Repository-original artifacts** — this README, the `media-accel/` scope READMEs, and
-  the profile manifests under `profiles/` — are **GPL-3.0-or-later**
+  the series manifests under `series/` — are **GPL-3.0-or-later**
   ([`LICENSES/GPL-3.0-or-later.txt`](LICENSES/GPL-3.0-or-later.txt)), matching the userspace
-  projects these profiles build against.
+  projects these series build against.
 - **`rocket/` scope** — the NPU driver patches are
   **GPL-2.0-only** (kernel-derivative work; see [`rocket/LICENSE`](rocket/LICENSE)). Its uAPI
   header `rocket/uapi/rocket_accel.h` is **MIT** (© Tomeu Vizoso), per its SPDX tag.

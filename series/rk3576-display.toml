@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/rk3576-display/profile.toml
+# series/rk3576-display.toml
 #
-# RK3576 shipping u-boot profile: USB host, HDMI console, the SoC clock
+# RK3576 shipping u-boot series: USB host, HDMI console, the SoC clock
 # bring-up and timer fix, and an autoboot the operator can interrupt from
 # either console. This is the u-boot an image ships with.
 #
@@ -10,14 +10,14 @@
 # will not boot can still reach a prompt, inspect the board, and boot a
 # rescue stick -- with no UART adapter and no case opened. drd0 stays the
 # rockusb/ums gadget port, so `reboot loader` and `ums` reach a laptop from
-# the same image (see the rk3576-loader profile for the port-role rationale).
+# the same image (see the rk3576-loader series for the port-role rationale).
 #
-# The RK3576 u-boot profiles differ by what drd0 does and how far the build
+# The RK3576 u-boot series differ by what drd0 does and how far the build
 # goes beyond booting:
 #
 #   * rk3576-loader  -- drd0 = device (rockusb/ums). Flash and dump driven
 #                       from a laptop. No USB host, no display. Serial only.
-#   * rk3576-display -- this profile. drd0 = device, plus USB host on drd1,
+#   * rk3576-display -- this series. drd0 = device, plus USB host on drd1,
 #                       HDMI console, and an autoboot the operator can
 #                       interrupt. The shipped u-boot.
 #   * rk3576-util    -- rk3576-display plus a boot menu, the developer
@@ -25,15 +25,15 @@
 #                       commands; never autoboots. A recovery and bring-up
 #                       tool, normally streamed into RAM over maskrom.
 #
-# The profile quiesces the VOP before the OS jump (patch 0011). A bootloader
+# The series quiesces the VOP before the OS jump (patch 0011). A bootloader
 # that lights the panel and hands Linux a VOP still scanning out costs the
 # kernel the display entirely -- see the display reference, section 5, in the
 # board-research tree.
 #
 # The patches touch only SoC-generic u-boot (the rk3576-generic control DTB
-# and defconfig), so the profile applies to any RK3576 board on this kernel.
+# and defconfig), so the series applies to any RK3576 board on this kernel.
 
-# No version envelope. This profile patches only u-boot, so it makes no kernel
+# No version envelope. This series patches only u-boot, so it makes no kernel
 # claim (no applies_to_kernel). The u-boot series targets the one u-boot
 # generation the board runs, so it declares no applies_to_uboot either; the
 # builder's git-am pass is what enforces that the series applies.
@@ -46,7 +46,7 @@ userspace = []
 
 # u-boot tree, applied with `git am`. The gap at 0014-0015 is the developer
 # commands (`smc` and the cache commands), which a shipped image has no use
-# for; the rk3576-util profile carries them.
+# for; the rk3576-util series carries them.
 #
 #   0001-0005  the rk3576-loader patches, shared verbatim (reboot-loader,
 #              SARADC download key + driver-name match, maskrom USB boot
@@ -63,7 +63,7 @@ userspace = []
 #              and port graph, SPL load-offset release valve for the
 #              video-carrying CODE472 payload.
 #   0013*      autoboot with a five-second interruptible delay. The util
-#              profile's own 0013 sets bootdelay -1 instead; the two are
+#              series' own 0013 sets bootdelay -1 instead; the two are
 #              alternatives at the same point in the series. Five seconds is
 #              sized for a television's source-lock time (pre-boot brings the
 #              keyboard and panel up before the countdown), not for serial.

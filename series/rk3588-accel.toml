@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/rk3588-accel/profile.toml
+# series/rk3588-accel.toml
 #
-# RK3588 hardware-acceleration patch profile: the ordered patch series that turns
-# a mainline 7.1 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media
-# stack (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU).
+# RK3588 hardware acceleration: the ordered patch series that turns a mainline
+# 7.1 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
+# (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU).
 #
-# A profile is owned by a kernel definition, not a device: this series applies to
+# A series is owned by a kernel definition, not a device: this series applies to
 # mainline 7.1 and is referenced by kernels/rk3588-mainline-7.1. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
 # tree's list may span scopes (the kernel tree interleaves the media-accel and
@@ -23,7 +23,7 @@ applies_to_kernel = ">=7.0, <7.2"
 # any userspace declaring the pre-@flags size. The npu-clk and BO-use-after-free
 # patches are the ones that matter; the rest raise the performance ceiling.
 #
-# The RGA driver (070/071) is SoC-neutral and shared with profiles/rk3576-rga; 072
+# The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",

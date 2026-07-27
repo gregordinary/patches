@@ -4,7 +4,7 @@
 Rockchip hardware **video transcode** stack for mainline Linux (RK35xx / RK3588)
 — the out-of-tree patches that enable HW decode, encode, and 2D scaling without
 the vendor BSP kernel. Spans three source trees (kernel, ffmpeg, MPP/RGA
-userspace); a build profile applies the relevant subset.
+userspace); a build series applies the relevant subset.
 
 Validated together on Turing RK1 (RK3588) + mainline kernel 7.1-rc6.
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/h96-max-m9-util/profile.toml
+# series/h96-max-m9-util.toml
 #
 # The H96 MAX M9's board-specific recovery u-boot: the SoC-generic
 # rk3576-util tool plus one board patch that brings up the H96's GMAC0
@@ -9,14 +9,14 @@
 # boot menu, the developer commands, and the diagnostic and verification
 # commands; it never autoboots.
 #
-# This is the first RK3576 u-boot profile that is NOT SoC-generic: the
+# This is the first RK3576 u-boot series that is NOT SoC-generic: the
 # ethernet patch carries the H96's PHY address, reset GPIO, and RGMII TX
-# delay. The SoC-generic loader/util/display profiles stay board-neutral
-# and ethernet-free; a board that wants ethernet gets a profile like this
-# one. See the rk3576-util profile for the shared drd0/drd1 port rationale
+# delay. The SoC-generic loader/util/display series stay board-neutral
+# and ethernet-free; a board that wants ethernet gets a series like this
+# one. See the rk3576-util series for the shared drd0/drd1 port rationale
 # and the VOP-quiesce-at-handoff contract.
 
-# No version envelope. This profile patches only u-boot, so it makes no kernel
+# No version envelope. This series patches only u-boot, so it makes no kernel
 # claim (no applies_to_kernel). The u-boot series targets the one u-boot
 # generation the board runs, so it declares no applies_to_uboot either; the
 # builder's git-am pass is what enforces that the series applies.
@@ -28,7 +28,7 @@ ffmpeg    = []
 userspace = []
 
 # u-boot tree, applied with `git am`: the SoC-generic rk3576-util series
-# (0001-0024, see that profile for the per-patch notes) plus the H96 board
+# (0001-0024, see that series for the per-patch notes) plus the H96 board
 # patch.
 #
 #   boards/h96-max-m9/0001  enable the H96's GMAC0 RGMII ethernet: the RK3576

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/rk3576-util/profile.toml
+# series/rk3576-util.toml
 #
-# RK3576 utility u-boot profile: the recovery and bring-up tool. It has the
+# RK3576 utility u-boot series: the recovery and bring-up tool. It has the
 # same hardware support as rk3576-display -- drd0 as the rockusb/ums device
 # port, USB host on drd1, HDMI console, the SoC clock bring-up and timer fix
 # -- and adds what a diagnostic and recovery session needs: a boot menu, the
@@ -19,7 +19,7 @@
 # so a single host connector serves both -- u-boot enumerates hubs during
 # `usb start`, and boots from a device behind one.
 #
-# The RK3576 u-boot profiles differ by what drd0 does and how far the build
+# The RK3576 u-boot series differ by what drd0 does and how far the build
 # goes beyond booting:
 #
 #   * rk3576-loader  -- drd0 = device (rockusb/ums). Flash and dump driven
@@ -27,18 +27,18 @@
 #   * rk3576-display -- drd0 = device, plus USB host on drd1, HDMI console,
 #                       and an autoboot the operator can interrupt. The
 #                       shipped u-boot.
-#   * rk3576-util    -- this profile. rk3576-display plus a boot menu, the
+#   * rk3576-util    -- this series. rk3576-display plus a boot menu, the
 #                       developer commands, and the diagnostic and
 #                       verification commands; never autoboots.
 #
-# The profile quiesces the VOP before the OS jump (patch 0011), so booting a
+# The series quiesces the VOP before the OS jump (patch 0011), so booting a
 # rescue target from the tool leaves the kernel a resettable display -- see
 # the display reference, section 5, in the board-research tree.
 #
 # The patches touch only SoC-generic u-boot (the rk3576-generic control DTB
-# and defconfig), so the profile applies to any RK3576 board on this kernel.
+# and defconfig), so the series applies to any RK3576 board on this kernel.
 
-# No version envelope. This profile patches only u-boot, so it makes no kernel
+# No version envelope. This series patches only u-boot, so it makes no kernel
 # claim (no applies_to_kernel). The u-boot series targets the one u-boot
 # generation the board runs, so it declares no applies_to_uboot either; the
 # builder's git-am pass is what enforces that the series applies.

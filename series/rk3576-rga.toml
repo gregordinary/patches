@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/rk3576-rga/profile.toml
+# series/rk3576-rga.toml
 #
-# RK3576 2D raster accelerator (RGA) patch profile: the out-of-tree vendor
+# RK3576 2D raster accelerator (RGA) patch series: the out-of-tree vendor
 # multicore RGA driver plus the RK3576 device-tree nodes that bind it.
 #
-# The driver is shared verbatim with the RK3588 series (profiles/rk3588-accel) --
+# The driver is shared verbatim with the RK3588 series (series/rk3588-accel) --
 # it matches on the generic vendor compatible strings and derives each core's
 # scheduler index from probe order, so one driver serves both topologies and each
 # SoC contributes only its own DT patch. RK3576 has two RGA2 cores; RK3588 has two

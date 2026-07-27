@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/rk3576-npu/profile.toml
+# series/rk3576-npu.toml
 #
-# RK3576 NPU (rocket) enablement profile: the ordered kernel series that makes the
+# RK3576 NPU (rocket) enablement: the ordered kernel series that makes the
 # mainline in-tree `rocket` DRM-accel driver bind the RK3576 NPU and expose the
 # accel uAPI (/dev/accel). Referenced by a board that opts in via
-# `device_patch_profiles`; composed after rk3576-fixes on the RK3576 kernel.
+# `device_patch_series`; composed after rk3576-fixes on the RK3576 kernel.
 #
 # EXPERIMENTAL, and deliberately so: this is a bring-up and reverse-engineering
 # scaffold rather than a drop-in accelerator. The RK3576 NPU register map is
@@ -43,9 +43,9 @@
 #
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
-# profile is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
+# series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
 # emits its original 0x7001. Patches 4-5 touch the shared Rockchip IOMMU driver;
-# that is contained because only a kernel built with this profile carries them.
+# that is contained because only a kernel built with this series carries them.
 #
 # The list is the authoritative apply order for the kernel tree, applied with
 # `git am --3way`; paths are relative to this repo's root.

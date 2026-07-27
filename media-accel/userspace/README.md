@@ -4,8 +4,8 @@
 Standalone, reusable patches for the userspace HW-accel stack
 (librockchip-mpp / librga). Parallels [`../kernel/`](../kernel/).
 
-These are applied to the source clones as part of a build profile; a builder
-consumes the profile's `userspace` list in order.
+These are applied to the source clones as part of a build series; a builder
+consumes the series' `userspace` list in order.
 
 ## 001-mpp-allocator-dma-heap-mainline-cma.patch
 

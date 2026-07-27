@@ -1,9 +1,9 @@
 # rk3288/ — RK3288 kernel fixes
 
 Standalone fixes for the RK3288's upstream drivers, applied on top of a mainline
-kernel by the `rk3288-fixes` profile. Everything here is written to upstream
+kernel by the `rk3288-fixes` series. Everything here is written to upstream
 standards (mbox format, `Fixes:` tag, `Cc: stable`) and is meant to leave this
-repo: a patch retires when it lands in the stable series the profile targets.
+repo: a patch retires when it lands in the stable series the series targets.
 
 | patch | what it fixes |
 |---|---|

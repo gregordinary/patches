@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# profiles/rk3288-fixes/profile.toml
+# series/rk3288-fixes.toml
 #
-# RK3288 kernel-fix profile: fixes a mainline 7.1 kernel needs on RK3288 boards,
+# RK3288 kernel-fix series: fixes a mainline 7.1 kernel needs on RK3288 boards,
 # each written to upstream standards and meant to leave this repo. Referenced by
 # kernels/rk3288-mainline-7.1. Each list is the authoritative apply order for one
 # source tree, applied with `git am --3way`; paths are relative to this repo's

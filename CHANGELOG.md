@@ -10,9 +10,9 @@ semantic without being so, which is worse than a bare commit id because it invit
 confidence they have not earned.
 
 So this file has entries only for validation events. Between them, consumers pin a
-commit and read compatibility out of the profile manifests, which is what those are for:
+commit and read compatibility out of the series manifests, which is what those are for:
 
-- **`profiles/<name>/profile.toml`** carries the kernel window — an overall envelope
+- **`series/<name>.toml`** carries the kernel window — an overall envelope
   plus a per-patch range wherever one patch's boundary differs from the rest. That is the
   compatibility mechanism; tags are not.
 - **The commit id** is the reproducibility pin. A build records it exactly, so an old

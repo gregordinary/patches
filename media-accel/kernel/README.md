@@ -14,7 +14,7 @@ series fits together.
 4. `070-rga-multicore-vendor-oot.patch`
 5. `071-rga-multicore-7.1-fixups.patch`
 
-The order is the profile's list, not the filename prefixes; the prefixes only make the
+The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
 in without renumbering a committed series.
 
@@ -40,7 +40,7 @@ has its own dependency notes.
 ## Which kernels these apply to
 
 Not recorded here — it moves on a different clock than this list does, and a copy would
-drift. The `profile.toml` that selects these patches carries the kernel window, per patch
+drift. The `series` file that selects these patches carries the kernel window, per patch
 where they differ. What has actually been *validated*, on which board, is generated from
 the shipped locks rather than written down.
 

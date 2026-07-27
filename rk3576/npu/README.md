@@ -2,7 +2,7 @@
 # rk3576/npu -- RK3576 NPU (rocket) enablement series
 
 The kernel series that binds the mainline in-tree `rocket` DRM-accel driver to the
-RK3576 NPU. Consumed by the `rk3576-npu` patch profile (`profiles/rk3576-npu/`).
+RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`).
 
 ## Origin
 
@@ -15,7 +15,7 @@ Patch 0002 is the one non-verbatim file: `rk3576-fixes` and this series both ext
 `drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
 the RK3576 power-domain table) -- one adds a `.need_regulator` argument, the other a
 `.delay_us` argument. Because the resolver always orders `rk3576-fixes` first (it is
-a SoC-wide kernel profile) and `rk3576-npu` second (a board-opt-in device profile),
+a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series),
 0002 is rebased over `rk3576-fixes`: the merged macro/table carry both arguments
 (GPU `regulator = true`, the NPU domains `delay = 15`). Re-derive it the same way on
 a future RFC re-sync.
@@ -184,4 +184,4 @@ that in hand the kernel side runs: an int8 convolution encoded for this part is
 bit-exact against a CPU model on real silicon (H96 MAX M9), and multi-task
 row-windowed programs are bit-exact submitted back to back with no gap. Re-sync from
 a later RFC revision by re-splitting the series into this directory and updating
-`profiles/rk3576-npu`.
+`series/rk3576-npu.toml`.
