@@ -10,34 +10,43 @@ submit cannot complete faster than one poll, that period IS the
 per-submit floor on this SoC: every cost table for this part is a
 submit-count table because of it.
 
-Measured on an H96 MAX M9 by the wall time of a one-task 8x8 int8
-convolution, five repetitions per point:
+Make it a module parameter and drop the default to 500 us, which is the
+shortest period that is correct.
 
-  poll period   1000us  500us  250us  200us  150us  100us
-  per-submit     1.2ms  0.65ms 0.45ms 0.40ms 0.32ms wedges
+The bound is not the poll rate.  PC_DONE means the program counter
+finished, not that the DPU's write DMA has drained, and the driver both
+tears down the IOMMU mapping and signals the fence as soon as it sees
+PC_DONE.  A long period hides that behind its own detection lag.  Measured
+on an H96 MAX M9 with the int8 matmul gate, one run per point [HW sweep]:
 
-The floor tracks the period one for one down to about 150 us, where
-roughly 0.15 ms of non-poll cost is left (the ioctl round trips, the job
-setup, the completion readback).  So the stock 1 ms is worth 3.75x on
-every submit-bound workload, and on a part whose dispatch floor dominates
-its cost model that is the single largest lever the driver holds.
+  poll period       1000us  500us  250us  150us
+  shapes passing    43/43   43/43  40/43  37/43
 
-It is a parameter rather than a shorter default because the two failures
-below it are not understood:
+The IOMMU half of that is fixed separately (see "keep the IOMMU domain
+attached across jobs", which takes the stall timeouts and NPU DMA errors
+to zero at every period in this table).  What remains below 500 us is the
+fence being signalled before the writes are visible, and it needs about
+250 us of settle to close -- which costs as much as the shorter period
+saves.  Measured with an 8x64x32 int8 matmul, n=300, us/submit:
 
-  - At 100 us the IOMMU wedges with "Enable stall request timed out",
-    and every later submit times out with its output buffer untouched.
-    Whether that is the poll rate or the stale-page-fault clear not
-    covering a job that completes this fast is not decoded.
+  1000us, no settle    1654
+   500us, no settle    1084
+   250us, 250us settle 1182
+   150us, 250us settle 1036
+   100us, 250us settle  988
 
-  - At 200 us a convolution workload is unaffected (102 gate shapes
-    bit-exact, no dmesg) while a matmul workload that drives the DPU's
-    32-bit output writer starts failing.  That path already carries a
-    known hazard whose clear is a runtime-PM power cycle, and the
-    interaction between the two has not been separated.
+So 500 us with no settle is both the correct default and within 5% of the
+best any shorter period reaches.  It is worth 1.53x on this probe against
+the stock 1 ms, and the parameter is kept so the period can still be swept
+when the visibility race is understood well enough to shorten it further.
 
-Default 1000, so behaviour is unchanged unless the period is set.  RK3588
-does not poll at all and is untouched.
+At 500 us the full RK3576 gate set is clean: int8 matmul 43/43 three runs
+in a row, the same gate 43/43 through the DPU's 32-bit wide writer,
+convolution 102/102, the convolution library 111 + 1 refused, the refusal
+gate 9/9, the fp16 sweep's int8 control 2048/2048, and nothing in dmesg.
+
+RK3588 takes a completion interrupt and does not poll at all, so it is
+untouched.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
@@ -48,12 +57,12 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  #define PC_INTERRUPT_MASK_RK3576_PC_DONE_0  0x10000000u
  #define PC_INTERRUPT_MASK_RK3576_PC_DONE_1  0x20000000u
 -#define RK3576_POLL_INTERVAL_NS  1000000LL  /* 1 ms */
-+#define RK3576_POLL_INTERVAL_US_DEFAULT  1000u  /* 1 ms */
++#define RK3576_POLL_INTERVAL_US_DEFAULT  500u   /* 500 us */
 +
 +static unsigned int rocket_poll_interval_us = RK3576_POLL_INTERVAL_US_DEFAULT;
 +module_param_named(poll_interval_us, rocket_poll_interval_us, uint, 0644);
 +MODULE_PARM_DESC(poll_interval_us,
-+		 "RK3576 PC_DONE completion poll period, in microseconds (default 1000)");
++		 "RK3576 PC_DONE completion poll period, in microseconds (default 500)");
 +
 +static inline ktime_t rocket_poll_period(void)
 +{

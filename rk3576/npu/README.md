@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch profile (`profiles/rk3576-npu/`).
 
 ## Origin
 
-Patches 8, 9 and 10 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 11 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -32,6 +32,7 @@ a future RFC re-sync.
 | 0008 | accel/rocket: program PC_TASK_CON with the per-SoC TASK_NUMBER width (ours) |
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
 | 0010 | accel/rocket: complete jobs that never reach the hardware (ours) |
+| 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
 
 ## What 0010 fixes, and why it is not RK3576-specific
 
@@ -70,19 +71,57 @@ The error paths are identical on the RK3588, which reaches them through the same
 `rocket_core_reset()`; the patch is in this series only because this is the part that
 wedges often enough to notice.
 
-## What 0009 is for, and why its default changes nothing
+## What 0009 and 0011 are for: the per-submit floor, and what actually bounds it
 
-`PC_DONE` is read-only in `INTERRUPT_MASK` on this SoC, so 0006 polls it on a 1 ms
-hrtimer where the RK3588 takes an interrupt. A submit cannot complete faster than one
-poll, so that period is the per-submit floor and every RK3576 cost table is a
-submit-count table because of it. Measured on an H96 MAX M9, the floor tracks the
-period one for one — 1.2 ms at the stock 1000 us down to 0.32 ms at 150 us, a 3.75x
-cut on any submit-bound workload.
+`PC_DONE` is read-only in `INTERRUPT_MASK` on this SoC, so 0006 polls it on an hrtimer
+where the RK3588 takes an interrupt. A submit cannot complete faster than one poll, so
+that period is the per-submit floor and every RK3576 cost table is a submit-count table
+because of it. 0009 makes the period a module parameter and sets it to **500 us**.
 
-It ships as a parameter at the stock default rather than as a shorter default because
-the two failures below it are not decoded: at 100 us the IOMMU wedges, and at 200 us a
-matmul driving the DPU's 32-bit output writer starts failing while a convolution
-workload stays bit-exact. Set `rocket.poll_interval_us=` to spend it.
+**What bounds it is not the poll rate.** `PC_DONE` means the program counter finished,
+not that the DPU's write DMA has drained, and the driver both tears down the IOMMU
+mapping and signals the fence as soon as it sees `PC_DONE`. A long period hides that
+behind its own detection lag. Two independent failures come out from under it, and
+they need separate fixes:
+
+- **The per-job IOMMU detach races the write drain.** Detaching on completion faults
+  writes still in flight, which leaves a *write* page fault active
+  (`RK_MMU_STATUS` `0x2b` = `PAGING_ENABLED|PAGE_FAULT_ACTIVE|IDLE|PAGE_FAULT_IS_WRITE`);
+  that blocks the next `enable_stall`, which the IOMMU reports as a timeout
+  (`0x1d` shows `STALL_ACTIVE` — the stall arrived, just after the poll gave up), and
+  the NPU raises `DMA_READ_ERROR|DMA_WRITE_ERROR`. **0011 removes this outright** by
+  keeping the domain attached across jobs.
+- **The fence is signalled before the writes are visible.** This one 0011 does not
+  touch, and it is what keeps the period at 500 us.
+
+Measured on an H96 MAX M9 with the int8 matmul gate, one run per point [HW sweep]:
+
+| poll period | 1000 us | 500 us | 250 us | 150 us |
+|---|---|---|---|---|
+| detach per job | 43/43 | 43/43 | 40/43 | 37/43 |
+| &nbsp;&nbsp;stall timeouts / DMA errors | 0 / 0 | 0 / 0 | 0 / 4 | 4 / 13 |
+| domain kept attached (0011) | 43/43 | 43/43 | 42/43 | 40/43 |
+| &nbsp;&nbsp;stall timeouts / DMA errors | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+The visibility race needs about **250 us of settle** to close — and that settle costs
+as much as the shorter period saves. Per-submit cost of an 8x64x32 int8 matmul, n=300
+[HW sweep]:
+
+| poll / settle | 1000/0 | 500/0 | 250/250 | 150/250 | 100/250 |
+|---|---|---|---|---|---|
+| us/submit | 1654 | 1084 | 1182 | 1036 | 988 |
+
+So 500 us with no settle is both the correct default and within 5% of the best any
+shorter period reaches: **1.51x** against the stock 1 ms, measured at the shipped
+defaults (1092 vs 1654 us/submit). The parameter is kept so the period can be swept
+again once the visibility race is understood well enough to shorten it.
+
+**A closed negative:** requiring the DPU done bits (`DPU_0|DPU_1` in
+`INTERRUPT_RAW_STATUS`) as the completion condition — which is what the RK3588 takes
+its interrupt on, and the DPU is the block that writes — does not work here. `DPU_0` is
+already set on the same poll tick as `PC_DONE` for a job that completes, and for jobs
+that do not set it the poll never fires: the gate then passes only because 58 jobs hit
+the 500 ms timeout and are retried. Do not re-try it as written.
 
 Patch 8 of the RFC (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`) is **not**
 carried: the board enable is board-specific. See below for what a board owes.

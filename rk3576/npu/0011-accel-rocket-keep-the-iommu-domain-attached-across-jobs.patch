@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 27 Jul 2026 21:00:00 +0000
+Subject: [PATCH] accel/rocket: keep the IOMMU domain attached across jobs
+
+rocket attaches the per-context IOMMU domain in rocket_job_run() and detaches
+it again on every completion and every reset, so the rk_iommu
+stall/reset/paging handshake runs twice per job.
+
+On RK3576 that detach is not just overhead, it is a correctness hazard.  The
+driver polls PC_DONE for completion, and PC_DONE means the program counter
+finished, not that the DPU's write DMA has drained.  Detaching on completion
+therefore tears the mapping down underneath writes that are still in flight.
+The result is a write page fault, which then blocks the next enable_stall,
+which the IOMMU reports as a timeout, and the job whose writes were faulted
+comes back short.
+
+The stock 1 ms poll period hides this, because the detection lag is longer
+than the drain.  Shortening the period exposes it, which is what made a
+shorter poll look unsafe.  Measured on an H96 MAX M9 with the int8 matmul
+gate, one run per point [HW sweep]:
+
+  poll period          1000us  500us  250us  150us
+  detach per job       43/43   43/43  40/43  37/43
+    IOMMU stall timeouts    0      0      0      4
+    NPU DMA errors          0      0      4     13
+  domain kept attached 43/43   43/43  42/43  40/43
+    IOMMU stall timeouts    0      0      0      0
+    NPU DMA errors          0      0      0      0
+
+Keeping the domain attached removes the IOMMU pathology outright at every
+period: no stall timeouts and no DMA errors anywhere in the sweep.  The
+residual short-period losses are a second and separate thing -- the fence is
+signalled as soon as PC_DONE is seen, before the writes are visible -- and are
+not addressed here; they are why the poll period is not taken below 500 us.
+
+Track the attached domain in the core, swap it only when a job from a
+different context runs, hold a kref so it outlives the job that attached it,
+and detach at core teardown and after a reset (the reset wipes the page-table
+base).
+
+At the stock period this is behaviour-neutral for correctness and the
+dispatch saving is inside the noise on this part (1654 vs 1661 us/submit on an
+8x64x32 int8 matmul, n=300) -- the RK3576's floor is dominated by the
+completion poll, not by the handshake.  RK3588 keeps its completion interrupt
+and is untouched apart from taking the same lifetime bookkeeping.
+
+Equivalent to "[RFC PATCH v4 5/9] accel: rocket: Keep the IOMMU domain
+attached across jobs" (Midgy BALON, linux-rockchip 2026-06-13), rebased here
+onto this series.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+--- a/drivers/accel/rocket/rocket_core.c
++++ b/drivers/accel/rocket/rocket_core.c
+@@ -13,6 +13,7 @@
+ #include <linux/reset.h>
+ 
+ #include "rocket_core.h"
++#include "rocket_drv.h"
+ #include "rocket_job.h"
+ 
+ int rocket_core_init(struct rocket_core *core)
+@@ -133,9 +134,20 @@
+ {
+ 	pm_runtime_dont_use_autosuspend(core->dev);
+ 	pm_runtime_disable(core->dev);
++
++	/*
++	 * Stop the scheduler before tearing down the IOMMU so an in-flight job
++	 * can no longer touch the (about to be detached) domain.
++	 */
++	rocket_job_fini(core);
++
++	if (core->attached_domain) {
++		iommu_detach_group(core->attached_domain->domain, core->iommu_group);
++		rocket_iommu_domain_put(core->attached_domain);
++		core->attached_domain = NULL;
++	}
+ 	iommu_group_put(core->iommu_group);
+ 	core->iommu_group = NULL;
+-	rocket_job_fini(core);
+ }
+ 
+ void rocket_core_reset(struct rocket_core *core)
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -34,6 +34,8 @@
+  * original behaviour; RK3576 opts in to the extra clocks, the multi-domain
+  * attach and the polled completion.
+  */
++struct rocket_iommu_domain;
++
+ struct rocket_soc_data {
+ 	unsigned int num_clks;		/* clk_bulk count: 4 base, 6 with CBUF */
+ 	unsigned int num_resets;	/* reset_bulk count: 2 base, 1 on RK3576 */
+@@ -56,6 +58,15 @@
+ 	struct reset_control_bulk_data resets[2];
+ 
+ 	struct iommu_group *iommu_group;
++	/*
++	 * The IOMMU domain currently attached to this core's group, kept
++	 * attached across jobs from the same context (see rocket_job_run).
++	 * Invariant: attached_domain holds exactly one reference on the domain
++	 * iff it is non-NULL -- so every place that clears it must
++	 * iommu_detach_group() and rocket_iommu_domain_put() together.  Mutated
++	 * only from the drm_sched single-threaded run/reset path.
++	 */
++	struct rocket_iommu_domain *attached_domain;
+ 
+ 	struct mutex job_lock;
+ 	struct rocket_job *in_flight_job;
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -10,6 +10,7 @@
+ #include <linux/hrtimer.h>
+ #include <linux/interrupt.h>
+ #include <linux/iommu.h>
++#include <linux/kref.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ 
+@@ -382,15 +383,46 @@
+ 		goto err_unstarted;
+ 	}
+ 
+-	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
+-	if (ret < 0) {
+-		/*
+-		 * core->in_flight_job is still NULL, so neither the completion
+-		 * path nor the timeout path will drop this reference.
+-		 */
+-		pm_runtime_mark_last_busy(core->dev);
+-		pm_runtime_put_autosuspend(core->dev);
+-		goto err_unstarted;
++	/*
++	 * Attach the job's IOMMU domain only when it differs from the one
++	 * already attached.  Re-attaching per job toggles the rk_iommu
++	 * stall/reset/paging handshake on every job, and on RK3576 the detach
++	 * half of it races the tail of the DPU's write DMA: PC_DONE means the
++	 * program counter finished, not that the writes have drained, so
++	 * tearing the mapping down on completion faults writes that are still
++	 * in flight.  Keeping the domain attached across jobs closes that
++	 * window; it also saves the handshake latency on every submit.
++	 *
++	 * core->attached_domain is read-modify-written here without job_lock.
++	 * That is safe because drm_sched serializes the only two writers: this
++	 * .run_job callback runs from the scheduler's single work item, and the
++	 * reset path (rocket_reset, the other writer) only runs after
++	 * drm_sched_stop() has fenced off run_job for this entity.  job_lock is
++	 * taken below only for in_flight_job, which IS also touched from the
++	 * completion path.
++	 */
++	if (core->attached_domain != job->domain) {
++		if (core->attached_domain) {
++			iommu_detach_group(core->attached_domain->domain,
++					   core->iommu_group);
++			rocket_iommu_domain_put(core->attached_domain);
++			core->attached_domain = NULL;
++		}
++
++		ret = iommu_attach_group(job->domain->domain, core->iommu_group);
++		if (ret < 0) {
++			/*
++			 * core->in_flight_job is still NULL, so neither the
++			 * completion path nor the timeout path will drop this
++			 * reference.
++			 */
++			pm_runtime_mark_last_busy(core->dev);
++			pm_runtime_put_autosuspend(core->dev);
++			goto err_unstarted;
++		}
++
++		kref_get(&job->domain->kref);
++		core->attached_domain = job->domain;
+ 	}
+ 
+ 	scoped_guard(mutex, &core->job_lock) {
+@@ -471,7 +503,6 @@
+ 				return;
+ 			}
+ 
+-			iommu_detach_group(NULL, iommu_group_get(core->dev));
+ 			dma_fence_signal(core->in_flight_job->done_fence);
+ 			pm_runtime_put_autosuspend(core->dev);
+ 			core->in_flight_job = NULL;
+@@ -501,7 +532,17 @@
+ 		if (core->in_flight_job)
+ 			pm_runtime_put_noidle(core->dev);
+ 
+-		iommu_detach_group(NULL, core->iommu_group);
++		/*
++		 * The reset wipes the IOMMU page-table base, so drop the
++		 * attached domain to force the next job to re-attach and
++		 * reprogram it.
++		 */
++		if (core->attached_domain) {
++			iommu_detach_group(core->attached_domain->domain,
++					   core->iommu_group);
++			rocket_iommu_domain_put(core->attached_domain);
++			core->attached_domain = NULL;
++		}
+ 
+ 		core->in_flight_job = NULL;
+ 	}
