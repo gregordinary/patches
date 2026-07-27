@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Mon, 27 Jul 2026 12:00:00 +0000
-Subject: [PATCH] accel/rocket: make the RK3576 completion poll period tunable
+Subject: [PATCH] accel/rocket: make the RK3576 completion poll period
+ tunable
 
 PC_DONE is read-only in INTERRUPT_MASK on RK3576, so it cannot be routed
 to the GIC and the driver polls it on an hrtimer instead of taking a
@@ -50,6 +51,11 @@ untouched.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
+ drivers/accel/rocket/rocket_job.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 135ffb2ed..99ceec54c 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -29,7 +29,21 @@
@@ -75,7 +81,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  
  /*
   * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
-@@ -191,7 +205,7 @@
+@@ -191,7 +205,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  
  	if (core->soc->poll_completion) {
  		atomic_set(&core->poll_active, 1);
@@ -84,7 +90,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  			      HRTIMER_MODE_REL);
  	} else {
  		dev_dbg(core->dev, "Submitted regcmd at 0x%llx to core %d",
-@@ -395,7 +409,7 @@
+@@ -395,7 +409,7 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
  		return HRTIMER_NORESTART;
  	}
  
@@ -94,4 +100,4 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  }
  
 -- 
-2.51.0
+2.43.0

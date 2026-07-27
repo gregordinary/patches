@@ -30,9 +30,11 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  drivers/crypto/rockchip/rk3288_crypto_ahash.c | 3 +++
  1 file changed, 3 insertions(+)
 
+diff --git a/drivers/crypto/rockchip/rk3288_crypto_ahash.c b/drivers/crypto/rockchip/rk3288_crypto_ahash.c
+index b9f5a8b42..63a9ef61a 100644
 --- a/drivers/crypto/rockchip/rk3288_crypto_ahash.c
 +++ b/drivers/crypto/rockchip/rk3288_crypto_ahash.c
-@@ -362,6 +362,9 @@
+@@ -362,6 +362,9 @@ static int rk_hash_init_tfm(struct crypto_ahash *tfm)
  				 sizeof(struct rk_ahash_rctx) +
  				 crypto_ahash_reqsize(tctx->fallback_tfm));
  
@@ -43,4 +45,4 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  }
  
 -- 
-2.47.0
+2.43.0

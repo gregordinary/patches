@@ -1,4 +1,4 @@
-From f77e9948ac85f919b2759fa52d6b12a12b34f95d Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 9 May 2026 19:54:04 -0400
 Subject: [PATCH] video: rockchip: rga3: forward-port vendor driver to kernel
@@ -25,6 +25,8 @@ in 070-rga-multicore-vendor-oot.patch) against kernel 7.1:
 
 All other RGA source files in the vendor driver compile clean against
 7.1 without modification.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/video/rockchip/rga3/rga_common.c   |  2 ++
  drivers/video/rockchip/rga3/rga_debugger.c |  1 +
@@ -187,4 +189,3 @@ index b130e6e604e8..ec11f3ffa822 100644
  	if (ret == RGA_OUT_OF_RESOURCES && i > 0)
 -- 
 2.43.0
-

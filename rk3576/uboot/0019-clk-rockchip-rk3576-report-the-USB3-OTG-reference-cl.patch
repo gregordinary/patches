@@ -1,4 +1,4 @@
-From de7a5e07989750691e93f65bc8cdf338afc3df9c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 22:12:20 -0400
 Subject: [PATCH] clk: rockchip: rk3576: report the USB3 OTG reference clock
@@ -48,4 +48,3 @@ index 69d59586..1f257055 100644
  		return -ENOENT;
 -- 
 2.43.0
-

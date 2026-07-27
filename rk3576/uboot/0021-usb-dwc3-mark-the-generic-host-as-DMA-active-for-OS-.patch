@@ -1,4 +1,4 @@
-From 0a2227271a8109e3a1173884f49189f0043405d1 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 23:00:25 -0400
 Subject: [PATCH] usb: dwc3: mark the generic host as DMA-active for OS handoff
@@ -42,4 +42,3 @@ index 22b9ef0b..d8dc5e8a 100644
  
 -- 
 2.43.0
-

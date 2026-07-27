@@ -1,4 +1,4 @@
-From 95a6c48816d39b190be4b7333ad6fc249c08590c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Fri, 15 May 2026 12:19:17 -0400
 Subject: [PATCH] allocator_dma_heap: force default_cma_region for mainline 7.1
@@ -15,6 +15,8 @@ heap_infos entries to the contiguous default_cma_region heap makes
 hevc_rkmpp/h264_rkmpp encode work against the stock kernel.
 
 Local patch — not for upstream. Revert if pairing with a BSP kernel.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  osal/allocator/allocator_dma_heap.c | 39 +++++++++++++++++++++++------
  1 file changed, 31 insertions(+), 8 deletions(-)
@@ -72,4 +74,3 @@ index b08cc7c9..c30129b9 100644
  static int try_open_path(const char *name)
 -- 
 2.43.0
-

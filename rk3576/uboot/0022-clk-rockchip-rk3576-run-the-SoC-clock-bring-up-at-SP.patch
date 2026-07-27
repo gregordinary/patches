@@ -1,4 +1,4 @@
-From 2d39c7f82ae91b000a2f9dc2c4164bf708fde455 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 23:38:17 -0400
 Subject: [PATCH] clk: rockchip: rk3576: run the SoC clock bring-up at SPL bind
@@ -113,4 +113,3 @@ index 1f257055..42fc30bd 100644
  				 &sys_child);
 -- 
 2.43.0
-

@@ -34,6 +34,8 @@ clock's park is. The rail only actually falls once every core has lowered its ow
 request -- exactly what max-aggregation gives us. Gating it on the last core down
 would strand the earlier cores' requests high and the rail would never come down
 at all.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_core.c |  21 +++++
  drivers/accel/rocket/rocket_core.h |  11 +++
@@ -284,4 +286,3 @@ index 3dd6536a7..aa1c2d675 100644
  	mutex_unlock(&rocket_clk_lock);
 -- 
 2.43.0
-

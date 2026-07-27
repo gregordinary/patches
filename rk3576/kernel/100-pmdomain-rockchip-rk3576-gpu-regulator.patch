@@ -118,4 +118,3 @@ index 490bbb1d1..1ad2c7946 100644
  static const struct rockchip_domain_info rk3588_pm_domains[] = {
 -- 
 2.43.0
-

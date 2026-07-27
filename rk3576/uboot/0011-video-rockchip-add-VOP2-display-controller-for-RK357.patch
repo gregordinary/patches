@@ -1,4 +1,4 @@
-From b0f5724c05fe66922c6f0cea8c11592fae321937 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 15:17:07 -0400
 Subject: [PATCH] video: rockchip: add VOP2 display controller for RK3576
@@ -746,4 +746,3 @@ index 00000000..eecd5b64
 +};
 -- 
 2.43.0
-

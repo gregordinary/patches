@@ -24,3 +24,5 @@ index a3e4c991..251e015a 100644
  CONFIG_ERRNO_STR=y
  # CONFIG_CMD_CLS is not set
 +CONFIG_CMD_SMC=y
+-- 
+2.43.0

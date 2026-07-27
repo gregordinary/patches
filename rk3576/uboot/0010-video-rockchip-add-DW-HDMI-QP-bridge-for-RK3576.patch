@@ -514,3 +514,5 @@ index 00000000..8e8f6d48
 +	.probe		= dw_hdmi_qp_probe,
 +	.priv_auto	= sizeof(struct dw_hdmi_qp_priv),
 +};
+-- 
+2.43.0

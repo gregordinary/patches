@@ -63,10 +63,12 @@ This is the precondition for any patch that DOES grow them (see the batched-subm
 patch, which adds drm_rocket_job.flags).
 
 Apply on top of the bo-mm-uaf fix.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
-drivers/accel/rocket/rocket_drv.c | 23 ++++++++++++--
-drivers/accel/rocket/rocket_job.c | 67 +++++++++++++++++++++++++++++++--------
-2 files changed, 73 insertions(+), 17 deletions(-)
+ drivers/accel/rocket/rocket_drv.c | 23 +++++++++--
+ drivers/accel/rocket/rocket_job.c | 67 ++++++++++++++++++++++++-------
+ 2 files changed, 73 insertions(+), 17 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
 index 0cf785d..728e7a0 100644
@@ -231,4 +233,3 @@ index d01b746..cbc90da 100644
  	kvfree(jobs);
 -- 
 2.43.0
-

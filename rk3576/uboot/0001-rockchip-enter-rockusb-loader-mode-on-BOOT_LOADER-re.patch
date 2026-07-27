@@ -31,3 +31,5 @@ index 55e94566..1563b1bd 100644
  	case BOOT_FASTBOOT:
  		debug("%s: enter fastboot!\n", __func__);
  		env_set("preboot", "setenv preboot; fastboot usb 0");
+-- 
+2.43.0

@@ -27,3 +27,5 @@ index 3a6044b5..a3e4c991 100644
  # CONFIG_BOOTMETH_VBE is not set
  CONFIG_DEFAULT_FDT_FILE="rockchip/rk3576-generic.dtb"
  # CONFIG_DISPLAY_CPUINFO is not set
+-- 
+2.43.0

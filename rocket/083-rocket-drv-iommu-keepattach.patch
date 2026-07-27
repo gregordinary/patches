@@ -30,6 +30,8 @@ Review hardening (K1): document the drm_sched serialization that makes the
 lockless attached_domain swap in rocket_job_run() safe; pass the real attached
 domain (not NULL) to iommu_detach_group() at every detach site; and state the
 "attached_domain holds one kref iff non-NULL" invariant at the struct field.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_core.c | 14 +++++++++-
  drivers/accel/rocket/rocket_core.h | 12 ++++++++
@@ -178,4 +180,3 @@ index ac51bff39..d01b74682 100644
  	}
 -- 
 2.43.0
-

@@ -256,3 +256,5 @@ index 125b08ee..69d59586 100644
  #if (IS_ENABLED(OF_CONTROL)) || (!IS_ENABLED(OF_PLATDATA))
  	.set_parent = rk3576_clk_set_parent,
  #endif
+-- 
+2.43.0

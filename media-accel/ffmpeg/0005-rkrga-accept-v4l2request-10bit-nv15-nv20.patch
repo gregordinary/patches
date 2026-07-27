@@ -1,4 +1,4 @@
-From 7829ae2a6088a1b6cd03589edbf43d07d03a6005 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 16 May 2026 13:39:59 -0400
 Subject: [PATCH] lavfi/rkrga: accept Kwiboo v4l2-request 10-bit (NV15/NV20)
@@ -18,6 +18,8 @@ filters only ever process AV_PIX_FMT_DRM_PRIME frames whose backing
 buffer already IS the RK semi-planar 10-bit layout. NV15 keeps
 uncompact_10b_msb=0 (compact, as rkvdec produces). 8-bit and
 rkmpp-tagged paths are untouched.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  libavfilter/rkrga_common.c |  7 +++++--
  libavfilter/rkrga_common.h | 23 +++++++++++++++++++++++
@@ -104,4 +106,3 @@ index bf05222633..1a40555811 100644
      config_force_format(ctx, in_format, &out_format);
 -- 
 2.43.0
-

@@ -51,6 +51,13 @@ onto this series.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
+ drivers/accel/rocket/rocket_core.c | 14 ++++++-
+ drivers/accel/rocket/rocket_core.h | 11 ++++++
+ drivers/accel/rocket/rocket_job.c  | 63 ++++++++++++++++++++++++------
+ 3 files changed, 76 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
+index 140e37969..a62c7174b 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
 @@ -13,6 +13,7 @@
@@ -61,7 +68,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  #include "rocket_job.h"
  
  int rocket_core_init(struct rocket_core *core)
-@@ -133,9 +134,20 @@
+@@ -133,9 +134,20 @@ void rocket_core_fini(struct rocket_core *core)
  {
  	pm_runtime_dont_use_autosuspend(core->dev);
  	pm_runtime_disable(core->dev);
@@ -83,6 +90,8 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  }
  
  void rocket_core_reset(struct rocket_core *core)
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index b08836bb8..375b63959 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
 @@ -34,6 +34,8 @@
@@ -94,7 +103,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  struct rocket_soc_data {
  	unsigned int num_clks;		/* clk_bulk count: 4 base, 6 with CBUF */
  	unsigned int num_resets;	/* reset_bulk count: 2 base, 1 on RK3576 */
-@@ -56,6 +58,15 @@
+@@ -56,6 +58,15 @@ struct rocket_core {
  	struct reset_control_bulk_data resets[2];
  
  	struct iommu_group *iommu_group;
@@ -110,6 +119,8 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  
  	struct mutex job_lock;
  	struct rocket_job *in_flight_job;
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index f7223d1c6..e092f56ea 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -10,6 +10,7 @@
@@ -120,7 +131,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
  
-@@ -382,15 +383,46 @@
+@@ -382,15 +383,46 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
  		goto err_unstarted;
  	}
  
@@ -176,7 +187,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  	}
  
  	scoped_guard(mutex, &core->job_lock) {
-@@ -471,7 +503,6 @@
+@@ -471,7 +503,6 @@ static void rocket_job_handle_irq(struct rocket_core *core)
  				return;
  			}
  
@@ -184,7 +195,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  			dma_fence_signal(core->in_flight_job->done_fence);
  			pm_runtime_put_autosuspend(core->dev);
  			core->in_flight_job = NULL;
-@@ -501,7 +532,17 @@
+@@ -501,7 +532,17 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  		if (core->in_flight_job)
  			pm_runtime_put_noidle(core->dev);
  
@@ -203,3 +214,5 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  
  		core->in_flight_job = NULL;
  	}
+-- 
+2.43.0

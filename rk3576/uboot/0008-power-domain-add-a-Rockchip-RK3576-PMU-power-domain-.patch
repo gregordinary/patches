@@ -254,3 +254,5 @@ index 00000000..777c6d5f
 +	.probe = rk3576_power_domain_probe,
 +	.priv_auto = sizeof(struct rk3576_power_domain_priv),
 +};
+-- 
+2.43.0

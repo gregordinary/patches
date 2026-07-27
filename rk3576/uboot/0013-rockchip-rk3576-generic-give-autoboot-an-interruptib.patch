@@ -1,4 +1,4 @@
-From 320ee3c58a8a49c82f450f979f6359c6f853473e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Mon, 20 Jul 2026 00:49:54 -0400
 Subject: [PATCH] rockchip: rk3576-generic: give autoboot an interruptible
@@ -39,4 +39,3 @@ index 3a6044b5..ab3d4f14 100644
  # CONFIG_DISPLAY_CPUINFO is not set
 -- 
 2.43.0
-

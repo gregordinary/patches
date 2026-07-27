@@ -21,3 +21,5 @@ index 251e015a..b0466e3c 100644
  # CONFIG_CMD_CLS is not set
  CONFIG_CMD_SMC=y
 +CONFIG_CMD_CACHE=y
+-- 
+2.43.0

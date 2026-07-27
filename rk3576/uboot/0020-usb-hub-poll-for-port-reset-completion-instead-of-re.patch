@@ -1,4 +1,4 @@
-From 8ce418f2862bbe2f3708cb48e126377ca7a42d84 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 22:23:28 -0400
 Subject: [PATCH] usb: hub: poll for port reset completion instead of re-arming
@@ -137,4 +137,3 @@ index 6a4bcec0..e758b341 100644
  
 -- 
 2.43.0
-

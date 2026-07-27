@@ -1,4 +1,4 @@
-From ee5cca7e2a1c2ae0bee6026dfcac53da6edcd8a9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Wed, 22 Jul 2026 05:59:38 -0400
 Subject: [PATCH] rockchip: rk3576: enable GMAC0 ethernet for the H96 MAX M9
@@ -125,4 +125,3 @@ index f994cd0a..2978ed06 100644
 +CONFIG_CMD_PING=y
 -- 
 2.43.0
-

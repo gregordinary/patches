@@ -25,6 +25,8 @@ now unused and removed.
 
 Independent of the clk/volt/keepattach/perf patches (touches rocket_drv.{c,h} +
 rocket_gem.{c,h}); apply in any order. Upstream candidate.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_drv.c | 36 ++++++++++++++++++++-----------
  drivers/accel/rocket/rocket_drv.h | 17 +++++++++++++--
@@ -233,4 +235,3 @@ index 240430334..b6653b617 100644
  	size_t size;
 -- 
 2.43.0
-

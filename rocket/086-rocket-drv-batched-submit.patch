@@ -81,12 +81,14 @@ Install the matching uAPI header where BOTH the kernel build and userspace see i
 /usr/include/drm/rocket_accel.h); the canonical copy is patches/rocket/uapi/rocket_accel.h.
 A half-install -- new header for the kernel build, old one for userspace -- builds a
 kernel whose struct is larger than the one userspace declares.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
-drivers/accel/rocket/rocket_drv.c |  7 +++-
-drivers/accel/rocket/rocket_job.c | 73 +++++++++++++++++++++++++++++++++++++--
-drivers/accel/rocket/rocket_job.h | 14 ++++++++
-include/uapi/drm/rocket_accel.h   | 30 ++++++++++++++++
-4 files changed, 121 insertions(+), 3 deletions(-)
+ drivers/accel/rocket/rocket_drv.c |  7 ++-
+ drivers/accel/rocket/rocket_job.c | 73 ++++++++++++++++++++++++++++++-
+ drivers/accel/rocket/rocket_job.h | 14 ++++++
+ include/uapi/drm/rocket_accel.h   | 30 +++++++++++++
+ 4 files changed, 121 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
 index 728e7a0..3d978f3 100644
@@ -317,4 +319,3 @@ index d0685e3..e75db56 100644
  /**
 -- 
 2.43.0
-

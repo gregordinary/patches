@@ -30,4 +30,3 @@ index 28175d820..d25caf5a5 100644
  					pm_qos = <&qos_gpu>;
 -- 
 2.43.0
-

@@ -79,6 +79,8 @@ This does not make rates above 600 MHz safe: staggered multi-core resume already
 powers a domain on at a rate a sibling raised, so that exposure is pre-existing,
 and a pinned 900 MHz hard-locks the box. 600 MHz is the only validated operating
 point.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_core.c |  54 ++++++++++++++--
  drivers/accel/rocket/rocket_core.h |  10 +++
@@ -338,4 +340,3 @@ index 8bbbce5..3dd6536 100644
  	return 0;
 -- 
 2.43.0
-

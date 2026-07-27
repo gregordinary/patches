@@ -45,3 +45,5 @@ index 1563b1bd..be131b80 100644
  			ret = adc_channel_single_shot(dev->name, 1, &val);
  			break;
  		}
+-- 
+2.43.0

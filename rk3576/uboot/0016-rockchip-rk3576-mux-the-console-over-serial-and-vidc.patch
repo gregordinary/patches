@@ -1,4 +1,4 @@
-From e4cab96224a677b4b851fc031e0c70c0a734a89b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 16:22:39 -0400
 Subject: [PATCH] rockchip: rk3576: mux the console over serial and vidconsole
@@ -35,4 +35,3 @@ index 14d1d863..6b1d731d 100644
  #define ENV_MEM_LAYOUT_SETTINGS		\
 -- 
 2.43.0
-

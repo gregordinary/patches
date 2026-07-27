@@ -1,4 +1,4 @@
-From 95288af22f99a600926e76d74bb444877180e343 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 17:54:28 -0400
 Subject: [PATCH] rockchip: rk3576-generic: run USB host on the second
@@ -81,4 +81,3 @@ index b0466e3c..9aef9348 100644
  CONFIG_BAUDRATE=1500000
 -- 
 2.43.0
-

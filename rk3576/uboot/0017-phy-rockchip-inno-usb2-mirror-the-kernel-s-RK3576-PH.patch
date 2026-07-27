@@ -1,4 +1,4 @@
-From 64a972072a2f811da6dd902403d4c25678c1699e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sat, 18 Jul 2026 17:24:28 -0400
 Subject: [PATCH] phy: rockchip: inno-usb2: mirror the kernel's RK3576 PHY
@@ -159,4 +159,3 @@ index 4ea6600c..fd62bf0a 100644
  	},
 -- 
 2.43.0
-

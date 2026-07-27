@@ -48,9 +48,14 @@ notice lives.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
+ drivers/accel/rocket/rocket_job.c | 35 +++++++++++++++++++++++++++----
+ 1 file changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 99ceec54c..f7223d1c6 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -372,12 +372,26 @@
+@@ -372,18 +372,45 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
  	job->done_fence = dma_fence_get(fence);
  
  	ret = pm_runtime_get_sync(core->dev);
@@ -81,10 +86,10 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  
  	scoped_guard(mutex, &core->job_lock) {
  		core->in_flight_job = job;
-@@ -385,6 +399,19 @@
+ 		rocket_job_hw_submit(core, job);
  	}
  
- 	return fence;
++	return fence;
 +
 +err_unstarted:
 +	/*
@@ -97,7 +102,8 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 +	dma_fence_set_error(fence, ret);
 +	dma_fence_signal(fence);
 +
-+	return fence;
+ 	return fence;
  }
  
- static void rocket_job_handle_irq(struct rocket_core *core);
+-- 
+2.43.0
