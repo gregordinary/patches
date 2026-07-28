@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 11 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 12 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -24,6 +24,7 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
 | 0010 | accel/rocket: complete jobs that never reach the hardware (ours) |
 | 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
+| 0012 | accel/rocket: retire an RK3576 job on the DPU's completion, not on `PC_DONE` (ours) |
 
 Two of the carried patches have local changes; the rest are verbatim.
 
@@ -89,12 +90,13 @@ The error paths are identical on the RK3588, which reaches them through the same
 `rocket_core_reset()`; the patch is in this series only because this is the part that
 wedges often enough to notice.
 
-## What 0009 and 0011 are for: the per-submit floor, and what actually bounds it
+## What 0009, 0011 and 0012 are for: the per-submit floor, and what actually bounds it
 
 `PC_DONE` is read-only in `INTERRUPT_MASK` on this SoC, so 0006 polls it on an hrtimer
 where the RK3588 takes an interrupt. A submit cannot complete faster than one poll, so
 that period is the per-submit floor and every RK3576 cost table is a submit-count table
-because of it. 0009 makes the period a module parameter and sets it to **500 us**.
+because of it. 0009 makes the period a module parameter; the shipped default is
+**50 us** (`poll_interval_us`).
 
 **What bounds it is not the poll rate.** `PC_DONE` means the program counter finished,
 not that the DPU's write DMA has drained, and the driver both tears down the IOMMU
@@ -109,8 +111,10 @@ they need separate fixes:
   (`0x1d` shows `STALL_ACTIVE` — the stall arrived, just after the poll gave up), and
   the NPU raises `DMA_READ_ERROR|DMA_WRITE_ERROR`. **0011 removes this outright** by
   keeping the domain attached across jobs.
-- **The fence is signalled before the writes are visible.** This one 0011 does not
-  touch, and it is what keeps the period at 500 us.
+- **The fence is signalled before the writes are visible.** 0011 does not touch this
+  one; **0012 removes it** by retiring the job on the DPU's own completion — the
+  `DPU_0`/`DPU_1` bits in `INTERRUPT_RAW_STATUS`, which is what the RK3588 takes its
+  interrupt on — instead of on `PC_DONE`.
 
 Measured on an H96 MAX M9 with the int8 matmul gate, one run per point [HW sweep]:
 
@@ -121,25 +125,56 @@ Measured on an H96 MAX M9 with the int8 matmul gate, one run per point [HW sweep
 | domain kept attached (0011) | 43/43 | 43/43 | 42/43 | 40/43 |
 | &nbsp;&nbsp;stall timeouts / DMA errors | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
 
-The visibility race needs about **250 us of settle** to close — and that settle costs
-as much as the shorter period saves. Per-submit cost of an 8x64x32 int8 matmul, n=300
+### What 0012 retires on, and why the wait is bounded
+
+`INTERRUPT_RAW_STATUS` carries the signal that has drained: the `DPU_0`/`DPU_1` bits set
+tens to hundreds of microseconds *after* `PC_DONE`. Logged at the moment the poll retires
 [HW sweep]:
 
-| poll / settle | 1000/0 | 500/0 | 250/250 | 150/250 | 100/250 |
+```
+raw@retire=0x20000001 -> 0x30000155 after 82us
+```
+
+— `PC_DONE_1` with no DPU bit, then `DPU_0` (`0x100`).
+
+**Not every task raises one**, so the wait is bounded by `dpu_grace_us` (default
+**500 us**), past which the job retires on `PC_DONE` as it did before. A task whose DPU
+output element is wider than one byte — the int32 writer, and fp16 output — completes CNA
+and CORE and never sets a DPU bit at all (`raw=0x30000055`, held for milliseconds). The
+500 us default is twice what those tasks need: they still fail at 100 us (3 of 43 shapes)
+and pass at 250, 500, 1000 and 2000, and a longer grace only costs them wall time (the
+fp16 stem in the cost table is 13.5 ms at 500 us against 15.8 at 1000).
+
+With the DPU bit as the retire condition the poll period goes to 50 us. Per-submit cost of
+an 8x64x32 int8 matmul, n=300, us/submit [HW sweep]:
+
+| poll period | 500 us | 250 us | 125 us | 50 us | 25 us |
 |---|---|---|---|---|---|
-| us/submit | 1654 | 1084 | 1182 | 1036 | 988 |
+| retire on `PC_DONE` | 1065 | 731\* | 535\* | 433\* | — |
+| retire on the DPU bit | 1073 | 739 | 558 | 439 | 398 |
 
-So 500 us with no settle is both the correct default and within 5% of the best any
-shorter period reaches: **1.51x** against the stock 1 ms, measured at the shipped
-defaults (1092 vs 1654 us/submit). The parameter is kept so the period can be swept
-again once the visibility race is understood well enough to shorten it.
+\* *incorrect* — retiring on `PC_DONE`, the largest output surface in the int8 matmul gate
+fails 3 runs of 3 at 250 us with a **partial** surface (32x2048x3072, ~95-98k of 98304
+elements exact, the missing bytes a contiguous tail), and 7 of 43 shapes fail at 50 us.
 
-**A closed negative:** requiring the DPU done bits (`DPU_0|DPU_1` in
-`INTERRUPT_RAW_STATUS`) as the completion condition — which is what the RK3588 takes
-its interrupt on, and the DPU is the block that writes — does not work here. `DPU_0` is
-already set on the same poll tick as `PC_DONE` for a job that completes, and for jobs
-that do not set it the poll never fires: the gate then passes only because 58 jobs hit
-the 500 ms timeout and are retried. Do not re-try it as written.
+At the shipped defaults that is **2.42x** on every submit (1065 -> 439 us/submit), and the
+correctness is the point: retiring on the DPU bit, the gate is 43/43 at both 250 and 50 us,
+five runs in a row, and the full RK3576 gate set is clean at 50 us — convolution 102/102,
+the convolution library 154 + 8 refused, the int8 matmul gate 43/43 through both int32
+writers, the refusal gate 15/15, both fp16 sweeps, and nothing in `dmesg`.
+
+Whole-entry cost, NPU milliseconds [HW sweep]:
+
+| entry | 500 us / `PC_DONE` | 50 us / DPU bit |
+|---|---|---|
+| int8 stem 3x224x224 k3s2 oc32 | 4.00 | 3.33 |
+| conv 32->64 k1 56x56 | 3.12 | 1.90 |
+| conv 256->512 k1 14x14 | 3.78 | 2.46 |
+| dw 256 k3 14x14 | 1.42 | 1.00 |
+| matmul 32x1024x1024 | 5.83 | 4.74 |
+| matmul 32x1024x2560 | 13.37 | 11.17 |
+
+The RK3588 takes a completion interrupt and does not poll, so none of this reaches it.
 
 Patch 8 of the RFC (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`) is **not**
 carried: the board enable is board-specific. See below for what a board owes.

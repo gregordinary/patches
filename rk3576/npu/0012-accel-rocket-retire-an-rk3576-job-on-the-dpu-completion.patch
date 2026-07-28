@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 28 Jul 2026 00:00:00 +0000
+Subject: [PATCH] accel/rocket: retire an RK3576 job on the DPU's completion,
+ not on PC_DONE
+
+The RK3576 has no maskable completion interrupt, so the driver polls
+PC_DONE on an hrtimer.  PC_DONE means the program counter finished
+issuing the task, not that the DPU's write DMA has drained, and the
+driver signals the job fence as soon as it sees it -- so a caller can be
+handed a surface whose tail has not landed.
+
+INTERRUPT_RAW_STATUS carries the signal that has drained.  The DPU_0/
+DPU_1 bits are what RK3588 takes as its completion interrupt, and on
+RK3576 they set tens to hundreds of microseconds AFTER PC_DONE.  Logging
+both at the moment the poll retires, on an H96 MAX M9 [HW sweep]:
+
+  raw@retire=0x20000001 -> 0x30000155 after 82us
+
+-- PC_DONE_1 with no DPU bit, then DPU_0 (0x100).  Wait for it.
+
+The wait is bounded by a new dpu_grace_us parameter because not every
+task raises it: a task whose DPU output element is wider than one byte
+(the int32 writer, and fp16 output) completes CNA and CORE and never sets
+a DPU bit at all -- raw=0x30000055, held for milliseconds.  Those retire
+on the grace period, exactly as they did before this patch.
+
+What this buys is a much shorter poll period.  The period was 500 us
+because that was the shortest one that was correct; the bound was never
+the poll rate, it was the drain being hidden behind the detection lag.
+With the DPU bit as the retire condition the period can go to 50 us.
+Measured with tests/rk3576_submit_floor (8x64x32 int8 matmul, n=300,
+us/submit) [HW sweep]:
+
+  poll period          500us   250us   125us    50us    25us
+  PC_DONE (before)      1065     731*    535*    433*     --
+  DPU bit (after)       1073     739     558     439     398
+
+  * incorrect -- see below
+
+1065 -> 439 us, 2.42x, on every submit.
+
+The correctness is the point.  Before this patch, at 250 us the largest
+output surface in the int8 matmul gate fails 3 runs of 3 with a PARTIAL
+surface (32x2048x3072, ~95-98k of 98304 elements exact, the missing bytes
+a contiguous tail); at 50 us, 7 of 43 shapes fail.  After it, 43/43 at
+both, five runs in a row, and the full RK3576 gate set is clean at 50 us:
+convolution 102/102, the convolution library 154 + 8 refused, the int8
+matmul gate 43/43 through both int32 writers, the refusal gate 15/15,
+both fp16 sweeps, and nothing in dmesg.
+
+The grace default of 500 us is twice what the wide-output tasks need:
+they still fail at 100 us (3 of 43 shapes) and pass at 250, 500, 1000 and
+2000, and a longer grace only costs those tasks wall time (the fp16 stem
+in the cost table is 13.5 ms at 500 us against 15.8 at 1000).
+
+Whole-entry cost, tests/rk3576_cost_table, NPU milliseconds [HW sweep]:
+
+                                 500us/PC_DONE   50us/DPU bit
+  int8 stem 3x224x224 k3s2 oc32       4.00           3.33
+  conv 32->64 k1 56x56                3.12           1.90
+  conv 256->512 k1 14x14              3.78           2.46
+  dw 256 k3 14x14                     1.42           1.00
+  matmul 32x1024x1024                 5.83           4.74
+  matmul 32x1024x2560                13.37          11.17
+
+RK3588 takes a completion interrupt and does not poll, so it is
+untouched.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h |  6 ++++
+ drivers/accel/rocket/rocket_job.c  | 45 ++++++++++++++++++++++++------
+ 2 files changed, 43 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 375b63959..a6b9c8e86 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -83,6 +83,12 @@ struct rocket_core {
+ 	struct hrtimer poll_timer;
+ 	struct work_struct poll_work;
+ 	atomic_t poll_active;
++	/*
++	 * When PC_DONE was first seen for the task in flight, so the wait
++	 * for the DPU's own completion can be bounded.  Zero while none
++	 * has been seen.
++	 */
++	ktime_t poll_pc_done_at;
+ 
+ 	struct drm_gpu_scheduler sched;
+ 	u64 fence_context;
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index e092f56ea..58848aada 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -30,12 +30,17 @@
+  */
+ #define PC_INTERRUPT_MASK_RK3576_PC_DONE_0  0x10000000u
+ #define PC_INTERRUPT_MASK_RK3576_PC_DONE_1  0x20000000u
+-#define RK3576_POLL_INTERVAL_US_DEFAULT  500u   /* 500 us */
++#define RK3576_POLL_INTERVAL_US_DEFAULT  50u    /* 50 us */
+ 
+ static unsigned int rocket_poll_interval_us = RK3576_POLL_INTERVAL_US_DEFAULT;
+ module_param_named(poll_interval_us, rocket_poll_interval_us, uint, 0644);
+ MODULE_PARM_DESC(poll_interval_us,
+-		 "RK3576 PC_DONE completion poll period, in microseconds (default 500)");
++		 "RK3576 PC_DONE completion poll period, in microseconds (default 50)");
++
++static unsigned int rocket_dpu_grace_us = 500;
++module_param_named(dpu_grace_us, rocket_dpu_grace_us, uint, 0644);
++MODULE_PARM_DESC(dpu_grace_us,
++		 "RK3576: how long to wait past PC_DONE for the DPU's own completion, in microseconds (default 500)");
+ 
+ static inline ktime_t rocket_poll_period(void)
+ {
+@@ -205,6 +210,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 	rocket_pc_writel(core, OPERATION_ENABLE, PC_OPERATION_ENABLE_OP_EN(1));
+ 
+ 	if (core->soc->poll_completion) {
++		core->poll_pc_done_at = 0;
+ 		atomic_set(&core->poll_active, 1);
+ 		hrtimer_start(&core->poll_timer, rocket_poll_period(),
+ 			      HRTIMER_MODE_REL);
+@@ -451,6 +457,7 @@ static void rocket_job_handle_irq(struct rocket_core *core);
+ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ {
+ 	struct rocket_core *core = container_of(timer, struct rocket_core, poll_timer);
++	u32 raw;
+ 
+ 	if (!atomic_read(&core->poll_active))
+ 		return HRTIMER_NORESTART;
+@@ -459,17 +466,39 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ 	 * On RK3576, OPERATION_ENABLE is not cleared by hardware on completion;
+ 	 * check INTERRUPT_RAW_STATUS bits 28-29 (PC_DONE_0/1) instead.
+ 	 */
++	raw = rocket_pc_readl(core, INTERRUPT_RAW_STATUS);
+ 	if (rocket_pc_readl(core, OPERATION_ENABLE) == 0 ||
+-	    (rocket_pc_readl(core, INTERRUPT_RAW_STATUS) &
+-	     (PC_INTERRUPT_MASK_RK3576_PC_DONE_0 |
+-	      PC_INTERRUPT_MASK_RK3576_PC_DONE_1))) {
+-		atomic_set(&core->poll_active, 0);
+-		schedule_work(&core->poll_work);
+-		return HRTIMER_NORESTART;
++	    (raw & (PC_INTERRUPT_MASK_RK3576_PC_DONE_0 |
++		    PC_INTERRUPT_MASK_RK3576_PC_DONE_1))) {
++		/*
++		 * PC_DONE says the program counter finished issuing the task, not
++		 * that the DPU's write DMA has drained.  The DPU raises its own
++		 * completion -- the bit RK3588 takes as its interrupt -- tens of
++		 * microseconds later, and a fence signalled on PC_DONE hands the
++		 * caller a surface whose tail has not landed yet.  Wait for it.
++		 *
++		 * Bounded, so a task that raises no DPU completion at all cannot
++		 * stall behind one: after dpu_grace_us the job retires on PC_DONE
++		 * as it did before.
++		 */
++		if (raw & (PC_INTERRUPT_RAW_STATUS_DPU_0 |
++			   PC_INTERRUPT_RAW_STATUS_DPU_1))
++			goto complete;
++		if (!core->poll_pc_done_at)
++			core->poll_pc_done_at = ktime_get();
++		else if (ktime_us_delta(ktime_get(), core->poll_pc_done_at) >=
++			 (s64)READ_ONCE(rocket_dpu_grace_us))
++			goto complete;
+ 	}
+ 
+ 	hrtimer_forward_now(timer, rocket_poll_period());
+ 	return HRTIMER_RESTART;
++
++complete:
++	core->poll_pc_done_at = 0;
++	atomic_set(&core->poll_active, 0);
++	schedule_work(&core->poll_work);
++	return HRTIMER_NORESTART;
+ }
+ 
+ static void rocket_poll_work_fn(struct work_struct *work)
+-- 
+2.43.0

@@ -31,16 +31,21 @@
 # task count of 28673, which leaves the PC mid-program so only the first submit of
 # each power session computes.
 #
-# 0009-0011 are ours and are the completion path. 0006 polls PC_DONE on an hrtimer
+# 0009-0012 are ours and are the completion path. 0006 polls PC_DONE on an hrtimer
 # because PC_DONE is read-only in INTERRUPT_MASK on this SoC, so the poll period is
-# the per-submit floor; 0009 makes it a module parameter at 500 us (1.51x against the
-# stock 1 ms). 0011 keeps the IOMMU domain attached across jobs, which removes the
-# per-job detach that faults writes still in flight and wedges the next job's
-# enable_stall. 0010 fixes rocket_job_run()'s two early returns, which leak a
-# runtime-PM reference and a scheduler credit and pin the NPU runtime-active past a
-# module reload; that bug is mainline's and the RK3588 reaches the same paths, so
-# 0010 duplicates no RK3588 patch only because none exists yet. See
-# rk3576/npu/README.md for the measurements behind the 500 us default.
+# the per-submit floor; 0009 makes it a module parameter. 0011 keeps the IOMMU domain
+# attached across jobs, which removes the per-job detach that faults writes still in
+# flight and wedges the next job's enable_stall. 0012 retires a job on the DPU's own
+# completion bits in INTERRUPT_RAW_STATUS -- what the RK3588 takes its interrupt on --
+# rather than on PC_DONE, which means the program counter finished issuing the task and
+# not that the write DMA has drained; the wait is bounded by a dpu_grace_us parameter
+# (500 us) because a task with a wide DPU output element raises no DPU bit at all. That
+# is what lets the poll period ship at 50 us: 2.42x per submit against the 500 us it
+# replaces, and correct where PC_DONE at that period hands back partial surfaces. 0010
+# fixes rocket_job_run()'s two early returns, which leak a runtime-PM reference and a
+# scheduler credit and pin the NPU runtime-active past a module reload; that bug is
+# mainline's and the RK3588 reaches the same paths, so 0010 duplicates no RK3588 patch
+# only because none exists yet. See rk3576/npu/README.md for the measurements.
 #
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
@@ -66,6 +71,7 @@ kernel = [
     "rk3576/npu/0009-accel-rocket-make-the-rk3576-completion-poll-period-tunable.patch",
     "rk3576/npu/0010-accel-rocket-complete-jobs-that-never-reach-the-hardware.patch",
     "rk3576/npu/0011-accel-rocket-keep-the-iommu-domain-attached-across-jobs.patch",
+    "rk3576/npu/0012-accel-rocket-retire-an-rk3576-job-on-the-dpu-completion.patch",
 ]
 
 ffmpeg    = []
