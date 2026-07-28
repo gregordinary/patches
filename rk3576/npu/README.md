@@ -11,15 +11,6 @@ RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with the
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
 
-Patch 0002 is the one non-verbatim file: `rk3576-fixes` and this series both extend
-`drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
-the RK3576 power-domain table) -- one adds a `.need_regulator` argument, the other a
-`.delay_us` argument. Because the resolver always orders `rk3576-fixes` first (it is
-a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series),
-0002 is rebased over `rk3576-fixes`: the merged macro/table carry both arguments
-(GPU `regulator = true`, the NPU domains `delay = 15`). Re-derive it the same way on
-a future RFC re-sync.
-
 | file | upstream subject |
 |------|------------------|
 | 0001 | dt-bindings: npu: rockchip: add `rockchip,rk3576-rknn-core` |
@@ -33,6 +24,33 @@ a future RFC re-sync.
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
 | 0010 | accel/rocket: complete jobs that never reach the hardware (ours) |
 | 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
+
+Two of the carried patches have local changes; the rest are verbatim.
+
+**0002 is rebased over `rk3576-fixes`.** That series and this one both extend
+`drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
+the RK3576 power-domain table) -- one adds a `.need_regulator` argument, the other a
+`.delay_us` argument. Because the resolver always orders `rk3576-fixes` first (it is
+a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series), the
+merged macro/table carry both arguments (GPU `regulator = true`, the NPU domains
+`delay = 15`). Re-derive it the same way on a future RFC re-sync.
+
+**0007 gives `rknn_core_1` the CBUF clocks.** `rocket` asks every core for all six
+RK3576 clocks -- `rocket_soc_data.num_clks` is 6 and `rocket_core_init()` takes them
+with `devm_clk_bulk_get()`, which is a hard get, decided per SoC and not per node. The
+RFC lists only four on core 1, so that core cannot probe:
+
+```
+rocket 27710000.npu: error -ENOENT: Failed to get clk 'aclk_cbuf'
+rocket 27710000.npu: probe with driver rocket failed with error -2
+```
+
+`ACLK_RKNN_CBUF` and `HCLK_RKNN_CBUF` are single clocks in the CRU, not per-core --
+there is no `..._CBUF1` -- and core 1's own `rknn_mmu_1` and `power-domain@RK3576_PD_NPU1`
+already list both, as does `rknn_core_0`. Adding them to the core node makes it
+consistent with the three, and the clock framework reference-counts the sharing.
+Upstream has not needed the fix because the RFC ships both cores `disabled` and its
+board patch enables only core 0.
 
 ## What 0010 fixes, and why it is not RK3576-specific
 
@@ -129,31 +147,38 @@ carried: the board enable is board-specific. See below for what a board owes.
 ## What a board `.dts` must do, and why
 
 0007 adds the SoC nodes `disabled`; a board enables and wires them. For the H96 MAX M9
-that is `devices/h96-max-m9-npu/dts/rk3576-h96-max-m9-npu.dts` in the boot2deb tree.
-Five properties, and **two of the three nodes fail in a way that does not point at
-itself** -- so take them together, not as a menu:
+that is `devices/h96-max-m9/dts/rk3576-h96-max-m9.dts` in the boot2deb tree, which
+enables both cores. Two of these properties fail in a way that does not point at
+itself, so take them together, not as a menu:
 
 | node | change |
 |---|---|
 | `&rknn_core_0` (`/soc/npu@27700000`) | `power-domains` = **both** `RK3576_PD_NPU0` **and** `RK3576_PD_NPU1` |
 | `&rknn_core_0` | `npu-supply = <&vdd_npu_s0>` |
 | `&rknn_core_0` | `status = "okay"` |
+| `&rknn_core_1` (`/soc/npu@27710000`) | the same three, with `RK3576_PD_NPU1` first |
 | `&rknn_mmu_0` (`/soc/iommu@27702000`) | `status = "okay"` |
+| `&rknn_mmu_1` (`/soc/iommu@2770a000`) | `status = "okay"` |
 | `&vdd_npu_s0` (PMIC `dcdc-reg2` on this board) | `regulator-always-on` |
 
-**Both power domains, even though `rocket` computes on core 0.** `rocket_core_init()`
-attaches with `devm_pm_domain_attach_list()`. A node listing a **single**
-`power-domains` entry is auto-attached by the driver core first, so the driver's
-explicit attach then fails and there is no `/dev/accel` at all:
+**Every enabled core lists both power domains.** `rocket_core_init()` attaches with
+`devm_pm_domain_attach_list()`. A node listing a **single** `power-domains` entry is
+auto-attached by the driver core first, so the driver's explicit attach then fails and
+that core has no `/dev/accel` at all:
 
 ```
 rocket 27700000.npu: error -EEXIST: failed to attach NPU power domains
 rocket 27700000.npu: probe with driver rocket failed with error -17
 ```
 
-Listing two entries suppresses the auto-attach. It also matches the vendor, which
-powers both NPU domains from one node even on a single core -- the CBUF->CMAC read
-path is only fully powered with NPU1 up.
+Listing two entries suppresses the auto-attach. The driver decides this per SoC, not
+per node, so it applies to core 1 exactly as it does to core 0. It also matches the
+vendor, which powers both NPU domains from one node even on a single core -- the
+CBUF->CMAC read path is only fully powered with NPU1 up. genpd reference-counts the
+two shared domains.
+
+The IOMMUs need only their `status`: `rk_iommu` does no explicit attach, so a single
+`power-domains` entry is correct for them.
 
 **The rail needs `regulator-always-on` *in addition to* `npu-supply`.** `vdd_npu_s0`
 boots enabled but has no consumer, so the regulator core disables it as unused late in
@@ -163,9 +188,6 @@ alone does not hold it: mainline `rocket` has no regulator support at all (`rock
 references no `regulator_*` symbol), so the property is inert and nothing claims the
 rail. Set both -- `npu-supply` so a regulator-aware driver can vary the voltage,
 `regulator-always-on` so the rail survives under this one.
-
-Core 1 (`npu@27710000`) and its IOMMU stay disabled: single-core bring-up, with core 0
-holding both domains.
 
 0008 is required for back-to-back submits, and 0006's commit message predates it:
 that message describes only the first operation per power session producing valid
