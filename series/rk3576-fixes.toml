@@ -19,9 +19,16 @@ applies_to_kernel = ">=7.1, <7.2"
 # gives the RK3576 GPU domain a regulator like RK3588's; 101 labels the domain so
 # a board can attach vdd_gpu_s0 with domain-supply (the H96 board DTS does).
 # Upstream-destined; retire from this series once it reaches the 7.1.y stable tree.
+#
+# 102 describes the CPU caches, which the SoC dtsi omits entirely -- the kernel
+# reports "cacheinfo: Unable to detect cache hierarchy for CPU 0" and leaves
+# /sys/devices/system/cpu/cpu*/cache empty. The sizes are the TRM's for the two
+# clusters and agree with rk3399-base.dtsi, which carries the same A72 and A53
+# cores. Also upstream-destined.
 kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
+    "rk3576/kernel/102-arm64-dts-rk3576-cpu-caches.patch",
 ]
 
 ffmpeg    = []
