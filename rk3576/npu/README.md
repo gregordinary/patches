@@ -36,22 +36,41 @@ a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series)
 merged macro/table carry both arguments (GPU `regulator = true`, the NPU domains
 `delay = 15`). Re-derive it the same way on a future RFC re-sync.
 
-**0007 gives `rknn_core_1` the CBUF clocks.** `rocket` asks every core for all six
-RK3576 clocks -- `rocket_soc_data.num_clks` is 6 and `rocket_core_init()` takes them
-with `devm_clk_bulk_get()`, which is a hard get, decided per SoC and not per node. The
-RFC lists only four on core 1, so that core cannot probe:
+**0007 carries three local changes**, all on `rknn_core_1` and all invisible upstream,
+because the RFC ships both cores `disabled` and its board patch enables core 0 alone.
+
+**Core 1 sits at `0x27708000`.** The two cores are the two halves of one 64 KB `RKNN TOP`
+window: the RK3576 TRM v1.2 address map has `RKNN TOP` at `0x27700000` (64 KB) and the
+unrelated `RKNN_NSP` at `0x27710000` (64 KB), and the vendor DT covers the NPU as
+`reg = <0x27700000 0x8000>, <0x27708000 0x8000>` with `npu0_irq`/`npu1_irq`. The stride
+is `0x8000`, not the RK3588's `0x10000`. Each core's five banks sit at the same offsets
+within its half -- pc `+0x0000`, cna `+0x1000`, core `+0x3000`, dpu `+0x4000`, dpu_rdma
+`+0x5000` -- with its IOMMU at `+0x2000`, which is why `rknn_mmu_1` at `0x2770a000` was
+already right while the core banks were not. Measured with core 1's clocks forced on
+[HW sweep], `0x27708000` reads the same version word as core 0 (`0x46495245` /
+`0x00010002`, the `VERSION + (VERSION_NUM & 0xffff)` the driver prints as 1179210311),
+and `0x27709000`/`0x2770b000` match `0x27701000`/`0x27703000`. `0x27710000` holds
+boot-dependent noise, so a core pointed there binds, reads a plausible version, and
+times out on every job while writing PC registers into the NPU MCU subsystem.
+
+**Core 1 needs the CBUF clocks.** `rocket` asks every core for all six RK3576 clocks --
+`rocket_soc_data.num_clks` is 6 and `rocket_core_init()` takes them with
+`devm_clk_bulk_get()`, which is a hard get, decided per SoC and not per node. The RFC
+lists only four on core 1, so that core cannot probe:
 
 ```
-rocket 27710000.npu: error -ENOENT: Failed to get clk 'aclk_cbuf'
-rocket 27710000.npu: probe with driver rocket failed with error -2
+rocket 27708000.npu: error -ENOENT: Failed to get clk 'aclk_cbuf'
+rocket 27708000.npu: probe with driver rocket failed with error -2
 ```
 
 `ACLK_RKNN_CBUF` and `HCLK_RKNN_CBUF` are single clocks in the CRU, not per-core --
 there is no `..._CBUF1` -- and core 1's own `rknn_mmu_1` and `power-domain@RK3576_PD_NPU1`
 already list both, as does `rknn_core_0`. Adding them to the core node makes it
 consistent with the three, and the clock framework reference-counts the sharing.
-Upstream has not needed the fix because the RFC ships both cores `disabled` and its
-board patch enables only core 0.
+
+**Both core nodes list both power domains.** See
+[What a board `.dts` must do](#what-a-board-dts-must-do-and-why) for why a single entry
+fails, and why this belongs to the SoC and not to each board.
 
 ## What 0010 fixes, and why it is not RK3576-specific
 
@@ -183,21 +202,22 @@ carried: the board enable is board-specific. See below for what a board owes.
 
 0007 adds the SoC nodes `disabled`; a board enables and wires them. For the H96 MAX M9
 that is `devices/h96-max-m9/dts/rk3576-h96-max-m9.dts` in the boot2deb tree, which
-enables both cores. Two of these properties fail in a way that does not point at
-itself, so take them together, not as a menu:
+enables both cores. The rail below fails in a way that does not point at itself, so
+take it together with the rest, not as a menu:
 
 | node | change |
 |---|---|
-| `&rknn_core_0` (`/soc/npu@27700000`) | `power-domains` = **both** `RK3576_PD_NPU0` **and** `RK3576_PD_NPU1` |
-| `&rknn_core_0` | `npu-supply = <&vdd_npu_s0>` |
-| `&rknn_core_0` | `status = "okay"` |
-| `&rknn_core_1` (`/soc/npu@27710000`) | the same three, with `RK3576_PD_NPU1` first |
+| `&rknn_core_0` (`/soc/npu@27700000`) | `npu-supply = <&vdd_npu_s0>`, `status = "okay"` |
+| `&rknn_core_1` (`/soc/npu@27708000`) | the same two |
 | `&rknn_mmu_0` (`/soc/iommu@27702000`) | `status = "okay"` |
 | `&rknn_mmu_1` (`/soc/iommu@2770a000`) | `status = "okay"` |
 | `&vdd_npu_s0` (PMIC `dcdc-reg2` on this board) | `regulator-always-on` |
 
-**Every enabled core lists both power domains.** `rocket_core_init()` attaches with
-`devm_pm_domain_attach_list()`. A node listing a **single** `power-domains` entry is
+**The power domains are not a board's job.** Both core nodes list both `RK3576_PD_NPU0`
+and `RK3576_PD_NPU1` in the SoC dtsi, because the requirement is a property of the part
+and the driver, not of any board. `rocket_core_init()` attaches with
+`devm_pm_domain_attach_list()` whenever `rocket_soc_data.multi_power_domain` is set,
+which is true for every RK3576. A node listing a **single** `power-domains` entry is
 auto-attached by the driver core first, so the driver's explicit attach then fails and
 that core has no `/dev/accel` at all:
 
@@ -206,11 +226,11 @@ rocket 27700000.npu: error -EEXIST: failed to attach NPU power domains
 rocket 27700000.npu: probe with driver rocket failed with error -17
 ```
 
-Listing two entries suppresses the auto-attach. The driver decides this per SoC, not
-per node, so it applies to core 1 exactly as it does to core 0. It also matches the
-vendor, which powers both NPU domains from one node even on a single core -- the
-CBUF->CMAC read path is only fully powered with NPU1 up. genpd reference-counts the
-two shared domains.
+Listing two entries suppresses the auto-attach. It also matches the vendor, which powers
+both NPU domains from one node even on a single core -- the CBUF->CMAC read path is only
+fully powered with NPU1 up. genpd reference-counts the two shared domains, so each core
+holding both costs nothing and keeps the pair up while either core is active. Each core
+lists its own domain first.
 
 The IOMMUs need only their `status`: `rk_iommu` does no explicit attach, so a single
 `power-domains` entry is correct for them.

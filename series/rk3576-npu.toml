@@ -19,11 +19,14 @@
 # (RKNN) enablement" (Jiaxing Hu), plus 0008 from this repo. Patches 1 and 3-6 are
 # verbatim; 0002 and 0007 carry local changes. 0002 is rebased over rk3576-fixes (both
 # extend the pm-domains.c DOMAIN_RK3576 macro and table; the merge carries both the
-# .delay_us and .need_regulator arguments). 0007 gives rknn_core_1 the two CBUF clocks
-# its own IOMMU and power domain already list, without which that core cannot probe.
-# See rk3576/npu/README.md for both. Patch 8 of that RFC (enable NPU on the Radxa Rock
-# 4D) is dropped: the board enable is board-specific, and the H96 wires its own via its
-# device `.dts` (npu-supply = vdd_npu_s0, the NPU power domains, and status = "okay").
+# .delay_us and .need_regulator arguments). 0007 corrects rknn_core_1, which sits at
+# 0x27708000 -- the two cores are the halves of one 64 KB RKNN TOP window and 0x27710000
+# is the unrelated RKNN_NSP block -- gives it the two CBUF clocks its own IOMMU and
+# power domain already list, and puts both NPU power domains on both core nodes, which
+# rocket requires of every RK3576 core and so belongs to the SoC rather than to each
+# board. See rk3576/npu/README.md for all of them. Patch 8 of that RFC (enable NPU on
+# the Radxa Rock 4D) is dropped: the board enable is board-specific, and the H96 wires
+# its own via its device `.dts` (npu-supply = vdd_npu_s0 and status = "okay").
 #
 # 0008 is ours and is required for back-to-back submits. It gives rocket_soc_data a
 # task_number_bits field, because PC_TASK_CON's TASK_NUMBER is 12 bits wide on the
