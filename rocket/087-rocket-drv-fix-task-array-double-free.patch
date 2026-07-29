@@ -23,18 +23,29 @@ the hottest caches in the kernel.  The freelist then hands one object to
 two owners and the damage surfaces far from here, in whatever allocates
 next.
 
-VERIFIED ON THE RK3576, where this function is byte-identical, with
-slub_debug=FZPU slab_nomerge: two "BUG kmalloc-16: Object already free"
-reports per run of a client that submits rejected jobs -- naming
-rocket_ioctl_submit() as the allocation site and rocket_job_cleanup() as
-the second free -- before, and zero after, over ten rounds of the full
-gate sequence on a clean boot.  The two faults it was chased through
-were a scatterlist walked in drm_gem_shmem_release() from
-rocket_gem_bo_free() and a wild phys_to_virt() inside swiotlb_bounce()
-reached from drm_gem_shmem_get_pages_sgt(); neither is a defect in those
-paths and neither reproduces on the fixed module.  NOT YET EXERCISED ON
-RK3588 SILICON -- the code, the reachability and the fix are identical,
-but the A/B above is the RK3576's.
+Verified on RK3588 silicon (Turing RK1, 7.1.1) with slub_debug=FZPU
+slab_nomerge, against an out-of-tree module pair differing only in this
+patch, srcversion asserted before each arm and each arm on its own clean
+boot -- a SLUB report sets TAINT_BAD_PAGE, so the fixed module is not
+measured on a kernel the control already corrupted.  Over three runs of a
+client that submits rejected jobs: six "BUG kmalloc-16: Object already
+free" reports without it and zero with it, taint 4608 -> 4640 against
+4608 -> 4608.  Two reports per run are the two rejection sites above that
+reach the fail: label.  The report names rocket_ioctl_submit() as the
+allocation site and rocket_job_cleanup() as the second free, the object
+is already POISON_FREE when that kvfree() reaches it, and it is raised
+under UID 1000.
+
+The test exits 0 in both arms.  This does not fail a functional gate --
+slub_debug is the only thing that distinguishes them, which is why it
+survived two rounds of green gates.
+
+Also verified on the RK3576, where this function is byte-identical.  The
+two faults it was chased through there were a scatterlist walked in
+drm_gem_shmem_release() from rocket_gem_bo_free() and a wild
+phys_to_virt() inside swiotlb_bounce() reached from
+drm_gem_shmem_get_pages_sgt(); neither is a defect in those paths and
+neither reproduces on the fixed module.
 
 Fix it by giving the array a single owner.  rocket_job_cleanup() already
 frees it on every path out of the ioctl, including the ones that never

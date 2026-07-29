@@ -1,6 +1,6 @@
 # rocket — RK3588 NPU kernel patches
 
-Six patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+Seven patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
@@ -20,7 +20,7 @@ cherry-pick.
 | **Required** | `081-rocket-drv-npu-clk.patch` | Raises the NPU compute clock from its 200 MHz boot default to 600 MHz (~1.43× throughput), and makes the park of that clock correct: refcounted (the three cores share one clock) and given a deadline that outlives a host-side gap within one inference. Without it the NPU runs at one-fifth speed; with the lever but without the park fixes it is *worse than stock*. |
 | **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob. |
 | **Required** | `085-rocket-drv-uapi-extensible-structs.patch` | Fixes a **kernel oops any client can trigger with one malformed submit** (a NULL `job->domain` dereferenced on the cleanup path) and a submit error the ioctl was silently discarding. Also makes the descriptors extensible, which is the precondition for `086`. |
-| **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. |
+| **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. Verified on RK3588 silicon, and on the RK3576 where the function is byte-identical. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -98,12 +98,29 @@ build](#the-uapi-header-is-part-of-the-kernel-you-build).
 | `081` `083` `084` `085` | yes | yes | 64/64 | stable | yes |
 | `081` `083` `084` `085` `086` — **the full series** | yes | yes | 64/64 | stable | yes |
 
-`087` is not a row here. Its A/B was run on the RK3576, where `rocket_copy_tasks()` is
-byte-identical and the series carries the same fix as `rk3576/npu` 0020; on RK3588 silicon
-the code, the reachability and the fix are identical but the measurement has not been
-repeated. It changes no measured path in any case — it deletes a `kvfree()` from a
-rejection path that never reaches the hardware, so the rows above describe the series with
-it applied.
+`087` is not a row here, because the columns above cannot see it. It deletes a `kvfree()`
+from a rejection path that never reaches the hardware, so it moves no measured number —
+the rows describe the series with it applied.
+
+It has its own A/B instead, on a **Turing RK1** running `7.1.1-1-arm64` with
+`slub_debug=FZPU slab_nomerge`, against an out-of-tree module pair built from stock
+v7.1.1 plus `081`-`086` with and without `087`, `srcversion` asserted before each arm and
+each arm on its own clean boot (a SLUB report sets `TAINT_BAD_PAGE`, so the fixed module is
+never measured on a kernel the control already corrupted):
+
+| Arm | `BUG kmalloc-16: Object already free` over 3 runs | taint | test exit |
+|---|---|---|---|
+| `081`-`086`, no `087` | **6** | 4608 → **4640** | 0, 0, 0 |
+| `081`-`087` | **0** | 4608 → 4608 | 0, 0, 0 |
+
+Two reports per run in the control arm — the [two rejection sites that reach the `fail:`
+label](#submit-task-array-double-free-087-rocket-drv-fix-task-array-double-freepatch),
+where the mechanism, the report itself and how to reproduce it are set out.
+
+**The test exits 0 in both arms**, which is the trap worth carrying forward: a suite that
+drives rejection paths can be corrupting the kernel while passing, and `slub_debug` is the
+only thing that tells them apart. The RK3576 reaches the same defect and carries the same
+fix as `rk3576/npu` 0020.
 
 The full series is the configuration this stack ships and benchmarks against; the subsets are
 here to show that no subset is *broken*, which is what lets you bisect. Every config is 64/64,
@@ -120,7 +137,7 @@ installed header.
 These patches are the tuning layer of a four-part open source stack for Rockchip NPUs:
 
 - **`patches/rocket`** (this project) — kernel-module patches. The clock patch raises the NPU
-  from its 200 MHz boot default to 600 MHz; the others fix two kernel-crash bugs and trim
+  from its 200 MHz boot default to 600 MHz; the others fix three kernel-memory bugs and trim
   per-submit dispatch latency. The performance figures quoted by the userspace projects below
   assume the full series.
 - **[`rocket-userspace`](https://github.com/gregordinary/rocket-userspace)** (`librocketnpu`) — the userspace driver, matmul, and on-NPU op library.
@@ -129,7 +146,7 @@ These patches are the tuning layer of a four-part open source stack for Rockchip
 
 The userspace *builds and runs* on an unpatched mainline `rocket` driver — it degrades to the
 stock 200 MHz clock and turns its chaining paths off after probing the driver version, rather
-than failing. It is just five times slower and exposed to the two crash bugs, which is why
+than failing. It is just five times slower and exposed to the three memory bugs, which is why
 "optional" describes the patches' relationship to the *build*, not to a system you would want
 to run.
 
@@ -306,6 +323,80 @@ is in force.
 `sizeof()` for both structs, so the accepted set is identical. Beyond the crash fix, its value
 is that the *next* uAPI addition does not break anyone. `086` is that addition.
 
+## Submit task-array double free (`087-rocket-drv-fix-task-array-double-free.patch`)
+
+Independent — applies to a pristine tree on its own.
+
+`rocket_copy_tasks()` allocates `rjob->tasks` and frees it again on its `fail:` path
+**without clearing the pointer**. Its only caller unwinds through `rocket_job_put()` →
+`rocket_job_cleanup()`, which frees `job->tasks` unconditionally. One allocation goes back
+to the allocator twice, and `struct rocket_task` is 16 bytes — so the object comes from
+**kmalloc-16**, one of the hottest caches in the kernel. The freelist then hands it to two
+owners and the damage surfaces in whatever allocates next rather than here. The fix gives
+the array a single owner: `rocket_job_cleanup()` already frees it on every path out of the
+ioctl, including the ones that never reach the hardware, so the `fail:` path only has to
+stop.
+
+`/dev/accel/accel0` is group `render`, so any member of that group reaches it with one
+`DRM_IOCTL_ROCKET_SUBMIT`. Exactly **two** of the five rejections a malformed submit can
+hit fall after the allocation, which is what fixes the report count at two per run:
+
+| Malformation | Where it is rejected | Reaches `fail:`? |
+|---|---|---|
+| `task_struct_size` below the v1 minimum | before the alloc | no |
+| `task_count == 0` | before the alloc | no |
+| unreadable `drm_rocket_job.tasks` pointer (with `085`, also a trailing field this kernel does not know) | the copy loop's `copy_from_user` | **yes** |
+| `drm_rocket_task.regcmd_count == 0` | the copy loop's own check | **yes** |
+| no such `in_bo` / `out_bo` handle | `drm_gem_objects_lookup()`, after the copy returns 0 | no |
+
+The `regcmd_count == 0` case is not hypothetical: **a userspace register-program generator
+that refuses a shape leaves `regcmd_count` at its zeroed value**, and a caller that submits
+anyway lands exactly there. That is how this was first reached.
+
+The A/B that establishes it is in [the compatibility
+matrix](#compatibility-matrix) — six reports over three runs without the patch, zero with
+it. The first of the six, trimmed:
+
+```
+BUG kmalloc-16 (Tainted: G        W  O       ): Object already free
+
+Allocated in rocket_ioctl_submit+0x2b4/0xe4c [rocket] age=0 cpu=2 pid=813
+Freed in kvfree+0x3c/0x4c age=0 cpu=2 pid=813
+ kvfree+0x3c/0x4c
+ rocket_ioctl_submit+0x3c4/0xe4c [rocket]        <-- the fail: label
+Object   ffff00010a789110: 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b a5  kkkkkkkkkkkkkkk.
+
+WARNING: mm/slub.c:1220 at object_err+0x214/0x2f4, CPU#2: uapi_submit_err/813
+CPU: 2 UID: 1000 PID: 813 Comm: uapi_submit_err Tainted: G    B   W  O        7.1.1-1-arm64
+Hardware name: Turing Machines RK1 (DT)
+Call trace:
+ kvfree+0x3c/0x4c
+ rocket_job_cleanup+0x168/0x24c [rocket]         <-- the second free
+ rocket_ioctl_submit+0x450/0xe4c [rocket]
+```
+
+Three things that pins which prose cannot: the allocation site and both frees are the
+three lines named above; the object is already SLUB-poisoned (`6b` = `POISON_FREE`) when
+the second `kvfree()` reaches it; and **`UID: 1000`** — an unprivileged user, via `render`
+group membership. `rocket_copy_tasks()` is `static` and inlined into
+`rocket_ioctl_submit()`, which is why both the allocation and the first free appear at
+offsets in that symbol rather than under their own name.
+
+To reproduce, with the driver's error paths driven by
+`rocket-userspace/tests/uapi_submit_errpath_rocket.c`:
+
+```sh
+# add `slub_debug=FZPU slab_nomerge` to the kernel command line, then reboot
+sudo rmmod rocket && sudo insmod /path/to/rocket.ko      # one arm per boot
+for r in 1 2 3; do ./build/uapi_submit_errpath_rocket; done
+sudo dmesg | grep -c "Object already free"
+cat /proc/sys/kernel/tainted
+```
+
+**One arm per boot.** A SLUB report sets `TAINT_BAD_PAGE`, so a fixed module measured
+after a control run is running on a kernel the control already corrupted. The gates are
+also slower under `slub_debug`, so restore the command line afterwards.
+
 ---
 
 # The rest of the series
@@ -481,6 +572,7 @@ git am --3way $P/083-rocket-drv-iommu-keepattach.patch         # recommended (di
 git am --3way $P/084-rocket-drv-fix-bo-mm-uaf.patch            # required (use-after-free fix)
 git am --3way $P/085-rocket-drv-uapi-extensible-structs.patch  # required (oops fix); needed by 086
 git am --3way $P/086-rocket-drv-batched-submit.patch           # recommended; needs 083 + 085
+git am --3way $P/087-rocket-drv-fix-task-array-double-free.patch  # required (double-free fix)
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 
