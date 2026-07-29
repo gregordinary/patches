@@ -69,6 +69,31 @@
 # series carries the same fixes as 084 and 085 -- and they are here because this is
 # the series the RK3576 image applies.
 #
+# 0015-0017 are ours and are the submit uAPI. 0015 makes the submit descriptors
+# actually extensible -- the size fields promise forward compatibility that guarding on
+# the kernel's own sizeof() defeats, so it guards on the v1 offsetofend() minimum and
+# copies with copy_struct_from_user(), which refuses a field this kernel does not know
+# with -E2BIG instead of dropping it. It also reports a rejected job (the return was
+# discarded, so SUBMIT answered 0 for a job it dropped) and declares interface version
+# 1.0. That is what lets 0016 and 0017 each append to drm_rocket_job.flags without
+# breaking an already-built userspace.
+#
+# 0016 and 0017 are per-job levers over the poll floor, both advertised through
+# DRM_IOCTL_VERSION (1.1 and 1.2) so userspace can ask before relying on them. 0016
+# runs a job's tasks from one HW kick -- PC_TASK_CON.TASK_NUMBER = task_count, one
+# completion instead of one per task -- for a job flagged DRM_ROCKET_JOB_BATCHED, whose
+# regcmds userspace has laid out contiguously and self-chained. It is per job, not a
+# module param, so a chained-layout job and a gapped-layout job coexist in one process;
+# rocket_batch_submit is only a master kill switch over the flag. 0017 splits
+# dpu_grace_us in two: for an ordinary job it is a correctness deadline on a completion
+# that is coming, but for a job whose DPU output element is wider than one byte no
+# completion ever arrives and the same number is a blind settle paid in full on every
+# submit. The driver cannot tell the classes apart at PC_DONE time and userspace can, so
+# DRM_ROCKET_JOB_NO_DPU_DONE names it and selects dpu_blind_us (250 us) instead. It is
+# advisory -- a completion that does arrive still retires the job -- so a wrong hint
+# costs time, never correctness. 0016 needs a userspace that emits the chained layout
+# (rocket-userspace, ROCKET_RK3576_BATCH_TASKS); an unflagged job is unaffected by both.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -96,6 +121,9 @@ kernel = [
     "rk3576/npu/0012-accel-rocket-retire-an-rk3576-job-on-the-dpu-completion.patch",
     "rk3576/npu/0013-accel-rocket-take-the-job-s-iommu-domain-before-it-can-be-rejected.patch",
     "rk3576/npu/0014-accel-rocket-anchor-the-iova-allocator-to-the-iommu-domain.patch",
+    "rk3576/npu/0015-accel-rocket-make-the-submit-ioctl-s-uapi-structs-extensible.patch",
+    "rk3576/npu/0016-accel-rocket-run-a-job-s-tasks-in-one-hw-kick.patch",
+    "rk3576/npu/0017-accel-rocket-let-userspace-name-a-job-s-completion-class.patch",
 ]
 
 ffmpeg    = []

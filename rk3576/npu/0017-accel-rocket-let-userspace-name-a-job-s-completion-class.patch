@@ -1,0 +1,235 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: let userspace name a job's completion class
+
+dpu_grace_us serves two different waits and they want different numbers.
+
+For an ordinary RK3576 job, the DPU raises its own completion tens to
+hundreds of microseconds after PC_DONE, and dpu_grace_us is a DEADLINE on a
+wait that almost always wins early.  It has to cover the slowest drain --
+the int8 stem at 224 k7 s2 reaches 745 us, and n-tiled-deep fails 10 runs
+of 10 at 200 us and none at 250 -- so lowering it hands the caller a
+surface whose tail has not landed.  It is a correctness bound.
+
+For a job whose DPU output element is wider than one byte, that completion
+never arrives (RAW_STATUS stops at 0x30000055: CNA and CORE done, nothing
+further for milliseconds).  There dpu_grace_us is a pure BLIND SETTLE and
+it is paid IN FULL on every single submit.  It is a cost, not a bound.
+
+One number cannot serve both, and the driver cannot tell the classes apart:
+at PC_DONE time it has no way to know whether a completion is coming.
+Userspace can, because the class follows from the register program it just
+emitted.  So let it say so.
+
+  - drm_rocket_job.flags gains DRM_ROCKET_JOB_NO_DPU_DONE.  A job carrying
+    it waits dpu_blind_us past PC_DONE instead of dpu_grace_us; a job
+    without it is bit-for-bit unaffected, which is what makes this safe to
+    have on by default.
+  - dpu_blind_us (0644) defaults to 250, the measured pass point for the
+    blind settle (such tasks fail at 100 us and pass from 250).  That is
+    the boundary itself and not a margin over it, so raise rather than
+    lower it if a new program class turns up.
+  - The deadline is latched into core->poll_grace_us at submit, so the poll
+    callback needs no job pointer and the hot path is unchanged.
+  - ADVISORY, by construction: the poll still completes the moment a DPU
+    completion arrives, whatever the flag says.  A wrong hint costs time,
+    never correctness.
+  - Interface version 1.2.
+
+Measured on an H96 MAX M9, an fp16 convolution at ic=128 oc=32 28x28 k3 --
+eight wide-output slices, the shape where this is the dominant cost:
+
+  dpu_blind_us=250   13.67 ms     (the hint, dpu_grace_us untouched at 500)
+  dpu_blind_us=500   15.20 ms     (the hint neutralised)
+  dpu_blind_us=3000  36.96 ms     (+2.6 ms per slice, so it routes)
+
+10% off that path with every narrow-output job keeping its full 500 us
+deadline -- which is the whole point, since lowering the shared number to
+collect the same win is what the drain measurements rule out.
+
+Applies on top of 0016 (it extends that patch's flags word).
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h |  6 ++++
+ drivers/accel/rocket/rocket_drv.c  |  3 +-
+ drivers/accel/rocket/rocket_job.c  | 46 ++++++++++++++++++++++++++++--
+ drivers/accel/rocket/rocket_job.h  |  9 ++++++
+ include/uapi/drm/rocket_accel.h    | 17 +++++++++++
+ 5 files changed, 78 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 3d9369a8a..5c2df4fdf 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -89,6 +89,12 @@ struct rocket_core {
+ 	 * has been seen.
+ 	 */
+ 	ktime_t poll_pc_done_at;
++	/*
++	 * How long past PC_DONE to keep waiting for that completion, in
++	 * microseconds.  Latched per submit from the job's class (see
++	 * DRM_ROCKET_JOB_NO_DPU_DONE) so the poll timer needs no job pointer.
++	 */
++	unsigned int poll_grace_us;
+ 
+ 	struct drm_gpu_scheduler sched;
+ 	u64 fence_context;
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index a96944e91..39eeef833 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -163,6 +163,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  *         the v1 layout upward, and a trailing field this kernel does not know
+  *         is refused with -E2BIG rather than silently ignored.
+  * - 1.1 - adds DRM_ROCKET_JOB_BATCHED (per-job chained submit).
++ * - 1.2 - adds DRM_ROCKET_JOB_NO_DPU_DONE (per-job completion-class hint).
+  *
+  * Userspace MUST NOT self-chain a job's regcmd layout unless the driver reports
+  * >= 1.1: an older kernel does not know the flag, would run that chained layout
+@@ -170,7 +171,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  */
+ static const struct drm_driver rocket_drm_driver = {
+ 	.major			= 1,
+-	.minor			= 1,
++	.minor			= 2,
+ 	.driver_features	= DRIVER_COMPUTE_ACCEL | DRIVER_GEM,
+ 	.open			= rocket_open,
+ 	.postclose		= rocket_postclose,
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 385a8756c..ae34177ef 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -45,6 +45,34 @@ module_param_named(dpu_grace_us, rocket_dpu_grace_us, uint, 0644);
+ MODULE_PARM_DESC(dpu_grace_us,
+ 		 "RK3576: how long to wait past PC_DONE for the DPU's own completion, in microseconds (default 500)");
+ 
++/*
++ * The same deadline for a job userspace has told us raises no DPU completion
++ * at all (DRM_ROCKET_JOB_NO_DPU_DONE).
++ *
++ * dpu_grace_us has to serve two different waits, and they want different
++ * numbers.  For an ordinary job the DPU raises its own completion tens to
++ * hundreds of microseconds after PC_DONE and the grace is a DEADLINE on a wait
++ * that almost always wins early -- so it must be long enough to cover the
++ * slowest drain, and lowering it silently hands the caller a surface whose tail
++ * has not landed.  For a job whose DPU output element is wider than one byte
++ * that completion never arrives, so the grace is a pure BLIND SETTLE that is
++ * paid in full on every single submit.  Those two cannot be tuned to one value.
++ *
++ * The driver cannot tell the classes apart: at PC_DONE time it has no way to
++ * know whether a completion is coming.  Userspace can -- the class follows from
++ * the register program it just emitted -- so it names it at submit and the
++ * driver applies the matching deadline.  A job that does not set the flag is
++ * unaffected, which is what makes this safe to default on.
++ *
++ * 250 us is the measured pass point for the blind settle (such tasks fail at
++ * 100 us and pass from 250); it is not a margin over a known boundary, so raise
++ * it rather than lower it if a new program class turns up.
++ */
++static unsigned int rocket_dpu_blind_us = 250;
++module_param_named(dpu_blind_us, rocket_dpu_blind_us, uint, 0644);
++MODULE_PARM_DESC(dpu_blind_us,
++		 "RK3576: settle time past PC_DONE for a job flagged DRM_ROCKET_JOB_NO_DPU_DONE, in microseconds (default 250)");
++
+ static inline ktime_t rocket_poll_period(void)
+ {
+ 	unsigned int us = READ_ONCE(rocket_poll_interval_us);
+@@ -275,6 +303,13 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 
+ 	if (core->soc->poll_completion) {
+ 		core->poll_pc_done_at = 0;
++		/*
++		 * Latch the deadline for THIS job before the timer can fire, so
++		 * the poll callback never needs to reach for the job.
++		 */
++		core->poll_grace_us = job->no_dpu_done
++			? READ_ONCE(rocket_dpu_blind_us)
++			: READ_ONCE(rocket_dpu_grace_us);
+ 		atomic_set(&core->poll_active, 1);
+ 		hrtimer_start(&core->poll_timer, rocket_poll_period(),
+ 			      HRTIMER_MODE_REL);
+@@ -563,7 +598,7 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ 		if (!core->poll_pc_done_at)
+ 			core->poll_pc_done_at = ktime_get();
+ 		else if (ktime_us_delta(ktime_get(), core->poll_pc_done_at) >=
+-			 (s64)READ_ONCE(rocket_dpu_grace_us))
++			 (s64)core->poll_grace_us)
+ 			goto complete;
+ 	}
+ 
+@@ -861,7 +896,7 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 		return -EINVAL;
+ 
+ 	/* Reject unknown flag bits so a future flag cannot be silently ignored. */
+-	if (job->flags & ~DRM_ROCKET_JOB_BATCHED) {
++	if (job->flags & ~(DRM_ROCKET_JOB_BATCHED | DRM_ROCKET_JOB_NO_DPU_DONE)) {
+ 		drm_dbg(dev, "Unknown bits set in drm_rocket_job.flags (0x%x).\n",
+ 			job->flags);
+ 		return -EINVAL;
+@@ -888,6 +923,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 	 */
+ 	rjob->want_batched = !!(job->flags & DRM_ROCKET_JOB_BATCHED);
+ 
++	/*
++	 * Userspace's class hint: this job's tasks raise no DPU completion, so
++	 * the wait past PC_DONE is a blind settle rather than a deadline on one.
++	 * Advisory -- if a completion does arrive the job still retires on it.
++	 */
++	rjob->no_dpu_done = !!(job->flags & DRM_ROCKET_JOB_NO_DPU_DONE);
++
+ 	/*
+ 	 * Take the IOMMU domain reference here, while the job is still empty.
+ 	 * rocket_job_cleanup() puts it unconditionally, and every rejection
+diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
+index 02d3be8e5..148751f36 100644
+--- a/drivers/accel/rocket/rocket_job.h
++++ b/drivers/accel/rocket/rocket_job.h
+@@ -45,6 +45,15 @@ struct rocket_job {
+ 	bool want_batched;
+ 	bool batched;
+ 
++	/*
++	 * no_dpu_done: userspace set DRM_ROCKET_JOB_NO_DPU_DONE -- every task in
++	 * this job has a DPU output element wider than one byte and so raises no
++	 * DPU completion.  Selects dpu_blind_us over dpu_grace_us for the wait
++	 * past PC_DONE.  Advisory: a completion that does arrive still retires
++	 * the job immediately, so a wrong hint costs time, not correctness.
++	 */
++	bool no_dpu_done;
++
+ 	/* Fence to be signaled by drm-sched once its done with the job */
+ 	struct dma_fence *inference_done_fence;
+ 
+diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
+index cc7898265..844a3dbaf 100644
+--- a/include/uapi/drm/rocket_accel.h
++++ b/include/uapi/drm/rocket_accel.h
+@@ -37,6 +37,23 @@ extern "C" {
+  */
+ #define DRM_ROCKET_JOB_BATCHED		(1 << 0)
+ 
++/*
++ * DRM_ROCKET_JOB_NO_DPU_DONE: every task in this job has a DPU output element
++ * wider than one byte and so raises no DPU completion at all. The driver waits
++ * @dpu_blind_us past PC_DONE for such a job instead of @dpu_grace_us, which is
++ * the deadline it uses for a job whose completion IS coming.
++ *
++ * The two waits are different things -- a deadline on a wait that usually wins
++ * early, against a settle time paid in full on every submit -- and the driver
++ * cannot tell them apart at PC_DONE time. Userspace can, because the class
++ * follows from the register program it emitted.
++ *
++ * Advisory: a completion that does arrive retires the job immediately whatever
++ * this says, so a wrong hint costs time and not correctness. Only honored by a
++ * driver advertising interface version >= 1.2.
++ */
++#define DRM_ROCKET_JOB_NO_DPU_DONE	(1 << 1)
++
+ /**
+  * struct drm_rocket_create_bo - ioctl argument for creating Rocket BOs.
+  *
+-- 
+2.43.0
+

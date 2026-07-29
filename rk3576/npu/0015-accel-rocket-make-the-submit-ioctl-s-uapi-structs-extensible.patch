@@ -1,0 +1,221 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: make the submit ioctl's uAPI structs extensible
+
+drm_rocket_submit carries @job_struct_size and drm_rocket_job carries
+@task_struct_size so that the descriptors can grow: userspace declares the
+size of the struct it was built against and the kernel copies what it
+understands.  Both size checks currently defeat that by comparing against
+the kernel's own sizeof:
+
+	if (args->job_struct_size < sizeof(struct drm_rocket_job))
+		return -EINVAL;
+	if (job->task_struct_size < sizeof(struct drm_rocket_task))
+		return -EINVAL;
+
+So the day either struct gains a field, every already-built userspace --
+which still declares the smaller, original size -- starts failing SUBMIT
+with -EINVAL.  The size fields promise forward compatibility the code does
+not honor.  The next patch in this series appends a flag word to
+drm_rocket_job, which is exactly the addition that trips it.
+
+The copy has the mirror-image problem.  copy_from_user() always reads the
+kernel's sizeof(), so a userspace NEWER than the kernel has fields it did
+set silently ignored -- a flag the kernel never looked at, running a job
+with semantics nobody asked for.
+
+Use the kernel's standard extensible-struct contract instead:
+
+  - Guard on the ORIGINAL ("v1") layout via offsetofend() -- the minimum a
+    caller must supply -- rather than on the current sizeof().  An older,
+    shorter userspace keeps working against a grown struct.
+
+  - Copy with copy_struct_from_user(), which copies min(usize, ksize),
+    zero-fills the fields the caller did not supply, and returns -E2BIG if
+    userspace set anything in a trailing field this kernel does not know
+    about.  A newer userspace's request is refused loudly instead of being
+    silently downgraded.
+
+With both in place, appending a field to drm_rocket_job or drm_rocket_task
+needs no further change here: add the field, leave the v1 guard alone, and
+old and new userspace both keep working in both directions.
+
+Also report a rejected job.  rocket_ioctl_submit() discarded
+rocket_ioctl_submit_job()'s return, so SUBMIT answered 0 even when a job
+failed validation: userspace could not tell a queued job from a dropped
+one, and every per-job check was unobservable.  That matters more once
+there is a flag to validate, so the two belong together.
+
+And declare the interface version.  drm_driver leaves .major/.minor unset,
+so stock rocket reports 0.0.0 through DRM_IOCTL_VERSION and userspace has
+no way to ask what the kernel guarantees.  Advertise 1.0 to mean exactly
+the contract above: "the submit descriptors are extensible, and a field I
+do not know is an -E2BIG, not a silent drop."  Userspace can then require
+>= 1.0 before relying on it, and a later feature can claim 1.1 (the next
+patch does).
+
+No ABI change: neither struct grows here, and for today's layouts the v1
+minimum equals the current sizeof.
+
+This is the RK3576 series' port of the rk3588 series' patch 085.  It does
+NOT carry that patch's rocket_iommu_domain_put() NULL guard: 0013 in this
+series fixes the same crash at its source by taking the domain reference
+at job construction, so the guard would be dead code here.
+
+Measured on an H96 MAX M9 (RK3576): tests/uapi_selftest_rocket goes from
+13 checks to 19, the six new ones being the v1-minimum acceptance in both
+directions, the -E2BIG refusal, and the version report.  0 failed.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_drv.c | 12 +++++-
+ drivers/accel/rocket/rocket_job.c | 68 ++++++++++++++++++++++++-------
+ 2 files changed, 63 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 04946685a..c019d0a30 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -154,10 +154,18 @@ static const struct drm_ioctl_desc rocket_drm_driver_ioctls[] = {
+ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+ 
+ /*
+- * Rocket driver version:
+- * - 1.0 - initial interface
++ * Rocket driver version.  Stock leaves .major/.minor unset, so a driver that has
++ * not been told to advertise anything reports 0.0.0; userspace reads this to
++ * decide what the kernel guarantees.
++ *
++ * - 1.0 - initial interface, with EXTENSIBLE submit descriptors: drm_rocket_job
++ *         and drm_rocket_task may be extended, the kernel accepts any size from
++ *         the v1 layout upward, and a trailing field this kernel does not know
++ *         is refused with -E2BIG rather than silently ignored.
+  */
+ static const struct drm_driver rocket_drm_driver = {
++	.major			= 1,
++	.minor			= 0,
+ 	.driver_features	= DRIVER_COMPUTE_ACCEL | DRIVER_GEM,
+ 	.open			= rocket_open,
+ 	.postclose		= rocket_postclose,
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index c4935d1bf..1d30507d8 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -13,6 +13,8 @@
+ #include <linux/kref.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/stddef.h>
++#include <linux/uaccess.h>
+ 
+ #include "rocket_core.h"
+ #include "rocket_device.h"
+@@ -67,6 +69,30 @@ static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
+ 	return (PC_TASK_CON_CTRL << core->soc->task_number_bits) | task_number;
+ }
+ 
++/*
++ * The submit ioctl's descriptors (drm_rocket_job, drm_rocket_task) are
++ * EXTENSIBLE: userspace declares the size of the struct it was built against
++ * (@job_struct_size / @task_struct_size) and the kernel accepts any size from
++ * the original ("v1") layout upward.  That is the whole point of those size
++ * fields, and it only works if the kernel asks for the v1 MINIMUM rather than
++ * its own current sizeof:
++ *
++ *   - A kernel whose struct has grown must still accept an older, shorter
++ *     userspace.  Comparing against sizeof() rejects it with -EINVAL, so the
++ *     moment a field is appended every pre-existing binary stops working.
++ *   - A userspace newer than the kernel must not have its extra fields
++ *     silently dropped: a flag the kernel never read would run a job with
++ *     semantics nobody asked for.
++ *
++ * copy_struct_from_user() is the kernel's standard answer to both: it copies
++ * min(usize, ksize), zero-fills the fields the caller did not supply, and
++ * returns -E2BIG if userspace set anything in a trailing field this kernel does
++ * not know about.  Growing either struct therefore needs no change here -- add
++ * the field, keep the v1 offsetofend() guard, and both directions keep working.
++ */
++#define ROCKET_JOB_V1_SIZE   offsetofend(struct drm_rocket_job, out_bo_handle_count)
++#define ROCKET_TASK_V1_SIZE  offsetofend(struct drm_rocket_task, regcmd_count)
++
+ static struct rocket_job *
+ to_rocket_job(struct drm_sched_job *sched_job)
+ {
+@@ -110,7 +136,7 @@ rocket_copy_tasks(struct drm_device *dev,
+ {
+ 	int ret = 0;
+ 
+-	if (job->task_struct_size < sizeof(struct drm_rocket_task))
++	if (job->task_struct_size < ROCKET_TASK_V1_SIZE)
+ 		return -EINVAL;
+ 
+ 	rjob->task_count = job->task_count;
+@@ -127,11 +153,12 @@ rocket_copy_tasks(struct drm_device *dev,
+ 	for (int i = 0; i < rjob->task_count; i++) {
+ 		struct drm_rocket_task task = {0};
+ 
+-		if (copy_from_user(&task,
+-				   u64_to_user_ptr(job->tasks) + i * job->task_struct_size,
+-				   sizeof(task))) {
+-			drm_dbg(dev, "Failed to copy incoming tasks\n");
+-			ret = -EFAULT;
++		ret = copy_struct_from_user(&task, sizeof(task),
++					    u64_to_user_ptr(job->tasks) +
++						    i * job->task_struct_size,
++					    job->task_struct_size);
++		if (ret) {
++			drm_dbg(dev, "Failed to copy incoming tasks (%d)\n", ret);
+ 			goto fail;
+ 		}
+ 
+@@ -843,7 +870,7 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
+ 	if (args->job_count == 0)
+ 		return 0;
+ 
+-	if (args->job_struct_size < sizeof(struct drm_rocket_job)) {
++	if (args->job_struct_size < ROCKET_JOB_V1_SIZE) {
+ 		drm_dbg(dev, "job_struct_size field in drm_rocket_submit struct is too small.\n");
+ 		return -EINVAL;
+ 	}
+@@ -860,18 +887,29 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
+ 	}
+ 
+ 	for (i = 0; i < args->job_count; i++) {
+-		if (copy_from_user(&jobs[i],
+-				   u64_to_user_ptr(args->jobs) + i * args->job_struct_size,
+-				   sizeof(*jobs))) {
+-			ret = -EFAULT;
+-			drm_dbg(dev, "Failed to copy incoming job array\n");
++		ret = copy_struct_from_user(&jobs[i], sizeof(*jobs),
++					    u64_to_user_ptr(args->jobs) +
++						    i * args->job_struct_size,
++					    args->job_struct_size);
++		if (ret) {
++			drm_dbg(dev, "Failed to copy incoming job array (%d)\n", ret);
+ 			goto exit;
+ 		}
+ 	}
+ 
+-
+-	for (i = 0; i < args->job_count; i++)
+-		rocket_ioctl_submit_job(dev, file, &jobs[i]);
++	/*
++	 * Report a rejected job.  The return was previously discarded, so SUBMIT
++	 * answered 0 even when a job failed validation -- userspace could not
++	 * tell a queued job from a dropped one, and every per-job check (task
++	 * sizes, regcmd_count, and any future flag validation) was unobservable.
++	 * Stop at the first failure and report it; jobs already queued keep
++	 * running.
++	 */
++	for (i = 0; i < args->job_count; i++) {
++		ret = rocket_ioctl_submit_job(dev, file, &jobs[i]);
++		if (ret)
++			goto exit;
++	}
+ 
+ exit:
+ 	kvfree(jobs);
+-- 
+2.43.0
+

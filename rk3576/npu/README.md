@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 14 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 17 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -27,6 +27,9 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0012 | accel/rocket: retire an RK3576 job on the DPU's completion, not on `PC_DONE` (ours) |
 | 0013 | accel/rocket: take the job's IOMMU domain before it can be rejected (ours) |
 | 0014 | accel/rocket: anchor the IOVA allocator to the IOMMU domain (ours) |
+| 0015 | accel/rocket: make the submit ioctl's uAPI structs extensible (ours) |
+| 0016 | accel/rocket: run a job's tasks in one HW kick (ours) |
+| 0017 | accel/rocket: let userspace name a job's completion class (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -269,6 +272,73 @@ lr : drm_mm_remove_node+0x1e8/0x380
  rocket_gem_bo_free [rocket]
  rocket_job_cleanup [rocket]
 ```
+
+## What 0015, 0016 and 0017 are: the submit uAPI, and two levers over the floor
+
+0009-0012 got the per-submit floor to 439 us and made it correct. 0016 and 0017 attack
+what is left, and both need userspace to opt in per job -- so 0015 comes first to make
+that possible at all.
+
+**0015 makes the submit descriptors actually extensible.** `drm_rocket_submit` carries
+`@job_struct_size` and `drm_rocket_job` carries `@task_struct_size` precisely so the
+descriptors can grow, but both checks compared against the kernel's own `sizeof()`, so
+the day either struct gained a field every already-built userspace would start failing
+SUBMIT with `-EINVAL`. The copy had the mirror-image bug: `copy_from_user()` always read
+the kernel's `sizeof()`, so a *newer* userspace had fields it did set silently ignored --
+a flag nobody read, running a job with semantics nobody asked for. 0015 guards on the v1
+`offsetofend()` minimum and copies with `copy_struct_from_user()`, which zero-fills what
+the caller did not supply and returns `-E2BIG` for a trailing field this kernel does not
+know. It also reports a rejected job (`rocket_ioctl_submit()` discarded the per-job
+return, so SUBMIT answered 0 for a job it dropped and every per-job check was
+unobservable) and declares interface version **1.0**. No ABI change: nothing grows here,
+and for today's layouts the v1 minimum equals the current `sizeof()`.
+
+**0016 runs a job's tasks in one HW kick.** Stock rocket programs one task per kick and
+re-arms the next from the completion path -- and on this part that completion is a poll,
+so a convolution a row window splits into n tasks pays the 439 us floor n times. The PC
+can instead stream a contiguous run of self-chaining regcmds from a single kick:
+program task 0, set `TASK_NUMBER = n`, and one completion gates the lot. That is per job
+via `DRM_ROCKET_JOB_BATCHED`, not a module param, because the flag asserts something
+about *that job's regcmd layout* -- userspace laid it out contiguously and rewrote each
+trailer to link to the next. A flagged job whose regcmds are not contiguous runs task 0
+and times out, recoverably. `rocket_batch_submit` (default 1) is only a master kill
+switch over the flag. The task-count bound comes from `rocket_soc_data.task_number_bits`
+(0008), not the RK3588 field mask.
+
+Measured on an H96 MAX M9: the convolution library gate is 156 passed / 7 refused as
+required / 0 failed, unchanged from the one-submit-per-task path -- which is the
+correctness bar. A 32x32 k3 plane forced into 8 row windows goes **2.8 ms -> 1.0 ms**,
+and a 224x224 k3 s1 convolution **21.3 ms -> 19.1 ms**.
+
+**0017 splits `dpu_grace_us` in two.** The same number serves two waits that want
+different values. For an ordinary job the DPU completion arrives tens to hundreds of
+microseconds after `PC_DONE`, so the grace is a **deadline** on a wait that usually wins
+early -- it has to cover the slowest drain (the int8 stem at 224 k7 s2 reaches 745 us;
+n-tiled-deep fails 10 of 10 at 200 us and none at 250), and lowering it hands back a
+surface whose tail has not landed. For a job whose DPU output element is wider than one
+byte that completion never arrives, so the same number is a pure **blind settle** paid in
+full on every submit. The driver cannot tell the classes apart at `PC_DONE` time;
+userspace can, because the class follows from the register program it just emitted.
+`DRM_ROCKET_JOB_NO_DPU_DONE` names it and selects `dpu_blind_us` (**250 us**, the measured
+pass point -- such tasks fail at 100 us and pass from 250, so raise rather than lower it).
+Advisory by construction: a completion that does arrive still retires the job, so a wrong
+hint costs time and never correctness.
+
+Measured on an fp16 convolution at ic=128 oc=32 28x28 k3, eight wide-output slices:
+
+| `dpu_blind_us` | 250 (the hint) | 500 (neutralised) | 3000 |
+|---|---|---|---|
+| whole entry | 13.67 ms | 15.20 ms | 36.96 ms |
+
+**10%** off that path with every narrow-output job keeping its full 500 us deadline --
+which is the point, since lowering the shared number to collect the same win is exactly
+what the drain measurements rule out.
+
+**Version the interface, do not sniff it.** `drm_driver` left `.major`/`.minor` unset, so
+stock rocket reports 0.0.0 and userspace had no way to ask what the kernel guarantees.
+0015 claims **1.0** (extensible descriptors), 0016 **1.1** (`BATCHED`), 0017 **1.2**
+(`NO_DPU_DONE`). Userspace must check `DRM_IOCTL_VERSION` before self-chaining: an older
+kernel does not know the flag and would run a chained layout down the per-task path.
 
 ## What a board `.dts` must do, and why
 
