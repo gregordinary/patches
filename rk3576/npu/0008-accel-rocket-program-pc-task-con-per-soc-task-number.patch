@@ -52,37 +52,36 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  3 files changed, 20 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
-index 2ab389c4b..b08836bb8 100644
+index 7f2291ec7..a5e49d2a1 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
-@@ -37,6 +37,7 @@
+@@ -38,6 +38,7 @@
  struct rocket_soc_data {
  	unsigned int num_clks;		/* clk_bulk count: 4 base, 6 with CBUF */
  	unsigned int num_resets;	/* reset_bulk count: 2 base, 1 on RK3576 */
 +	unsigned int task_number_bits;	/* PC_TASK_CON TASK_NUMBER width: 12 base, 16 on RK3576 */
- 	bool multi_power_domain;	/* device spans more than one PM domain */
  	bool poll_completion;		/* PC_DONE not routable to the GIC; poll it */
  };
+ 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 7f7dfa374..39f675a3c 100644
+index 6e9701f1a..2a7276124 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
-@@ -217,6 +217,7 @@ static void rocket_remove(struct platform_device *pdev)
+@@ -217,12 +217,14 @@ static void rocket_remove(struct platform_device *pdev)
  static const struct rocket_soc_data rk3588_soc_data = {
  	.num_clks = 4,
  	.num_resets = 2,
 +	.task_number_bits = 12,
- 	.multi_power_domain = false,
  	.poll_completion = false,
  };
-@@ -224,6 +225,7 @@ static const struct rocket_soc_data rk3588_soc_data = {
+ 
  static const struct rocket_soc_data rk3576_soc_data = {
  	.num_clks = 6,
  	.num_resets = 1,
 +	.task_number_bits = 16,
- 	.multi_power_domain = true,
  	.poll_completion = true,
  };
+ 
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
 index b4866d090..135ffb2ed 100644
 --- a/drivers/accel/rocket/rocket_job.c

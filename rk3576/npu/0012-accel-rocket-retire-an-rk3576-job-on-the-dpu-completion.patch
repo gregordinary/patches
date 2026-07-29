@@ -74,7 +74,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  2 files changed, 43 insertions(+), 8 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
-index 375b63959..a6b9c8e86 100644
+index 231c38720..3d9369a8a 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
 @@ -83,6 +83,12 @@ struct rocket_core {

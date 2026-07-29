@@ -3,22 +3,29 @@ From: Jiaxing Hu <gahing@gahingwoo.com>
 Date: Sat, 18 Jul 2026 15:11:39 +1200
 Subject: [PATCH] dt-bindings: npu: rockchip: add rockchip,rk3576-rknn-core
 
-Document the RK3576 NPU core: add rockchip,rk3576-rknn-core to the
-compatible enum.  The RK3576 has no NPU SRAM supply, so make sram-supply
-required only for rockchip,rk3588-rknn-core via an allOf/if-then instead
-of dropping it from the shared required list (which would have weakened
-validation for RK3588).
+Document the RK3576 NPU core.  Its node differs from the RK3588's in
+most of its countable properties, so the shared schema carries the union
+of the two and an allOf pins the exact shape per compatible:
+
+  - five register banks, adding dpu and dpu_rdma
+  - six clocks, adding aclk_cbuf and hclk_cbuf for the convolution
+    buffer, which sits in its own clock domain
+  - two power domains: a core's convolution buffer is read through
+    PD_NPU1, so a core in either domain needs both powered
+  - one reset, srst_a; the BIU reset is driven from the power domain
+  - no NPU SRAM, so sram-supply is required for RK3588 and forbidden for
+    RK3576, instead of being required by the shared list
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
 ---
- .../bindings/npu/rockchip,rk3588-rknn-core.yaml      | 12 +++++++++++-
- 1 file changed, 11 insertions(+), 1 deletion(-)
+ .../npu/rockchip,rk3588-rknn-core.yaml        | 107 +++++++++++++++++-
+ 1 file changed, 103 insertions(+), 4 deletions(-)
 
 diff --git a/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml b/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml
-index caca2a490..985cde6b2 100644
+index caca2a490..8f38912be 100644
 --- a/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml
 +++ b/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml
-@@ -21,6 +21,7 @@ properties:
+@@ -21,26 +21,37 @@ properties:
  
    compatible:
      enum:
@@ -26,7 +33,57 @@ index caca2a490..985cde6b2 100644
        - rockchip,rk3588-rknn-core
  
    reg:
-@@ -75,7 +76,16 @@ required:
+-    maxItems: 3
++    minItems: 3
++    maxItems: 5
+ 
+   reg-names:
++    minItems: 3
++    maxItems: 5
+     items:
+       - const: pc # Program Control-related registers
+       - const: cna # Convolution Neural Network Accelerator registers
+       - const: core # Main NPU core processing unit registers
++      - const: dpu # Data Processing Unit registers
++      - const: dpu_rdma # Read DMA of the Data Processing Unit
+ 
+   clocks:
+-    maxItems: 4
++    minItems: 4
++    maxItems: 6
+ 
+   clock-names:
++    minItems: 4
++    maxItems: 6
+     items:
+       - const: aclk
+       - const: hclk
+       - const: npu
+       - const: pclk
++      - const: aclk_cbuf # Convolution buffer, in its own clock domain
++      - const: hclk_cbuf
+ 
+   interrupts:
+     maxItems: 1
+@@ -51,12 +62,16 @@ properties:
+   npu-supply: true
+ 
+   power-domains:
+-    maxItems: 1
++    minItems: 1
++    maxItems: 2
+ 
+   resets:
++    minItems: 1
+     maxItems: 2
+ 
+   reset-names:
++    minItems: 1
++    maxItems: 2
+     items:
+       - const: srst_a
+       - const: srst_h
+@@ -75,7 +90,58 @@ required:
    - resets
    - reset-names
    - npu-supply
@@ -39,9 +96,89 @@ index caca2a490..985cde6b2 100644
 +          contains:
 +            const: rockchip,rk3588-rknn-core
 +    then:
++      properties:
++        reg:
++          maxItems: 3
++        reg-names:
++          maxItems: 3
++        clocks:
++          maxItems: 4
++        clock-names:
++          maxItems: 4
++        power-domains:
++          maxItems: 1
++        resets:
++          minItems: 2
++        reset-names:
++          minItems: 2
 +      required:
 +        - sram-supply
++
++  - if:
++      properties:
++        compatible:
++          contains:
++            const: rockchip,rk3576-rknn-core
++    then:
++      properties:
++        reg:
++          minItems: 5
++        reg-names:
++          minItems: 5
++        clocks:
++          minItems: 6
++        clock-names:
++          minItems: 6
++        # A core spans both NPU power domains: its convolution buffer is read
++        # through PD_NPU1, so a core in either domain needs both powered.
++        power-domains:
++          minItems: 2
++        # The BIU reset (srst_h) is driven from the power domain, not the core.
++        resets:
++          maxItems: 1
++        reset-names:
++          maxItems: 1
++        # This SoC has no NPU SRAM.
++        sram-supply: false
  
  additionalProperties: false
  
+@@ -109,4 +175,37 @@ examples:
+         sram-supply = <&vdd_npu_mem_s0>;
+       };
+     };
++
++  - |
++    #include <dt-bindings/clock/rockchip,rk3576-cru.h>
++    #include <dt-bindings/interrupt-controller/irq.h>
++    #include <dt-bindings/interrupt-controller/arm-gic.h>
++    #include <dt-bindings/power/rockchip,rk3576-power.h>
++    #include <dt-bindings/reset/rockchip,rk3576-cru.h>
++
++    bus {
++      #address-cells = <2>;
++      #size-cells = <2>;
++
++      npu@27700000 {
++        compatible = "rockchip,rk3576-rknn-core";
++        reg = <0x0 0x27700000 0x0 0x1000>,
++              <0x0 0x27701000 0x0 0x1000>,
++              <0x0 0x27703000 0x0 0x1000>,
++              <0x0 0x27704000 0x0 0x1000>,
++              <0x0 0x27705000 0x0 0x1000>;
++        reg-names = "pc", "cna", "core", "dpu", "dpu_rdma";
++        clocks = <&cru ACLK_RKNN0>, <&cru HCLK_RKNN_ROOT>,
++                 <&cru CLK_RKNN_DSU0>, <&cru PCLK_NPUTOP_ROOT>,
++                 <&cru ACLK_RKNN_CBUF>, <&cru HCLK_RKNN_CBUF>;
++        clock-names = "aclk", "hclk", "npu", "pclk",
++                      "aclk_cbuf", "hclk_cbuf";
++        interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;
++        iommus = <&rknn_mmu_0>;
++        npu-supply = <&vdd_npu_s0>;
++        power-domains = <&power RK3576_PD_NPU0>, <&power RK3576_PD_NPU1>;
++        resets = <&cru SRST_A_RKNN0>;
++        reset-names = "srst_a";
++      };
++    };
+ ...
 

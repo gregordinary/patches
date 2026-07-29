@@ -57,7 +57,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  3 files changed, 76 insertions(+), 12 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
-index 140e37969..a62c7174b 100644
+index 2540e5e3a..9b4cf979e 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
 @@ -13,6 +13,7 @@
@@ -68,7 +68,7 @@ index 140e37969..a62c7174b 100644
  #include "rocket_job.h"
  
  int rocket_core_init(struct rocket_core *core)
-@@ -133,9 +134,20 @@ void rocket_core_fini(struct rocket_core *core)
+@@ -130,9 +131,20 @@ void rocket_core_fini(struct rocket_core *core)
  {
  	pm_runtime_dont_use_autosuspend(core->dev);
  	pm_runtime_disable(core->dev);
@@ -91,12 +91,12 @@ index 140e37969..a62c7174b 100644
  
  void rocket_core_reset(struct rocket_core *core)
 diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
-index b08836bb8..375b63959 100644
+index a5e49d2a1..231c38720 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
-@@ -34,6 +34,8 @@
-  * original behaviour; RK3576 opts in to the extra clocks, the multi-domain
-  * attach and the polled completion.
+@@ -35,6 +35,8 @@
+  * completion.  How many power domains a core spans is not here: that is what
+  * the DT says, and rocket_core_init() follows it.
   */
 +struct rocket_iommu_domain;
 +

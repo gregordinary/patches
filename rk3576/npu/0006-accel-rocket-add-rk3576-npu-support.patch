@@ -14,13 +14,18 @@ unchanged:
     stalls without them.  RK3588 keeps its four clocks.
   - RK3576 requests one reset (srst_a); its BIU reset (srst_h) is driven
     from the power domain.  RK3588 keeps both.
-  - RK3576 spans two power domains (PD_NPU0 + PD_NPU1) and attaches the
-    list explicitly; RK3588 is single-domain and keeps the driver-core
-    auto-attach.
   - RK3576 has no maskable completion interrupt (PC_DONE is read-only in
     INTERRUPT_MASK), so it polls PC_DONE via an hrtimer; RK3588 keeps the
     DPU completion IRQ.
   - guard rocket_job_timedout() MMIO behind pm_runtime_active()
+
+A core may also span more than one power domain: the RK3576 core spans
+PD_NPU0 and PD_NPU1, because the convolution buffer is read through NPU1
+whichever core is computing.  How many it spans is a property of the node
+rather than of the SoC that was matched, so attach the list unconditionally
+and let the DT say.  The driver core attaches the single-domain case
+itself and reports -EEXIST for it, which is that job already done and not
+a failure.
 
 Tested on a Radxa ROCK 4D: the NPU probes, powers on, brings up its
 IOMMUs and runs submitted jobs to completion.  Full multi-layer inference
@@ -29,15 +34,15 @@ produces valid output); see the cover letter.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
 ---
- drivers/accel/rocket/rocket_core.c   |  39 +++++++-
+ drivers/accel/rocket/rocket_core.c   |  36 +++++++-
  drivers/accel/rocket/rocket_core.h   |  22 ++++-
  drivers/accel/rocket/rocket_device.c |   4 +
- drivers/accel/rocket/rocket_drv.c    |  22 ++++-
+ drivers/accel/rocket/rocket_drv.c    |  20 ++++-
  drivers/accel/rocket/rocket_job.c    | 127 +++++++++++++++++++++++++--
- 5 files changed, 200 insertions(+), 14 deletions(-)
+ 5 files changed, 195 insertions(+), 14 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
-index b3b2fa9ba..140e37969 100644
+index b3b2fa9ba..2540e5e3a 100644
 --- a/drivers/accel/rocket/rocket_core.c
 +++ b/drivers/accel/rocket/rocket_core.c
 @@ -8,6 +8,7 @@
@@ -48,7 +53,11 @@ index b3b2fa9ba..140e37969 100644
  #include <linux/pm_runtime.h>
  #include <linux/reset.h>
  
-@@ -21,14 +22,31 @@ int rocket_core_init(struct rocket_core *core)
+@@ -18,17 +19,35 @@ int rocket_core_init(struct rocket_core *core)
+ {
+ 	struct device *dev = core->dev;
+ 	struct platform_device *pdev = to_platform_device(dev);
++	struct dev_pm_domain_list *pd_list;
  	u32 version;
  	int err = 0;
  
@@ -82,32 +91,28 @@ index b3b2fa9ba..140e37969 100644
  	if (err)
  		return dev_err_probe(dev, err, "failed to get clocks for core %d\n", core->index);
  
-@@ -65,6 +83,23 @@ int rocket_core_init(struct rocket_core *core)
+@@ -65,6 +84,19 @@ int rocket_core_init(struct rocket_core *core)
  		return err;
  	}
  
 +	/*
-+	 * RK3576: the NPU spans TWO power domains (PD_NPU0 + PD_NPU1). The vendor
-+	 * powers BOTH from its single NPU node even when computing on one core --
-+	 * the CBUF->CMAC read path only works fully with NPU1 powered. A device
-+	 * with more than one power-domain is skipped by the driver-core single-PD
-+	 * auto-attach, so attach the list explicitly.  RK3588 has a single domain
-+	 * and keeps the driver-core auto-attach (soc->multi_power_domain == false).
++	 * A core may span more than one power domain: on RK3576 it spans both
++	 * PD_NPU0 and PD_NPU1, because the CBUF (convolution buffer) is read
++	 * through NPU1 whichever core is computing.  The driver core attaches a
++	 * device that lists exactly one power domain and leaves every other case
++	 * alone, so attach the list here and follow whatever the DT describes.
++	 * -EEXIST is the driver core having already attached that single domain,
++	 * which is the whole job done -- not a failure.
 +	 */
-+	if (core->soc->multi_power_domain) {
-+		struct dev_pm_domain_list *pd_list;
-+
-+		err = devm_pm_domain_attach_list(dev, NULL, &pd_list);
-+		if (err < 0)
-+			return dev_err_probe(dev, err,
-+					     "failed to attach NPU power domains\n");
-+	}
++	err = devm_pm_domain_attach_list(dev, NULL, &pd_list);
++	if (err < 0 && err != -EEXIST)
++		return dev_err_probe(dev, err, "failed to attach NPU power domains\n");
 +
  	pm_runtime_use_autosuspend(dev);
  
  	/*
 diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
-index f6d738285..2ab389c4b 100644
+index f6d738285..7f2291ec7 100644
 --- a/drivers/accel/rocket/rocket_core.h
 +++ b/drivers/accel/rocket/rocket_core.h
 @@ -6,6 +6,7 @@
@@ -125,13 +130,13 @@ index f6d738285..2ab389c4b 100644
 +/*
 + * Per-SoC differences, selected by the of_device_id match data.  The RK3588
 + * path (all flags/counts at their base values) must stay byte-for-byte the
-+ * original behaviour; RK3576 opts in to the extra clocks, the multi-domain
-+ * attach and the polled completion.
++ * original behaviour; RK3576 opts in to the extra clocks and the polled
++ * completion.  How many power domains a core spans is not here: that is what
++ * the DT says, and rocket_core_init() follows it.
 + */
 +struct rocket_soc_data {
 +	unsigned int num_clks;		/* clk_bulk count: 4 base, 6 with CBUF */
 +	unsigned int num_resets;	/* reset_bulk count: 2 base, 1 on RK3576 */
-+	bool multi_power_domain;	/* device spans more than one PM domain */
 +	bool poll_completion;		/* PC_DONE not routable to the GIC; poll it */
 +};
 +
@@ -178,7 +183,7 @@ index 46e6ee1e7..bfb00f967 100644
  	if (!rdev->cores)
  		return ERR_PTR(-ENOMEM);
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 8bbbce594..7f7dfa374 100644
+index 8bbbce594..6e9701f1a 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -176,6 +176,7 @@ static int rocket_probe(struct platform_device *pdev)
@@ -189,21 +194,19 @@ index 8bbbce594..7f7dfa374 100644
  	rdev->cores[core].index = core;
  
  	rdev->num_cores++;
-@@ -213,8 +214,23 @@ static void rocket_remove(struct platform_device *pdev)
+@@ -213,8 +214,21 @@ static void rocket_remove(struct platform_device *pdev)
  	}
  }
  
 +static const struct rocket_soc_data rk3588_soc_data = {
 +	.num_clks = 4,
 +	.num_resets = 2,
-+	.multi_power_domain = false,
 +	.poll_completion = false,
 +};
 +
 +static const struct rocket_soc_data rk3576_soc_data = {
 +	.num_clks = 6,
 +	.num_resets = 1,
-+	.multi_power_domain = true,
 +	.poll_completion = true,
 +};
 +
@@ -214,7 +217,7 @@ index 8bbbce594..7f7dfa374 100644
  	{}
  };
  MODULE_DEVICE_TABLE(of, dt_match);
-@@ -240,7 +256,7 @@ static int rocket_device_runtime_resume(struct device *dev)
+@@ -240,7 +254,7 @@ static int rocket_device_runtime_resume(struct device *dev)
  	if (core < 0)
  		return -ENODEV;
  
@@ -223,7 +226,7 @@ index 8bbbce594..7f7dfa374 100644
  	if (err) {
  		dev_err(dev, "failed to enable (%d) clocks for core %d\n", err, core);
  		return err;
-@@ -260,7 +276,7 @@ static int rocket_device_runtime_suspend(struct device *dev)
+@@ -260,7 +274,7 @@ static int rocket_device_runtime_suspend(struct device *dev)
  	if (!rocket_job_is_idle(&rdev->cores[core]))
  		return -EBUSY;
  
@@ -233,7 +236,7 @@ index 8bbbce594..7f7dfa374 100644
  	return 0;
  }
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 2f1861f96..ce3f7c92e 100644
+index ac51bff39..b4866d090 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -7,6 +7,7 @@
@@ -416,7 +419,7 @@ index 2f1861f96..ce3f7c92e 100644
  
  	rocket_pc_writel(core, INTERRUPT_MASK, 0x0);
  
-@@ -445,6 +548,10 @@ int rocket_job_init(struct rocket_core *core)
+@@ -446,6 +549,10 @@ int rocket_job_init(struct rocket_core *core)
  	int ret;
  
  	INIT_WORK(&core->reset.work, rocket_reset_work);
@@ -427,7 +430,7 @@ index 2f1861f96..ce3f7c92e 100644
  	spin_lock_init(&core->fence_lock);
  	mutex_init(&core->job_lock);
  
-@@ -486,6 +593,10 @@ int rocket_job_init(struct rocket_core *core)
+@@ -487,6 +594,10 @@ int rocket_job_init(struct rocket_core *core)
  
  void rocket_job_fini(struct rocket_core *core)
  {

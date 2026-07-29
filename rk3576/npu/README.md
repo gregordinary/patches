@@ -26,7 +26,18 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
 | 0012 | accel/rocket: retire an RK3576 job on the DPU's completion, not on `PC_DONE` (ours) |
 
-Two of the carried patches have local changes; the rest are verbatim.
+Four of the carried patches have local changes; the rest are verbatim.
+
+**0001 describes the RK3576 node shape.** The upstream schema is written for the
+RK3588 and constrains every countable property to the RK3588's count, so the RK3576
+nodes 0007 adds -- five register banks, six clocks, two power domains, one reset --
+validate against nothing. The shared properties carry the union of the two parts and
+an `allOf` pins the exact shape per compatible, including `power-domains` at exactly
+two for `rockchip,rk3576-rknn-core`. That is where an RK3576 node listing one domain
+is caught: `dtbs_check` names the property, at build time.
+
+**0006 attaches whatever `power-domains` the node lists**, rather than deciding from
+the SoC it matched. See "The power domains are not a board's job" below.
 
 **0002 is rebased over `rk3576-fixes`.** That series and this one both extend
 `drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
@@ -214,26 +225,21 @@ take it together with the rest, not as a menu:
 | `&vdd_npu_s0` (PMIC `dcdc-reg2` on this board) | `regulator-always-on` |
 
 **The power domains are not a board's job.** Both core nodes list both `RK3576_PD_NPU0`
-and `RK3576_PD_NPU1` in the SoC dtsi, because the requirement is a property of the part
-and the driver, not of any board. `rocket_core_init()` attaches with
-`devm_pm_domain_attach_list()` whenever `rocket_soc_data.multi_power_domain` is set,
-which is true for every RK3576. A node listing a **single** `power-domains` entry is
-auto-attached by the driver core first, so the driver's explicit attach then fails and
-that core has no `/dev/accel` at all:
+and `RK3576_PD_NPU1` in the SoC dtsi, because the requirement is a property of the part,
+not of any board. It matches the vendor, which powers both NPU domains from one node even
+on a single core -- the CBUF->CMAC read path is only fully powered with NPU1 up. genpd
+reference-counts the two shared domains, so each core holding both costs nothing and keeps
+the pair up while either core is active. Each core lists its own domain first.
 
-```
-rocket 27700000.npu: error -EEXIST: failed to attach NPU power domains
-rocket 27700000.npu: probe with driver rocket failed with error -17
-```
+`rocket_core_init()` calls `devm_pm_domain_attach_list()` unconditionally and takes the
+count from the node, so the DT is the only place that says how many domains a core spans.
+The driver core attaches the single-domain case itself and reports `-EEXIST`, which the
+driver ignores. A core that lists one domain therefore probes and runs -- with NPU1
+unpowered and its convolution buffer half fed -- so the constraint is enforced in the
+binding, where `dtbs_check` catches it and names the property.
 
-Listing two entries suppresses the auto-attach. It also matches the vendor, which powers
-both NPU domains from one node even on a single core -- the CBUF->CMAC read path is only
-fully powered with NPU1 up. genpd reference-counts the two shared domains, so each core
-holding both costs nothing and keeps the pair up while either core is active. Each core
-lists its own domain first.
-
-The IOMMUs need only their `status`: `rk_iommu` does no explicit attach, so a single
-`power-domains` entry is correct for them.
+The IOMMUs need only their `status`: `rk_iommu` does no explicit attach, and one
+`power-domains` entry is what the hardware has.
 
 **The rail needs `regulator-always-on` *in addition to* `npu-supply`.** `vdd_npu_s0`
 boots enabled but has no consumer, so the regulator core disables it as unused late in

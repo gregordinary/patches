@@ -16,14 +16,21 @@
 # between tasks.
 #
 # The series is patches 1-7 of the linux-rockchip RFC v2 "accel/rocket: RK3576 NPU
-# (RKNN) enablement" (Jiaxing Hu), plus 0008 from this repo. Patches 1 and 3-6 are
-# verbatim; 0002 and 0007 carry local changes. 0002 is rebased over rk3576-fixes (both
+# (RKNN) enablement" (Jiaxing Hu), plus 0008 from this repo. Patches 3-5 are verbatim;
+# 0001, 0002, 0006 and 0007 carry local changes. 0001 widens the binding to describe the
+# RK3576 node at all -- upstream constrains every countable property to the RK3588's
+# count, so the five register banks, six clocks, two power domains and one reset that
+# 0007 emits validate against nothing -- and pins the exact shape per compatible, which
+# is what makes a one-domain RK3576 core a dtbs_check failure rather than a core that
+# runs with its convolution buffer half fed. 0006 attaches the power domains the node
+# lists instead of deciding from the SoC it matched, so the phandle count is a hardware
+# description and not a driver-dispatch signal. 0002 is rebased over rk3576-fixes (both
 # extend the pm-domains.c DOMAIN_RK3576 macro and table; the merge carries both the
 # .delay_us and .need_regulator arguments). 0007 corrects rknn_core_1, which sits at
 # 0x27708000 -- the two cores are the halves of one 64 KB RKNN TOP window and 0x27710000
 # is the unrelated RKNN_NSP block -- gives it the two CBUF clocks its own IOMMU and
 # power domain already list, and puts both NPU power domains on both core nodes, which
-# rocket requires of every RK3576 core and so belongs to the SoC rather than to each
+# the part requires of every RK3576 core and so belongs to the SoC rather than to each
 # board. See rk3576/npu/README.md for all of them. Patch 8 of that RFC (enable NPU on
 # the Radxa Rock 4D) is dropped: the board enable is board-specific, and the H96 wires
 # its own via its device `.dts` (npu-supply = vdd_npu_s0 and status = "okay").
