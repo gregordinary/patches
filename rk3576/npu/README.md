@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 17 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 20 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -30,6 +30,9 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0015 | accel/rocket: make the submit ioctl's uAPI structs extensible (ours) |
 | 0016 | accel/rocket: run a job's tasks in one HW kick (ours) |
 | 0017 | accel/rocket: let userspace name a job's completion class (ours) |
+| 0018 | accel/rocket: put the IOMMU domain when `create_bo` fails (ours) |
+| 0019 | accel/rocket: free the scheduler list the file allocated (ours) |
+| 0020 | accel/rocket: do not free the task array twice (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -339,6 +342,60 @@ stock rocket reports 0.0.0 and userspace had no way to ask what the kernel guara
 0015 claims **1.0** (extensible descriptors), 0016 **1.1** (`BATCHED`), 0017 **1.2**
 (`NO_DPU_DONE`). Userspace must check `DRM_IOCTL_VERSION` before self-chaining: an older
 kernel does not know the flag and would run a chained layout down the per-task path.
+
+## What 0018, 0019 and 0020 fix: two leaks and a double free
+
+Three more defects on the same footing as 0013 and 0014 -- mainline code the RK3576
+enablement does not touch, reachable by any client that may open `/dev/accel/accel0`
+at all. The RK3588 reaches all three; it carries 0020 as `rocket/087`.
+
+**0018: a failed `CREATE_BO` leaks the file's IOMMU domain.**
+`rocket_ioctl_create_bo()` takes a domain reference as soon as it has an object, and
+each of its four error paths then frees that object with
+`drm_gem_shmem_object_free()`. That helper calls `drm_gem_shmem_free()` directly, so
+it never reaches the object's own `.free` handler -- `rocket_gem_bo_free()`, the only
+place the driver drops that reference. Every failing create therefore leaks one
+`struct rocket_iommu_domain` reference, and the first of the four paths is a plain
+large allocation. With 0014 the cost is larger than one struct: the leaked reference
+keeps the IOVA allocator, its `drm_mm` and every mapping it still holds alive for the
+life of the module. The put goes where the reference is taken rather than in the error
+paths, because `rocket_gem_bo_free()` would also `iommu_unmap()` and
+`drm_mm_remove_node()` a node those paths have either not inserted or already removed.
+
+**0019: the scheduler array is freed through a pointer the entity does not keep.**
+`rocket_job_open()` allocates a `num_cores`-entry array and hands it to
+`drm_sched_entity_init()`; `rocket_job_close()` then frees `entity->sched_list`. The
+entity stores that pointer only when `num_sched_list > 1`, and
+`drm_sched_entity_select_rq()` clears it again once the entity settles on a runqueue.
+On a single-core device -- the supported RK3576 configuration -- the close path is
+`kfree(NULL)` and the array leaks on every open/close cycle, bounded by nothing. The
+driver keeps its own pointer and frees that after `drm_sched_entity_destroy()`, since
+the array belongs to the file rather than to the entity. Two smaller defects on the
+same path go with it: the `kmalloc` return was unchecked, and the
+`drm_sched_entity_init()` failure path leaked the array.
+
+**0020: the submit ioctl's task array is freed twice.** `rocket_copy_tasks()` frees
+`rjob->tasks` on its `fail:` path without clearing the pointer, and its only caller
+unwinds through `rocket_job_cleanup()`, which frees `job->tasks` unconditionally. Two
+failures reach it and both are ordinary userspace input: the task copy fails, or
+`task.regcmd_count` is 0 -- which is what a userspace whose register-program generator
+refused a shape submits if it submits anyway. It is an unprivileged double free of a
+kmalloc-16 object, one of the hottest caches in the kernel, so the damage surfaces far
+from here in whatever allocates next. It was chased through two faults that are not
+defects in the paths they appeared in: a scatterlist walked in
+`drm_gem_shmem_release()` from `rocket_gem_bo_free()`, and a wild `phys_to_virt()`
+inside `swiotlb_bounce()` reached from `drm_gem_shmem_get_pages_sgt()`. With
+`slub_debug=FZPU slab_nomerge` it is deterministic -- two
+
+```
+BUG kmalloc-16: Object already free
+```
+
+reports per run of a client that submits rejected jobs, naming
+`rocket_ioctl_submit()` as the allocation site and `rocket_job_cleanup()` as the
+second free -- before, and zero after, over ten rounds of the full gate sequence on a
+clean boot. The fix gives the array a single owner: `rocket_job_cleanup()` already
+frees it on every path out of the ioctl, so the `fail:` path only has to stop.
 
 ## What a board `.dts` must do, and why
 

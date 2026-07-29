@@ -94,6 +94,21 @@
 # costs time, never correctness. 0016 needs a userspace that emits the chained layout
 # (rocket-userspace, ROCKET_RK3576_BATCH_TASKS); an unflagged job is unaffected by both.
 #
+# 0018-0020 are ours and are three more ways an unprivileged caller reaches a kernel
+# defect through /dev/accel, all of them mainline code the RK3588 reaches unchanged.
+# 0018 puts the file's IOMMU domain when CREATE_BO fails: every error path frees the
+# object with drm_gem_shmem_object_free(), which calls drm_gem_shmem_free() directly
+# and so never reaches the .free handler that would drop the reference, leaking one
+# domain per failed create -- and with 0014 that pins the IOVA allocator and every
+# mapping it holds. 0019 frees the scheduler array the file allocated: the entity
+# keeps that pointer only when it has more than one runqueue to choose between, so
+# on a single-core device -- the supported RK3576 configuration -- the close path
+# frees NULL and leaks the array on every open. 0020 is a double free of the submit
+# ioctl's task array, which rocket_copy_tasks() frees on its failure path without
+# clearing and rocket_job_cleanup() then frees again; a kmalloc-16 object handed to
+# two owners, reached by a job that asks for no registers. 0020 is verified on the
+# RK3576 under slub_debug=FZPU and carried for the RK3588 as rocket/087.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -124,6 +139,9 @@ kernel = [
     "rk3576/npu/0015-accel-rocket-make-the-submit-ioctl-s-uapi-structs-extensible.patch",
     "rk3576/npu/0016-accel-rocket-run-a-job-s-tasks-in-one-hw-kick.patch",
     "rk3576/npu/0017-accel-rocket-let-userspace-name-a-job-s-completion-class.patch",
+    "rk3576/npu/0018-accel-rocket-put-the-iommu-domain-when-create_bo-fails.patch",
+    "rk3576/npu/0019-accel-rocket-free-the-scheduler-list-the-file-allocated.patch",
+    "rk3576/npu/0020-accel-rocket-do-not-free-the-task-array-twice.patch",
 ]
 
 ffmpeg    = []

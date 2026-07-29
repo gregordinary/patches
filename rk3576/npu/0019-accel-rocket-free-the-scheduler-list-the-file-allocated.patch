@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 18:00:00 +0000
+Subject: [PATCH] accel/rocket: free the scheduler list the file allocated
+
+rocket_job_open() allocates a num_cores-entry array of struct
+drm_gpu_scheduler pointers and hands it to drm_sched_entity_init().
+rocket_job_close() then frees entity->sched_list.
+
+The entity does not always hold that pointer.  drm_sched_entity_init()
+stores it only when there is a choice to make:
+
+	entity->sched_list = num_sched_list > 1 ? sched_list : NULL;
+
+and drm_sched_entity_select_rq() clears it again once the entity has
+settled on a runqueue:
+
+	if (entity->num_sched_list == 1)
+		entity->sched_list = NULL;
+
+So on a single-core device -- which is the supported RK3576
+configuration, and any RK3588 with one core bound -- rocket_job_close()
+runs kfree(NULL) and the array is leaked on every open/close.  On a
+multi-core device the free happens to land, but only until the entity
+drops the pointer.
+
+/dev/accel/accel0 is group `render`, so an unprivileged client that
+opens and closes it in a loop leaks num_cores * sizeof(void *) bytes per
+iteration with nothing to bound it.
+
+Keep the driver's own pointer and free that instead, after
+drm_sched_entity_destroy() rather than before it -- the array belongs to
+the file, not to the entity, so it should outlive the entity it was
+given to.
+
+Two smaller defects on the same path go with it: the kmalloc return was
+unchecked, so an allocation failure dereferenced NULL in the loop below
+it, and the drm_sched_entity_init() failure path leaked the array as
+well.
+
+This is mainline code that the RK3576 series does not touch, and the
+RK3588 reaches the same paths.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_drv.h |  7 +++++++
+ drivers/accel/rocket/rocket_job.c | 23 +++++++++++++++++++----
+ 2 files changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_drv.h b/drivers/accel/rocket/rocket_drv.h
+index e294ea982..8ef3ca10b 100644
+--- a/drivers/accel/rocket/rocket_drv.h
++++ b/drivers/accel/rocket/rocket_drv.h
+@@ -37,6 +37,13 @@ struct rocket_file_priv {
+ 	struct rocket_iommu_domain *domain;
+ 
+ 	struct drm_sched_entity sched_entity;
++
++	/*
++	 * The scheduler array handed to drm_sched_entity_init().  The entity
++	 * does not own it and does not always keep a pointer to it, so this is
++	 * what rocket_job_close() frees.
++	 */
++	struct drm_gpu_scheduler **sched_list;
+ };
+ 
+ struct rocket_iommu_domain *rocket_iommu_domain_get(struct rocket_file_priv *rocket_priv);
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index ae34177ef..c4ad600d0 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -849,11 +849,14 @@ void rocket_job_fini(struct rocket_core *core)
+ int rocket_job_open(struct rocket_file_priv *rocket_priv)
+ {
+ 	struct rocket_device *rdev = rocket_priv->rdev;
+-	struct drm_gpu_scheduler **scheds = kmalloc_objs(*scheds,
+-							 rdev->num_cores);
++	struct drm_gpu_scheduler **scheds;
+ 	unsigned int core;
+ 	int ret;
+ 
++	scheds = kmalloc_objs(*scheds, rdev->num_cores);
++	if (!scheds)
++		return -ENOMEM;
++
+ 	for (core = 0; core < rdev->num_cores; core++)
+ 		scheds[core] = &rdev->cores[core].sched;
+ 
+@@ -861,8 +864,19 @@ int rocket_job_open(struct rocket_file_priv *rocket_priv)
+ 				    DRM_SCHED_PRIORITY_NORMAL,
+ 				    scheds,
+ 				    rdev->num_cores, NULL);
+-	if (WARN_ON(ret))
++	if (WARN_ON(ret)) {
++		kfree(scheds);
+ 		return ret;
++	}
++
++	/*
++	 * The entity only keeps the array when it has a choice to make:
++	 * drm_sched_entity_init() stores it for num_sched_list > 1 and stores
++	 * NULL otherwise, and drm_sched_entity_select_rq() drops it again once
++	 * it has settled on a runqueue.  So entity->sched_list cannot be used
++	 * to free what we allocated -- keep our own pointer.
++	 */
++	rocket_priv->sched_list = scheds;
+ 
+ 	return 0;
+ }
+@@ -871,8 +885,9 @@ void rocket_job_close(struct rocket_file_priv *rocket_priv)
+ {
+ 	struct drm_sched_entity *entity = &rocket_priv->sched_entity;
+ 
+-	kfree(entity->sched_list);
+ 	drm_sched_entity_destroy(entity);
++	kfree(rocket_priv->sched_list);
++	rocket_priv->sched_list = NULL;
+ }
+ 
+ int rocket_job_is_idle(struct rocket_core *core)
+-- 
+2.43.0
+

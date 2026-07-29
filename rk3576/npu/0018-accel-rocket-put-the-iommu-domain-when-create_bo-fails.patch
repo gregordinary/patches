@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: put the IOMMU domain when create_bo fails
+
+rocket_ioctl_create_bo() takes a reference on the file's IOMMU domain with
+rocket_iommu_domain_get() as soon as it has an object, and every one of its
+error paths then frees that object with drm_gem_shmem_object_free().
+
+That helper calls drm_gem_shmem_free() directly.  It does not go through
+drm_gem_object_put(), so it never reaches the object's own .free handler --
+rocket_gem_bo_free() -- which is the only place the driver puts that
+reference.  Every failing CREATE_BO therefore leaks one struct
+rocket_iommu_domain reference.
+
+Four paths reach it:
+
+  drm_gem_shmem_get_pages_sgt() fails            -ENOMEM
+  drm_mm_insert_node_generic() fails             (IOVA space exhausted)
+  iommu_map_sgtable() maps short                 -ENOMEM
+  drm_gem_handle_create() fails                  -ENOMEM
+
+/dev/accel/accel0 is group `render`, so an unprivileged client that can make
+any of those fail -- the first is a plain large allocation -- pins the domain
+for the lifetime of the module.  The domain outlives the file by design, so
+nothing later releases it.
+
+It matters more with the IOVA allocator anchored to the domain: that
+allocator, its drm_mm and every mapping it still holds are kept alive by the
+leaked reference, rather than being torn down when the last BO goes away.
+
+This is mainline code, not something the RK3576 series introduces, and the
+RK3588 reaches the same paths.  Fix it where the reference is taken, by
+putting it on the way out, rather than by making the error paths call the
+object's .free -- rocket_gem_bo_free() would then also iommu_unmap() and
+drm_mm_remove_node() a node that these paths have either not inserted or
+already removed.
+
+Applies on top of 0014, which moves the IOVA allocator into the domain and
+rewrites the surrounding lines.
+
+Found by inspection while chasing an unrelated NULL dereference in
+rocket_gem_bo_free(); that one is not this, and remains open.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_gem.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/accel/rocket/rocket_gem.c b/drivers/accel/rocket/rocket_gem.c
+index 5026a2816..56aec2fd7 100644
+--- a/drivers/accel/rocket/rocket_gem.c
++++ b/drivers/accel/rocket/rocket_gem.c
+@@ -130,6 +130,13 @@ int rocket_ioctl_create_bo(struct drm_device *dev, void *data, struct drm_file *
+ 	mutex_unlock(&rocket_priv->domain->mm_lock);
+ 
+ err:
++	/*
++	 * drm_gem_shmem_object_free() calls drm_gem_shmem_free() directly and so
++	 * never reaches this object's .free handler, rocket_gem_bo_free(), which
++	 * is where this reference is otherwise released.
++	 */
++	rocket_iommu_domain_put(rkt_obj->domain);
++	rkt_obj->domain = NULL;
+ 	drm_gem_shmem_object_free(gem_obj);
+ 
+ 	return ret;
+-- 
+2.43.0
+
