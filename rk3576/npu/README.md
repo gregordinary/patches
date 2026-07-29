@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 12 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 14 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -25,6 +25,8 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0010 | accel/rocket: complete jobs that never reach the hardware (ours) |
 | 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
 | 0012 | accel/rocket: retire an RK3576 job on the DPU's completion, not on `PC_DONE` (ours) |
+| 0013 | accel/rocket: take the job's IOMMU domain before it can be rejected (ours) |
+| 0014 | accel/rocket: anchor the IOVA allocator to the IOMMU domain (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -208,6 +210,65 @@ The RK3588 takes a completion interrupt and does not poll, so none of this reach
 
 Patch 8 of the RFC (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`) is **not**
 carried: the board enable is board-specific. See below for what a board owes.
+
+## What 0013 and 0014 fix: two crashes reachable from group `render`
+
+`/dev/accel/accel0` is group `render`, so both of these are available to any client
+that may use the NPU at all. Neither is RK3576-specific -- the code is mainline's and
+the RK3576 enablement does not touch it; the RK3588 series carries the same two as 084
+and 085. They are here because this is the series the RK3576 image applies, and that
+image does not take the RK3588 series.
+
+**0013: the job reaches its destructor without its domain.** `rocket_job_cleanup()`
+puts `rjob->domain` unconditionally, but `rocket_ioctl_submit_job()` assigns it only
+after the task copy and both BO lookups have succeeded. Five rejection sites unwind
+through the cleanup ahead of that assignment -- a `task_struct_size` below
+`sizeof(struct drm_rocket_task)`, an unreadable `tasks` pointer, `regcmd_count == 0`,
+and either BO handle not existing -- so a malformed submit reaches
+`rocket_iommu_domain_put(NULL)`, which dereferences the NULL to get at the kref:
+
+```
+Internal error: Oops: 0000000096000004 [#1]  SMP
+pc : rocket_iommu_domain_put+0x50/0xac [rocket]
+lr : rocket_job_cleanup+0x20/0x23c [rocket]
+```
+
+Taking the reference at construction removes the window rather than teaching the put
+to tolerate NULL, so the next field added to that struct does not reopen it. The get
+cannot fail: `rocket_open()` creates the file's domain before the file is usable.
+Verified with `tests/uapi_submit_errpath_rocket` in rocket-userspace, one malformed
+submit per site from a forked child: 0 of 5 sites returned to userspace before, 5 of 5
+after.
+
+**0014: the IOVA allocator outlives its owner.** The allocator (`drm_mm` + `mm_lock`)
+lived in `rocket_file_priv` and was torn down in `rocket_postclose()`, but a BO's IOVA
+node is removed in its GEM free path -- and a job's BO references are dropped by the
+`drm_sched` free worker, which can run *after* the owning file has closed. A client
+that submits and closes without waiting therefore removes a node through a freed
+`rocket_file_priv`. Anchoring the allocator to `rocket_iommu_domain` fixes it by
+lifetime: that object is refcounted and held by the file, by every mapped BO and by
+the attached core, so the node removal always runs against a live allocator and the
+takedown runs only once it is provably empty.
+
+Measured on an H96 MAX M9, 16 iterations of open / allocate / submit /
+close-without-waiting: 16 of 16 produced
+
+```
+WARNING: drivers/gpu/drm/drm_mm.c:965 at drm_mm_takedown+0x28/0x38
+ rocket_postclose [rocket]
+```
+
+before and 0 of 16 after, on the same kernel with only this patch changed. Left running
+longer, the same client reaches the dereference through the free worker:
+
+```
+Internal error: Oops: 0000000096000004 [#1] SMP
+Workqueue: 27700000.npu drm_sched_free_job_work
+pc : add_hole+0x34/0x15c
+lr : drm_mm_remove_node+0x1e8/0x380
+ rocket_gem_bo_free [rocket]
+ rocket_job_cleanup [rocket]
+```
 
 ## What a board `.dts` must do, and why
 

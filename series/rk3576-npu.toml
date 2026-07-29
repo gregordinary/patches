@@ -57,6 +57,18 @@
 # mainline's and the RK3588 reaches the same paths, so 0010 duplicates no RK3588 patch
 # only because none exists yet. See rk3576/npu/README.md for the measurements.
 #
+# 0013 and 0014 are ours and are two ways an unprivileged caller crashes the kernel
+# through /dev/accel, which is group `render`. 0013 takes the job's IOMMU domain at
+# construction: rocket_job_cleanup() puts it unconditionally, but the submit ioctl
+# assigns it only after five rejection sites, so a malformed submit reaches the put
+# with the kzalloc's NULL. 0014 moves the IOVA allocator from rocket_file_priv into
+# the refcounted rocket_iommu_domain: a BO's IOVA node is removed in its GEM free
+# path, which the drm_sched free worker can run after the owning file has closed, so
+# a client that submits and closes without waiting frees the allocator out from under
+# it. Both are mainline code that the RK3576 enablement does not touch -- the RK3588
+# series carries the same fixes as 084 and 085 -- and they are here because this is
+# the series the RK3576 image applies.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -82,6 +94,8 @@ kernel = [
     "rk3576/npu/0010-accel-rocket-complete-jobs-that-never-reach-the-hardware.patch",
     "rk3576/npu/0011-accel-rocket-keep-the-iommu-domain-attached-across-jobs.patch",
     "rk3576/npu/0012-accel-rocket-retire-an-rk3576-job-on-the-dpu-completion.patch",
+    "rk3576/npu/0013-accel-rocket-take-the-job-s-iommu-domain-before-it-can-be-rejected.patch",
+    "rk3576/npu/0014-accel-rocket-anchor-the-iova-allocator-to-the-iommu-domain.patch",
 ]
 
 ffmpeg    = []
