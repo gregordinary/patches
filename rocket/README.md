@@ -8,17 +8,19 @@ and job hooks, so the NPU power domain is always powered first: a register acces
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
 **Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
-only configuration the userspace projects' published figures describe. Three of the six are
-required: two of them fix bugs that can crash the kernel, and the third is the one that makes
-the NPU worth using at all. Two more are the dispatch-floor pair those figures assume. Exactly
-one — the voltage patch — costs you nothing to omit at today's operating point. The tiers below
-say what you give up by leaving a patch out; they are not an invitation to cherry-pick.
+only configuration the userspace projects' published figures describe. Four of the seven are
+required: three of them fix bugs that can crash the kernel, and the fourth is the one that
+makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume.
+Exactly one — the voltage patch — costs you nothing to omit at today's operating point. The
+tiers below say what you give up by leaving a patch out; they are not an invitation to
+cherry-pick.
 
 | | Patch | What it is |
 |---|---|---|
 | **Required** | `081-rocket-drv-npu-clk.patch` | Raises the NPU compute clock from its 200 MHz boot default to 600 MHz (~1.43× throughput), and makes the park of that clock correct: refcounted (the three cores share one clock) and given a deadline that outlives a host-side gap within one inference. Without it the NPU runs at one-fifth speed; with the lever but without the park fixes it is *worse than stock*. |
 | **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob. |
 | **Required** | `085-rocket-drv-uapi-extensible-structs.patch` | Fixes a **kernel oops any client can trigger with one malformed submit** (a NULL `job->domain` dereferenced on the cleanup path) and a submit error the ioctl was silently discarding. Also makes the descriptors extensible, which is the precondition for `086`. |
+| **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -40,9 +42,14 @@ Three, and all of them are real (not just diff context):
   ("v1") struct size; without it, the grown struct makes the kernel reject **every**
   submit from a userspace built against the older header with `-EINVAL`.
 
-`081`, `083`, `084` and `085` each apply to a pristine tree on their own, in any
+`081`, `083`, `084`, `085` and `087` each apply to a pristine tree on their own, in any
 combination. **Applying in ascending numeric order always satisfies the dependencies**, so
 if you are unsure, just apply them lowest-number first.
+
+`087` in particular depends on nothing: the `fail:` path it removes the `kvfree()` from is
+mainline's, so the double free is reachable on a tree with none of the others applied. `085`
+adds a second way *into* that path — a submit carrying a trailing field the kernel does not
+know — but it does not create the bug.
 
 ## The uAPI header is part of the kernel you build
 
@@ -90,6 +97,13 @@ build](#the-uapi-header-is-part-of-the-kernel-you-build).
 | `081` `083` `084` | yes | yes | 64/64 | stable | yes |
 | `081` `083` `084` `085` | yes | yes | 64/64 | stable | yes |
 | `081` `083` `084` `085` `086` — **the full series** | yes | yes | 64/64 | stable | yes |
+
+`087` is not a row here. Its A/B was run on the RK3576, where `rocket_copy_tasks()` is
+byte-identical and the series carries the same fix as `rk3576/npu` 0020; on RK3588 silicon
+the code, the reachability and the fix are identical but the measurement has not been
+repeated. It changes no measured path in any case — it deletes a `kvfree()` from a
+rejection path that never reaches the hardware, so the rows above describe the series with
+it applied.
 
 The full series is the configuration this stack ships and benchmarks against; the subsets are
 here to show that no subset is *broken*, which is what lets you bisect. Every config is 64/64,

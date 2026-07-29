@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 19:00:00 +0000
+Subject: [PATCH] rocket: do not free the task array twice
+
+rocket_copy_tasks() allocates rjob->tasks and, on any failure inside its
+copy loop, frees it again on the fail: path -- without clearing the
+pointer.  Its only caller, rocket_ioctl_submit_job(), then unwinds
+through rocket_job_put() -> rocket_job_cleanup(), which frees
+job->tasks unconditionally.  The same allocation goes back to the
+allocator twice.
+
+Two failures reach it, and both are ordinary userspace input: the task
+copy fails (a bad user pointer, or with 085 a trailing field this kernel
+does not know), or task.regcmd_count is 0.  The second is not
+hypothetical -- a userspace whose register-program generator REFUSES a
+shape leaves regcmd_count at its zeroed value, and a caller that submits
+anyway lands exactly here.
+
+/dev/accel/accel0 is group `render`, so this is an unprivileged double
+free of a kmalloc-16 object (a struct rocket_task is 16 bytes), one of
+the hottest caches in the kernel.  The freelist then hands one object to
+two owners and the damage surfaces far from here, in whatever allocates
+next.
+
+VERIFIED ON THE RK3576, where this function is byte-identical, with
+slub_debug=FZPU slab_nomerge: two "BUG kmalloc-16: Object already free"
+reports per run of a client that submits rejected jobs -- naming
+rocket_ioctl_submit() as the allocation site and rocket_job_cleanup() as
+the second free -- before, and zero after, over ten rounds of the full
+gate sequence on a clean boot.  The two faults it was chased through
+were a scatterlist walked in drm_gem_shmem_release() from
+rocket_gem_bo_free() and a wild phys_to_virt() inside swiotlb_bounce()
+reached from drm_gem_shmem_get_pages_sgt(); neither is a defect in those
+paths and neither reproduces on the fixed module.  NOT YET EXERCISED ON
+RK3588 SILICON -- the code, the reachability and the fix are identical,
+but the A/B above is the RK3576's.
+
+Fix it by giving the array a single owner.  rocket_job_cleanup() already
+frees it on every path out of the ioctl, including the ones that never
+reach the hardware, so the fail: path only has to stop.
+
+This is mainline code; the RK3576 series carries the same fix as 0020.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_job.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 93b994909..260285bcc 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -152,7 +152,11 @@ rocket_copy_tasks(struct drm_device *dev,
+ 	return 0;
+ 
+ fail:
+-	kvfree(rjob->tasks);
++	/*
++	 * Do NOT free rjob->tasks here.  Every caller unwinds through
++	 * rocket_job_cleanup(), which frees it unconditionally, so freeing it
++	 * on this path hands the same object to the allocator twice.
++	 */
+ 	return ret;
+ }
+ 
+-- 
+2.43.0

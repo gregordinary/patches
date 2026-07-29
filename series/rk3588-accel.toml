@@ -25,6 +25,14 @@ applies_to_kernel = ">=7.0, <7.2"
 #
 # The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
+#
+# 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
+# it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
+# frees it again on the way out of the ioctl. Both reaching failures are ordinary
+# userspace input and /dev/accel is group `render`, so it is an unprivileged double
+# free of a kmalloc-16 object. It is mainline code the RK3588 reaches unchanged;
+# the A/B that proves it was run on the RK3576, which carries the same fix as
+# rk3576/npu 0020.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -38,6 +46,7 @@ kernel = [
     "rocket/084-rocket-drv-fix-bo-mm-uaf.patch",
     "rocket/085-rocket-drv-uapi-extensible-structs.patch",
     "rocket/086-rocket-drv-batched-submit.patch",
+    "rocket/087-rocket-drv-fix-task-array-double-free.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
