@@ -25,10 +25,20 @@ applies_to_kernel = ">=7.1, <7.2"
 # /sys/devices/system/cpu/cpu*/cache empty. The sizes are the TRM's for the two
 # clusters and agree with rk3399-base.dtsi, which carries the same A72 and A53
 # cores. Also upstream-destined.
+#
+# 103 makes `rockchip,sai-tx-route` take effect at all. The SAI driver programs
+# SAI_PATH_SEL once from probe, and the value does not survive to the running
+# device -- the register reads its reset mapping no matter what the property says,
+# so a board whose codec sits on an SDO port the reset mapping does not drive gets
+# a card that streams correctly into silence. Every in-tree board describes the
+# identity mapping the register already holds, so none of them can observe it.
+# Re-applying the routing from runtime_resume also keeps it across PM cycles.
+# Upstream-destined; this is a driver defect, not a board quirk.
 kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
     "rk3576/kernel/102-arm64-dts-rk3576-cpu-caches.patch",
+    "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
 ]
 
 ffmpeg    = []

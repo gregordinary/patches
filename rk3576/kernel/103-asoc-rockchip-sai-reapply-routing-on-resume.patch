@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Thu, 30 Jul 2026 12:00:00 -0400
+Subject: [PATCH] ASoC: rockchip: sai: re-apply the SDO/SDI routing on resume
+
+A non-default rockchip,sai-tx-route never reaches the hardware. The
+routing is programmed once, from rockchip_sai_parse_paths() during
+probe, and by the time the device is running SAI_PATH_SEL has returned
+to its reset value. The regcache sync in the resume path does not
+restore it either, so the property is silently ignored and the stream
+leaves on whichever SDO port the reset mapping selects.
+
+This is invisible on every board in tree, because they all describe the
+identity mapping (<0 1 2 3>) that the register already holds after
+reset -- writing it and losing the write are indistinguishable. It is
+only visible on a board whose codec sits on an SDO port other than the
+one the reset mapping drives, where the card streams correctly, every
+clock and pin reads correct, and the output is silent.
+
+Program the routing from rockchip_sai_runtime_resume() instead, after
+the cache sync, so it is established whenever the device is powered
+rather than once at probe. When no route is described the values are
+the reset mapping, so the write is a no-op.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ sound/soc/rockchip/rockchip_sai.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/sound/soc/rockchip/rockchip_sai.c b/sound/soc/rockchip/rockchip_sai.c
+index ed393e503..15a3aafcf 100644
+--- a/sound/soc/rockchip/rockchip_sai.c
++++ b/sound/soc/rockchip/rockchip_sai.c
+@@ -248,6 +248,9 @@ static int rockchip_sai_runtime_suspend(struct device *dev)
+ 	return 0;
+ }
+ 
++static void rockchip_sai_path_config(struct rk_sai_dev *sai,
++				     int num, bool is_rx);
++
+ static int rockchip_sai_runtime_resume(struct device *dev)
+ {
+ 	struct rk_sai_dev *sai = dev_get_drvdata(dev);
+@@ -267,6 +270,16 @@ static int rockchip_sai_runtime_resume(struct device *dev)
+ 	if (ret)
+ 		goto err_regmap;
+ 
++	/*
++	 * Re-apply the DT-described SDO/SDI routing. The probe-time write in
++	 * rockchip_sai_parse_paths() does not survive to the running device,
++	 * and the cache sync above does not restore SAI_PATH_SEL to it either,
++	 * so a non-default route is silently lost. Writing it here also keeps
++	 * it across every runtime-PM cycle rather than only at probe.
++	 */
++	rockchip_sai_path_config(sai, sai->tx_lanes, false);
++	rockchip_sai_path_config(sai, sai->rx_lanes, true);
++
+ 	return 0;
+ 
+ err_regmap:
+-- 
+2.43.0
+
