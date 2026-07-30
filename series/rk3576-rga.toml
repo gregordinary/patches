@@ -21,7 +21,13 @@
 # BT.2020, which the RK3588's RGA3 does have.
 
 # Declared intent; the builder's verify-applies gate is the enforcement.
-applies_to_kernel = ">=7.1, <7.2"
+#
+# The lower bound is 7.1.5, not 7.1, because the DT patch below anchors on `vdec`'s
+# `reg` list and upstream reordered it. The bound sits on the series rather than on
+# that one patch: a per-patch range *skips* a patch outside it, which here would ship
+# an RGA driver with no DT nodes to bind -- silence where a refusal belongs. 7.1.4 is
+# untested and may well work; the bound names what is verified.
+applies_to_kernel = ">=7.1.5, <7.2"
 
 # Kernel tree: the shared vendor driver, its 7.1 forward-port fixups, then this
 # SoC's DT nodes.
