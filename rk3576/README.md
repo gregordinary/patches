@@ -14,6 +14,7 @@ and meant to leave this repo once they reach the stable series the series target
 |---|---|
 | `kernel/100-pmdomain-rockchip-rk3576-gpu-regulator` | GPU power-domain SError panic. `RK3576_PD_GPU` is fed by `vdd_gpu_s0` but, unlike the RK3588 GPU domain, was never flagged as needing a regulator, so the domain is powered before the rail is enabled. A deferred panfrost probe then races the regulator core's disable-unused pass: with the boot-on rail torn down the domain never acks (`failed to get ack on domain 'gpu'`) and panfrost's soft-reset faults the unpowered block (`SError` → panic). Flags the GPU domain `need_regulator`, as RK3588 already does. |
 | `kernel/101-arm64-dts-rk3576-gpu-power-domain-label` | adds a `pd_gpu` label to the RK3576 GPU power-domain node so a board can attach `vdd_gpu_s0` with `domain-supply` (the H96 board DTS does). |
+| `kernel/102-arm64-dts-rk3576-cpu-caches` | describes the CPU caches, which the SoC dtsi omits entirely — the kernel reports `cacheinfo: Unable to detect cache hierarchy for CPU 0` and leaves `/sys/devices/system/cpu/cpu*/cache` empty. L1 per core plus a per-cluster unified L2, using the TRM's geometry for the A53 and A72 clusters. |
 
 When upstreaming 100, the in-tree RK3576 boards with a GPU rail (e.g. armsom-sige5)
 should also gain `domain-supply = <&vdd_gpu_s0>` in the same series, so they use the
