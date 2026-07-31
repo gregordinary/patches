@@ -1,0 +1,221 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Thu, 30 Jul 2026 00:00:00 +0000
+Subject: [PATCH] accel/rocket: retire an RK3576 pooling job on the PPU's
+ completion
+
+0012 retires a job when the DPU raises its own completion in
+INTERRUPT_RAW_STATUS, because PC_DONE means the program counter finished
+issuing the task and not that the write DMA has drained.  That is the
+right signal for a convolution or a matmul, and there is one class of
+program for which it can never arrive: a POOL.
+
+PC_OPERATION_ENABLE is a per-block bitmap.  A convolution enables
+CNA/CORE/DPU/DPU_RDMA with 0x1d; a pool enables PPU and PPU_RDMA with
+0x60, and the two bit sets are disjoint.  A pooling program has no DPU
+stage at all, so DPU_0/DPU_1 never set for it and every pooling job
+retires on the dpu_grace_us deadline instead -- paid in full, on every
+submit.
+
+Measured through the userspace pooling entry on an H96 MAX M9, the wait
+for the output BO on a 1024x7x7 k7 average pool [HW sweep]:
+
+  dpu_grace_us     500     250     100
+  wait (us)        641     389     213
+
+-- it tracks the grace period count for count, which is what says the
+job is not retiring on a completion at all.  On MobileNetV1-224 that is
+640 us of the pooling layer's 1.48 ms and 640 us of the whole 6.2 ms
+inference.
+
+The PPU raises its own completion in the same register, two bits over.
+Wait for that instead when the job's last program is a PPU program.
+Which class a job is in is not visible to the driver at PC_DONE time and
+is entirely visible to userspace, which wrote PC_OPERATION_ENABLE -- so
+it is a per-job flag, the same shape 0017 uses for the other class that
+cannot be told apart from the inside.
+
+DRM_ROCKET_JOB_PPU_DONE selects the PPU bits in place of the DPU ones,
+latched per submit into the core so the poll callback still needs no job
+pointer.  Setting it on a job whose last program is a convolution costs
+that job the grace period and nothing else.  A job that MIXES DPU and
+PPU programs in one chained stream must not set it, because an interior
+program's PPU bit would retire the job while a later DPU write was still
+draining; the flag is documented as naming the LAST program's class.
+
+The interface version goes to 1.3 so userspace can tell a kernel that
+honors the flag from one that ignores it -- ignoring it is the old
+behavior, which is correct and slower.
+
+RK3588 takes a completion interrupt and does not poll, so it is
+untouched.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h |  6 ++++++
+ drivers/accel/rocket/rocket_drv.c  |  3 ++-
+ drivers/accel/rocket/rocket_job.c  | 33 ++++++++++++++++++++++--------
+ drivers/accel/rocket/rocket_job.h  |  9 ++++++++
+ include/uapi/drm/rocket_accel.h    | 20 ++++++++++++++++++
+ 5 files changed, 61 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 5c2df4fdf..3811bb562 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -95,6 +95,12 @@ struct rocket_core {
+ 	 * DRM_ROCKET_JOB_NO_DPU_DONE) so the poll timer needs no job pointer.
+ 	 */
+ 	unsigned int poll_grace_us;
++	/*
++	 * Which INTERRUPT_RAW_STATUS bits are this job's completion.  The DPU's
++	 * for a convolution or a matmul, the PPU's for a pooling program, which
++	 * has no DPU stage at all.  Latched per submit for the same reason.
++	 */
++	u32 poll_done_mask;
+ 
+ 	struct drm_gpu_scheduler sched;
+ 	u64 fence_context;
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 39eeef833..8f1be538b 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -164,6 +164,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  *         is refused with -E2BIG rather than silently ignored.
+  * - 1.1 - adds DRM_ROCKET_JOB_BATCHED (per-job chained submit).
+  * - 1.2 - adds DRM_ROCKET_JOB_NO_DPU_DONE (per-job completion-class hint).
++ * - 1.3 - adds DRM_ROCKET_JOB_PPU_DONE (retire on the PPU's completion).
+  *
+  * Userspace MUST NOT self-chain a job's regcmd layout unless the driver reports
+  * >= 1.1: an older kernel does not know the flag, would run that chained layout
+@@ -171,7 +172,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  */
+ static const struct drm_driver rocket_drm_driver = {
+ 	.major			= 1,
+-	.minor			= 2,
++	.minor			= 3,
+ 	.driver_features	= DRIVER_COMPUTE_ACCEL | DRIVER_GEM,
+ 	.open			= rocket_open,
+ 	.postclose		= rocket_postclose,
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index da4f4241b..3139f09a3 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -314,6 +314,11 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 		core->poll_grace_us = job->no_dpu_done
+ 			? READ_ONCE(rocket_dpu_blind_us)
+ 			: READ_ONCE(rocket_dpu_grace_us);
++		core->poll_done_mask = job->ppu_done
++			? (PC_INTERRUPT_RAW_STATUS_PPU_0 |
++			   PC_INTERRUPT_RAW_STATUS_PPU_1)
++			: (PC_INTERRUPT_RAW_STATUS_DPU_0 |
++			   PC_INTERRUPT_RAW_STATUS_DPU_1);
+ 		atomic_set(&core->poll_active, 1);
+ 		hrtimer_start(&core->poll_timer, rocket_poll_period(),
+ 			      HRTIMER_MODE_REL);
+@@ -587,17 +592,19 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ 		    PC_INTERRUPT_MASK_RK3576_PC_DONE_1))) {
+ 		/*
+ 		 * PC_DONE says the program counter finished issuing the task, not
+-		 * that the DPU's write DMA has drained.  The DPU raises its own
+-		 * completion -- the bit RK3588 takes as its interrupt -- tens of
+-		 * microseconds later, and a fence signalled on PC_DONE hands the
+-		 * caller a surface whose tail has not landed yet.  Wait for it.
++		 * that the writing block's DMA has drained.  That block raises its
++		 * own completion -- the bit RK3588 takes as its interrupt -- tens
++		 * of microseconds later, and a fence signalled on PC_DONE hands
++		 * the caller a surface whose tail has not landed yet.  Wait for
++		 * it.  WHICH block writes is the job's class: the DPU for a
++		 * convolution or a matmul, the PPU for a pooling program, which
++		 * enables no DPU stage at all.
+ 		 *
+-		 * Bounded, so a task that raises no DPU completion at all cannot
+-		 * stall behind one: after dpu_grace_us the job retires on PC_DONE
++		 * Bounded, so a task that raises no completion at all cannot
++		 * stall behind one: after the grace the job retires on PC_DONE
+ 		 * as it did before.
+ 		 */
+-		if (raw & (PC_INTERRUPT_RAW_STATUS_DPU_0 |
+-			   PC_INTERRUPT_RAW_STATUS_DPU_1))
++		if (raw & core->poll_done_mask)
+ 			goto complete;
+ 		if (!core->poll_pc_done_at)
+ 			core->poll_pc_done_at = ktime_get();
+@@ -915,7 +922,8 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 		return -EINVAL;
+ 
+ 	/* Reject unknown flag bits so a future flag cannot be silently ignored. */
+-	if (job->flags & ~(DRM_ROCKET_JOB_BATCHED | DRM_ROCKET_JOB_NO_DPU_DONE)) {
++	if (job->flags & ~(DRM_ROCKET_JOB_BATCHED | DRM_ROCKET_JOB_NO_DPU_DONE |
++			   DRM_ROCKET_JOB_PPU_DONE)) {
+ 		drm_dbg(dev, "Unknown bits set in drm_rocket_job.flags (0x%x).\n",
+ 			job->flags);
+ 		return -EINVAL;
+@@ -949,6 +957,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 	 */
+ 	rjob->no_dpu_done = !!(job->flags & DRM_ROCKET_JOB_NO_DPU_DONE);
+ 
++	/*
++	 * And which block's completion this job's last program raises.  A pool
++	 * is 23 PPU writes and 8 PPU_RDMA with no DPU stage, so the DPU bits
++	 * never set for it and the default wait is the grace period in full.
++	 */
++	rjob->ppu_done = !!(job->flags & DRM_ROCKET_JOB_PPU_DONE);
++
+ 	/*
+ 	 * Take the IOMMU domain reference here, while the job is still empty.
+ 	 * rocket_job_cleanup() puts it unconditionally, and every rejection
+diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
+index 148751f36..e20fa9719 100644
+--- a/drivers/accel/rocket/rocket_job.h
++++ b/drivers/accel/rocket/rocket_job.h
+@@ -54,6 +54,15 @@ struct rocket_job {
+ 	 */
+ 	bool no_dpu_done;
+ 
++	/*
++	 * ppu_done: userspace set DRM_ROCKET_JOB_PPU_DONE -- this job's last
++	 * program is a PPU program, whose completion is the PPU's own bit and
++	 * not the DPU's.  Selects which INTERRUPT_RAW_STATUS bits the poll
++	 * retires on.  A wrong hint costs the grace period, not correctness,
++	 * unless the job MIXES DPU and PPU programs; see the uapi flag.
++	 */
++	bool ppu_done;
++
+ 	/* Fence to be signaled by drm-sched once its done with the job */
+ 	struct dma_fence *inference_done_fence;
+ 
+diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
+index 844a3dbaf..41c3b4ab9 100644
+--- a/include/uapi/drm/rocket_accel.h
++++ b/include/uapi/drm/rocket_accel.h
+@@ -54,6 +54,26 @@ extern "C" {
+  */
+ #define DRM_ROCKET_JOB_NO_DPU_DONE	(1 << 1)
+ 
++/*
++ * DRM_ROCKET_JOB_PPU_DONE: this job's last program is a PPU program (pooling),
++ * whose completion is the PPU's own bit in INTERRUPT_RAW_STATUS and not the
++ * DPU's.  A PPU program enables no DPU stage at all -- PC_OPERATION_ENABLE is
++ * a per-block bitmap and a pool sets 0x60 against a convolution's 0x1d -- so
++ * the DPU bits the driver waits on by default can never set, and without this
++ * every pooling job pays @dpu_grace_us in full.
++ *
++ * Userspace knows the class because it wrote PC_OPERATION_ENABLE.  Setting it
++ * on a job whose last program is a convolution costs that job the grace period
++ * (the PPU bit never sets) and nothing else.
++ *
++ * A job that ends in a PPU program but also contains DPU programs earlier in a
++ * chained stream must NOT set this: the PPU bit an interior program raised
++ * would retire the job while a later DPU write was still draining.
++ *
++ * Only honored by a driver advertising interface version >= 1.3.
++ */
++#define DRM_ROCKET_JOB_PPU_DONE		(1 << 2)
++
+ /**
+  * struct drm_rocket_create_bo - ioctl argument for creating Rocket BOs.
+  *
+-- 
+2.43.0
+

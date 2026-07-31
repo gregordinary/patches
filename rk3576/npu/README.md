@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 20 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 21 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -33,6 +33,7 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0018 | accel/rocket: put the IOMMU domain when `create_bo` fails (ours) |
 | 0019 | accel/rocket: free the scheduler list the file allocated (ours) |
 | 0020 | accel/rocket: do not free the task array twice (ours) |
+| 0021 | accel/rocket: retire an RK3576 pooling job on the PPU's completion (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -340,8 +341,9 @@ what the drain measurements rule out.
 **Version the interface, do not sniff it.** `drm_driver` left `.major`/`.minor` unset, so
 stock rocket reports 0.0.0 and userspace had no way to ask what the kernel guarantees.
 0015 claims **1.0** (extensible descriptors), 0016 **1.1** (`BATCHED`), 0017 **1.2**
-(`NO_DPU_DONE`). Userspace must check `DRM_IOCTL_VERSION` before self-chaining: an older
-kernel does not know the flag and would run a chained layout down the per-task path.
+(`NO_DPU_DONE`), 0021 **1.3** (`PPU_DONE`). Userspace must check `DRM_IOCTL_VERSION`
+before self-chaining: an older kernel does not know the flag and would run a chained
+layout down the per-task path.
 
 ## What 0018, 0019 and 0020 fix: two leaks and a double free
 
@@ -396,6 +398,44 @@ reports per run of a client that submits rejected jobs, naming
 second free -- before, and zero after, over ten rounds of the full gate sequence on a
 clean boot. The fix gives the array a single owner: `rocket_job_cleanup()` already
 frees it on every path out of the ioctl, so the `fail:` path only has to stop.
+
+## What 0021 is for: the class of job that raises no DPU completion at all
+
+0012 retires a job on the DPU's own completion bits, and 0017 carves out the jobs whose
+DPU completion never arrives because the output element is wider than one byte. A
+**pooling** program is a third case, and a sharper one: it has no DPU stage to complete.
+
+`PC_OPERATION_ENABLE` is a per-block bitmap, and the two programs enable disjoint bit
+sets -- a convolution `0x1d` (CNA/CORE/DPU/DPU_RDMA), a pool `0x60` (PPU/PPU_RDMA). So
+`DPU_0`/`DPU_1` in `INTERRUPT_RAW_STATUS` can never set for a pool, and every pooling
+job runs out the `dpu_grace_us` deadline instead -- paid in full, on every submit. It
+shows up as the wait tracking the parameter count for count, which is what says the job
+is not retiring on a completion at all. Measured through the userspace pooling entry on
+an H96 MAX M9, waiting on the output BO of a 1024x7x7 k7 average pool [HW sweep]:
+
+| `dpu_grace_us` | 500 | 250 | 100 |
+|---|---|---|---|
+| wait | 641 us | 389 us | 213 us |
+
+On MobileNetV1-224 that is 640 us of the pooling layer's 1.48 ms, and 640 us of the
+whole 6.2 ms inference.
+
+The PPU raises its own completion in the same register, two bits over, so the fix is to
+wait on that instead when the job's last program is a PPU program. Which class a job is
+in is invisible to the driver at `PC_DONE` time and fully visible to userspace, which
+wrote `PC_OPERATION_ENABLE` -- so it is a per-job flag, `DRM_ROCKET_JOB_PPU_DONE`, the
+same shape 0017 uses. It selects the PPU bits in place of the DPU ones, latched per
+submit into `core->poll_done_mask` so the poll callback still needs no job pointer.
+
+Two things bound the flag. Setting it on a job whose last program is a convolution costs
+that job the grace period and nothing else, since the PPU bit simply never sets. But a
+job that **mixes** DPU and PPU programs in one chained stream must not set it: an
+interior program's PPU bit would retire the job while a later DPU write was still
+draining. The flag names the *last* program's class, and the uapi says so.
+
+The interface version goes to **1.3**, so userspace can tell a kernel that honors the
+flag from one that ignores it -- and ignoring it is the old behavior, correct and slower.
+The RK3588 takes a completion interrupt rather than polling, so it is untouched.
 
 ## What a board `.dts` must do, and why
 

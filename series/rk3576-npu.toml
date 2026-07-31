@@ -109,6 +109,18 @@
 # two owners, reached by a job that asks for no registers. 0020 is verified on the
 # RK3576 under slub_debug=FZPU and carried for the RK3588 as rocket/087.
 #
+# 0021 is ours and closes the last class of job that retires on a deadline rather than on
+# a completion. PC_OPERATION_ENABLE is a per-block bitmap and a pooling program enables
+# PPU/PPU_RDMA (0x60) against a convolution's CNA/CORE/DPU/DPU_RDMA (0x1d), so a pool has
+# no DPU stage at all and the DPU bits 0012 waits on can never set for it -- every pooling
+# job pays dpu_grace_us in full, 641 us of a 1024x7x7 k7 average pool's wait at the 500 us
+# default and 640 us of a 6.2 ms MobileNetV1-224 inference. The PPU raises its own
+# completion two bits over in the same register; DRM_ROCKET_JOB_PPU_DONE (interface
+# version 1.3) selects those bits for a job whose LAST program is a PPU program. Like
+# 0017 it is per-job because only userspace knows the class, and a wrong hint costs the
+# grace period rather than correctness -- except for a job that mixes DPU and PPU programs
+# in one chained stream, which must not set it.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -142,6 +154,7 @@ kernel = [
     "rk3576/npu/0018-accel-rocket-put-the-iommu-domain-when-create_bo-fails.patch",
     "rk3576/npu/0019-accel-rocket-free-the-scheduler-list-the-file-allocated.patch",
     "rk3576/npu/0020-accel-rocket-do-not-free-the-task-array-twice.patch",
+    "rk3576/npu/0021-accel-rocket-retire-an-rk3576-pooling-job-on-the-ppu-s-completion.patch",
 ]
 
 ffmpeg    = []
