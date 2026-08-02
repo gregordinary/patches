@@ -1,6 +1,6 @@
 # rocket — RK3588 NPU kernel patches
 
-Seven patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+Eight patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
@@ -8,8 +8,8 @@ and job hooks, so the NPU power domain is always powered first: a register acces
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
 **Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
-only configuration the userspace projects' published figures describe. Four of the seven are
-required: three of them fix bugs that can crash the kernel, and the fourth is the one that
+only configuration the userspace projects' published figures describe. Five of the eight are
+required: four of them fix bugs that can crash the kernel, and the fifth is the one that
 makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume.
 Exactly one — the voltage patch — costs you nothing to omit at today's operating point. The
 tiers below say what you give up by leaving a patch out; they are not an invitation to
@@ -21,6 +21,7 @@ cherry-pick.
 | **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob. |
 | **Required** | `085-rocket-drv-uapi-extensible-structs.patch` | Fixes a **kernel oops any client can trigger with one malformed submit** (a NULL `job->domain` dereferenced on the cleanup path) and a submit error the ioctl was silently discarding. Also makes the descriptors extensible, which is the precondition for `086`. |
 | **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. Verified on RK3588 silicon, and on the RK3576 where the function is byte-identical. |
+| **Required** | `088-rocket-drv-reset-before-iommu-detach.patch` | Resets the NPU **before** detaching its IOMMU domain. Detaching a core that is still mid-DMA makes the `rk_iommu` stall handshake time out — a `dev_err` per MMU bank on every faulting job, and a **WARN in the IOMMU core** (a taint, and a panic under `panic_on_warn`) when the handshake behind the group's default domain fails too. Reached by any client of `/dev/accel` pointing one unvalidated `regcmd` field at an unmapped address. Needs `083`. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -32,7 +33,7 @@ bisect lands on a real answer.
 
 ## Dependencies
 
-Three, and all of them are real (not just diff context):
+Four, and all of them are real (not just diff context):
 
 - **`082` requires `081`** — it scales the voltage the clock patch's rate needs.
 - **`086` requires `083`** — batched submit builds on the keep-attached domain
@@ -41,6 +42,9 @@ Three, and all of them are real (not just diff context):
   struct is only safe because `085` teaches the submit ioctl to accept the original
   ("v1") struct size; without it, the grown struct makes the kernel reject **every**
   submit from a userspace built against the older header with `-EINVAL`.
+- **`088` requires `083`** — the detach it reorders is `core->attached_domain`, which
+  `083` introduces. On a tree without `083` there is a per-job detach instead, and the
+  reordering has nothing to move.
 
 `081`, `083`, `084`, `085` and `087` each apply to a pristine tree on their own, in any
 combination. **Applying in ascending numeric order always satisfies the dependencies**, so
@@ -121,6 +125,20 @@ where the mechanism, the report itself and how to reproduce it are set out.
 drives rejection paths can be corrupting the kernel while passing, and `slub_debug` is the
 only thing that tells them apart. The RK3576 reaches the same defect and carries the same
 fix as `rk3576/npu` 0020.
+
+`088` is not a row either, and for the same reason: it changes nothing a passing job can
+see. Its A/B is on a **Turing RK1** (7.1.1, `081`-`087` built out of tree), driving thirty
+client-requested DMA faults per arm — `tests/uapi_regcmd_fault_rocket` in both its read and
+write modes, fifteen rounds each, over two independent rounds:
+
+| Arm | "NPU job timed out" | `Enable stall request timed out` | ctest | taint |
+|---|---|---|---|---|
+| `081`-`087`, no `088` | 30 | **60** (two per fault, one per MMU bank) | — | — |
+| `081`-`088` | 30 | **0** | 83/83 | unmoved |
+
+The `WARN` itself is intermittent — it needs the second handshake, the one behind the
+default domain, to fail as well — and it did not fire in either arm. What is measured is
+the failing handshake it is downstream of, which `088` removes outright.
 
 The full series is the configuration this stack ships and benchmarks against; the subsets are
 here to show that no subset is *broken*, which is what lets you bisect. Every config is 64/64,
@@ -406,6 +424,56 @@ dispatch-floor pair and are what the userspace projects' published figures assum
 them does not get you a broken system, it gets you a slower one than anything documented.
 `082` is the only patch here that genuinely costs nothing to omit today.
 
+## Reset before IOMMU detach (`088-rocket-drv-reset-before-iommu-detach.patch`)
+
+`rocket_reset()` detaches the core's IOMMU group and only then asserts the core's resets.
+It is entered *because* the core is wedged — the one caller a client can reach is
+`rocket_job_timedout()` — so the detach runs against an NPU that is still mid-DMA, with an
+unacknowledged fault sitting in its MMU.
+
+`rk_iommu` cannot stall a bank in that state. Detaching therefore ends in
+
+```
+rk_iommu fdab9000.iommu: Enable stall request timed out, status: 0x00001d
+rk_iommu fdab9000.iommu: Enable stall request timed out, status: 0x00018b
+```
+
+one `dev_err` per MMU bank, on every faulting job. Those come from `rk_iommu_disable()`,
+which ignores the error and carries on — but the **same handshake runs again** inside
+`rk_iommu_enable()` when the IOMMU core puts the group back on its default domain, and
+there its failure is returned. `__iommu_group_set_core_domain()` turns that into
+
+```
+WARNING: drivers/iommu/iommu.c at __iommu_group_set_core_domain
+ iommu_detach_group / rocket_reset.part.0 [rocket] / rocket_job_timedout
+```
+
+which is a taint and a backtrace, and a **panic on a kernel booted with `panic_on_warn`**.
+
+**Any client of `/dev/accel` reaches it.** `drm_rocket_task.regcmd` is a raw NPU IOVA that
+`rocket_job_hw_submit()` writes into the PC block unvalidated, and `/dev/accel/accel0` is
+group `render` — so pointing one field at an unmapped address is the whole trigger.
+
+The fix is ordering. Reset the core first: the reset quiesces the master and wipes the MMU
+page-table base — which is already why the domain has to be dropped at all — so by the time
+the group is detached the handshake has something it can stall, and it completes.
+
+The detach moves out of the `job_lock` scope with it. That lock covers `in_flight_job`,
+which the IRQ path also touches; `core->attached_domain` is written only from the
+`drm_sched` run/reset path, and `drm_sched_stop()` above has already fenced off `run_job`
+for this core (the serialisation `083` documents at the other write site).
+
+`rocket_core_fini()` detaches without a reset too, but that path tears the core down after
+`rocket_job_fini()` has drained the scheduler, so there is no wedged job to stall behind
+and it is left alone.
+
+The measured A/B is in [the compatibility matrix](#compatibility-matrix): sixty stall
+timeouts over thirty faults without it, zero with it, the thirty job timeouts unchanged.
+
+This is mainline code. The RK3576 reaches the same detach and produces the same `rk_iommu`
+stall lines, but not the `WARNING` — the two parts differ in the consequence rather than in
+the trigger — so it is carried here and the RK3576 series does not need it.
+
 ## NPU rail voltage coupling (`082-rocket-drv-npu-volt.patch`)
 
 Requires `081`.
@@ -573,6 +641,7 @@ git am --3way $P/084-rocket-drv-fix-bo-mm-uaf.patch            # required (use-a
 git am --3way $P/085-rocket-drv-uapi-extensible-structs.patch  # required (oops fix); needed by 086
 git am --3way $P/086-rocket-drv-batched-submit.patch           # recommended; needs 083 + 085
 git am --3way $P/087-rocket-drv-fix-task-array-double-free.patch  # required (double-free fix)
+git am --3way $P/088-rocket-drv-reset-before-iommu-detach.patch    # required (IOMMU stall/WARN); needs 083
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 

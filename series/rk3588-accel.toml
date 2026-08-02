@@ -34,6 +34,22 @@ applies_to_kernel = ">=7.0, <7.2"
 # "Object already free" reports over three runs without it, zero with it, and the
 # test exits 0 either way -- so no gate catches this without slub_debug. The
 # RK3576 carries the same fix as rk3576/npu 0020.
+#
+# 088 resets the NPU before detaching its IOMMU domain. rocket_reset() is entered
+# because the core is wedged -- the one caller a client can reach is
+# rocket_job_timedout() -- so detaching first runs the rk_iommu stall handshake
+# against a master still mid-DMA, which cannot stall. That is a dev_err per MMU
+# bank on every faulting job and, when the same handshake fails again behind the
+# group's default domain, a WARN in the IOMMU core: a taint and a backtrace, and a
+# panic under panic_on_warn. drm_rocket_task.regcmd is a raw NPU IOVA the driver
+# writes into the PC block unvalidated and /dev/accel is group `render`, so an
+# unprivileged client reaches it by pointing one field at an unmapped address.
+# Resetting first quiesces the master -- and the reset is why the domain has to be
+# dropped at all -- so by the detach the handshake has something it can stall.
+# Validated on RK3588 silicon: thirty client-requested DMA faults per arm give 60
+# stall timeouts without it, exactly two per fault, and zero with it, the thirty
+# job timeouts unchanged. The RK3576 reaches the same detach and produces the same
+# stall lines but not the WARN, so it is carried here only.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -48,6 +64,7 @@ kernel = [
     "rocket/085-rocket-drv-uapi-extensible-structs.patch",
     "rocket/086-rocket-drv-batched-submit.patch",
     "rocket/087-rocket-drv-fix-task-array-double-free.patch",
+    "rocket/088-rocket-drv-reset-before-iommu-detach.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
