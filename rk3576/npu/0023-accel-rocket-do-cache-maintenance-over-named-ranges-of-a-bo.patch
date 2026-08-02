@@ -1,0 +1,483 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sun, 2 Aug 2026 00:00:00 +0000
+Subject: [PATCH] accel/rocket: do cache maintenance over named ranges of a BO
+
+PREP_BO and FINI_BO sync the WHOLE object -- dma_sync_sgtable_for_cpu()
+and dma_sync_sgtable_for_device() over the BO's entire scatterlist -- so
+a bracket costs what the buffer IS rather than what the caller touches.
+For a client that reads or writes a few bytes of a large surface that is
+the whole cost.
+
+Measured on an RK3576 (H96 MAX M9, 7.1.5, core 0 only) over a ladder of
+BO sizes from 4 KiB to 4 MiB, 400 iterations each, taking the median
+[HW sweep, tests/rk3576_prep_floor.c in the rocket-userspace tree]:
+
+  a rejected ioctl (syscall + drm dispatch + GEM lookup)   1.17 us
+  PREP_BO                            floor 1.33 us   0.0969 us/KiB
+  FINI_BO                            floor 1.11 us   0.0970 us/KiB
+  one PREP_BO/FINI_BO pair           floor 2.24 us   0.1939 us/KiB
+
+That is about 10.6 GB/s of cache walk per direction against a per-ioctl
+floor of roughly a microsecond, so past a few KiB the ioctl is entirely
+the walk.  The floor is not what needs removing; the bytes are.
+
+The user of this in the rocket-userspace library is a write guard.  A
+job whose DPU output element is wider than one byte leaves the NEXT
+submit -- of any kind, across processes -- completing normally and
+writing nothing, so before each submit userspace stamps a sentinel into
+every output surface and afterwards asks whether each one changed.  The
+check reads a handful of bytes per task, but it has to bracket the whole
+buffer to read them.  On four quantized classifiers run as one hardware
+kick each, that guard is 1.99 ms of MobileNetV1's 4.9 ms wall, 3.23 of
+MobileNetV2's 6.7, 2.67 of ResNet-18's 9.3 and 4.58 of Inception V1's
+10.8 -- 27% to 48% -- across 30, 85, 51 and 122 brackets over 4.8, 8.4,
+7.9 and 14.1 MiB.  Brackets times the measured floor is 0.07 to 0.27 ms
+of that, 4% to 7%: the rest is bytes that nobody reads.
+
+So name the bytes.  DRM_ROCKET_PREP_BO_RANGES and
+DRM_ROCKET_FINI_BO_RANGES take an array of {offset, size} and sync only
+those.  A range_count of zero means the whole object, so the new ioctls
+are supersets of the old ones and the old ones are untouched.
+
+Ranges must be ascending, non-overlapping and inside the BO, and there
+is a cap on how many.  That is a contract rather than a convenience:
+each range walks the scatterlist, so an unsorted array would cost
+O(ranges x segments) in the kernel on a caller's say-so.  All three are
+checked and refused with -EINVAL.
+
+One implementation note.  A sync must cover a PHYSICALLY contiguous
+span, because the arch back-end resolves the DMA address to a physical
+one and then walks the cache over [phys, phys + size).  A scatterlist
+segment is contiguous in the DMA address space, which for an
+IOMMU-mapped object says nothing about the pages under it -- so a range
+is split at page boundaries, which is safe because mapping is page
+granular and the offset within a page is therefore the same on both
+sides.  (dma_sync_sgtable_*() is safe for the same reason from the other
+end: it works from the CPU-side segments, whose lengths are physical.)
+
+With the library's guard narrowed to one cache line per (task, channel
+group) and its brackets taken as ranges, the four graphs go from 4.9,
+6.7, 9.3 and 10.8 ms to 3.6, 4.7, 7.2 and 7.7, and their guards from
+1.99, 3.23, 2.67 and 4.58 ms to 0.59, 1.09, 0.69 and 1.47 -- on the same
+submits and tasks, every layer still bit-exact against a CPU model of
+the part's arithmetic and every graph still returning TFLite's own top-1
+[HW sweep].  The residual guard is well above brackets-times-floor
+because a range costs per-range kernel work of its own; the ranges are
+64 bytes each and there are tens per bracket.
+
+The new entry points take a user pointer, a count and offsets from an
+unprivileged caller (/dev/accel/accel0 is group render), so their
+refusals are gated rather than assumed: 17 malformations x {PREP, FINI}
+in tests/uapi_bo_ranges_rocket.c, all 34 returning to userspace with the
+documented errno.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_drv.c |   9 +-
+ drivers/accel/rocket/rocket_gem.c | 210 ++++++++++++++++++++++++++++++
+ drivers/accel/rocket/rocket_gem.h |   4 +
+ include/uapi/drm/rocket_accel.h   |  98 ++++++++++++++
+ 4 files changed, 320 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 445cdf3f9..c7484314b 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -149,6 +149,8 @@ static const struct drm_ioctl_desc rocket_drm_driver_ioctls[] = {
+ 	ROCKET_IOCTL(SUBMIT, submit),
+ 	ROCKET_IOCTL(PREP_BO, prep_bo),
+ 	ROCKET_IOCTL(FINI_BO, fini_bo),
++	ROCKET_IOCTL(PREP_BO_RANGES, prep_bo_ranges),
++	ROCKET_IOCTL(FINI_BO_RANGES, fini_bo_ranges),
+ };
+ 
+ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+@@ -172,6 +174,11 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  *         bump exists so userspace can tell, because on an older kernel a long
+  *         batched stream can retire with programs still to run and a caller
+  *         that sizes its streams has no other way to know it may stop.
++ * - 1.5 - adds DRM_ROCKET_PREP_BO_RANGES / DRM_ROCKET_FINI_BO_RANGES, which do
++ *         cache maintenance over named byte ranges of a BO instead of the whole
++ *         object.  A caller that touches a few bytes of a large surface pays for
++ *         those bytes; the whole-object forms are unchanged and a range_count of
++ *         zero is exactly them.
+  *
+  * Userspace MUST NOT self-chain a job's regcmd layout unless the driver reports
+  * >= 1.1: an older kernel does not know the flag, would run that chained layout
+@@ -179,7 +186,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  */
+ static const struct drm_driver rocket_drm_driver = {
+ 	.major			= 1,
+-	.minor			= 4,
++	.minor			= 5,
+ 	.driver_features	= DRIVER_COMPUTE_ACCEL | DRIVER_GEM,
+ 	.open			= rocket_open,
+ 	.postclose		= rocket_postclose,
+diff --git a/drivers/accel/rocket/rocket_gem.c b/drivers/accel/rocket/rocket_gem.c
+index 56aec2fd7..11c59110a 100644
+--- a/drivers/accel/rocket/rocket_gem.c
++++ b/drivers/accel/rocket/rocket_gem.c
+@@ -6,6 +6,7 @@
+ #include <drm/drm_utils.h>
+ #include <drm/rocket_accel.h>
+ #include <linux/dma-mapping.h>
++#include <linux/mm.h>
+ #include <linux/iommu.h>
+ 
+ #include "rocket_drv.h"
+@@ -174,6 +175,215 @@ int rocket_ioctl_prep_bo(struct drm_device *dev, void *data, struct drm_file *fi
+ 	return ret;
+ }
+ 
++/*
++ * A BO's cache maintenance costs what it WALKS, so a caller that touches a few
++ * bytes of a large surface should not pay for the surface.  The whole-object
++ * ioctls above sync the entire scatterlist; these sync only what is asked for.
++ *
++ * Bounded so a malicious or confused caller cannot make the kernel allocate or
++ * iterate without limit.  The array is small by construction: it describes the
++ * parts of one buffer the CPU is about to touch.
++ */
++#define ROCKET_MAX_BO_RANGES	1024
++
++/*
++ * Sync one byte range of a BO.
++ *
++ * SPLIT AT PAGE BOUNDARIES.  One dma_sync_single_*() call must cover a
++ * PHYSICALLY contiguous span: the arch back-end turns the DMA address into a
++ * physical one and then walks the cache over [phys, phys + size).  A scatterlist
++ * segment is contiguous in the DMA address space, which for an IOMMU-mapped
++ * object says nothing about the pages underneath -- so a sync that spanned a
++ * page boundary inside a segment would clean or invalidate memory belonging to
++ * something else and miss the page it was asked for.  Mapping is page granular,
++ * so the offset within a page is the same on both sides and splitting there is
++ * enough.  (dma_sync_sgtable_*() is safe for the same reason from the other
++ * end: it works from the CPU-side segments, whose lengths are physical.)
++ */
++static void rocket_sync_range(struct device *dev, struct sg_table *sgt,
++			      u64 off, u64 len, bool for_cpu)
++{
++	struct scatterlist *sg;
++	u64 pos = 0;
++	unsigned int i;
++
++	for_each_sgtable_dma_sg(sgt, sg, i) {
++		u64 seg_start = pos, seg_end = pos + sg_dma_len(sg);
++		u64 a, b;
++
++		pos = seg_end;
++		if (off + len <= seg_start)
++			break;			/* past the range; segments ascend */
++		if (off >= seg_end)
++			continue;
++
++		a = max(off, seg_start);
++		b = min(off + len, seg_end);
++		while (a < b) {
++			dma_addr_t da = sg_dma_address(sg) + (a - seg_start);
++			u64 n = min_t(u64, b - a,
++				      PAGE_SIZE - (da & (PAGE_SIZE - 1)));
++
++			if (for_cpu)
++				dma_sync_single_for_cpu(dev, da, n,
++							DMA_BIDIRECTIONAL);
++			else
++				dma_sync_single_for_device(dev, da, n,
++							   DMA_BIDIRECTIONAL);
++			a += n;
++		}
++	}
++}
++
++/*
++ * Copy in and check a range array.  Ascending and non-overlapping is a contract
++ * rather than a convenience: rocket_sync_range() walks the scatterlist once per
++ * range, and unsorted ranges would make a caller's array cost O(ranges x
++ * segments) in the kernel.  A NULL return with *ret == 0 means "the whole
++ * object", which is what range_count == 0 asks for.
++ */
++static struct drm_rocket_bo_range *rocket_get_ranges(struct drm_device *dev,
++						     u64 user_ranges, u32 count,
++						     size_t bo_size, int *ret)
++{
++	struct drm_rocket_bo_range *ranges;
++	u64 prev_end = 0;
++	u32 i;
++
++	*ret = 0;
++	if (count == 0)
++		return NULL;
++	if (count > ROCKET_MAX_BO_RANGES) {
++		drm_dbg(dev, "Too many BO ranges (%u > %u).\n", count,
++			ROCKET_MAX_BO_RANGES);
++		*ret = -EINVAL;
++		return NULL;
++	}
++
++	ranges = memdup_user(u64_to_user_ptr(user_ranges),
++			     count * sizeof(*ranges));
++	if (IS_ERR(ranges)) {
++		*ret = PTR_ERR(ranges);
++		return NULL;
++	}
++
++	for (i = 0; i < count; i++) {
++		u64 end = ranges[i].offset + ranges[i].size;
++
++		if (ranges[i].size == 0 || end < ranges[i].offset ||
++		    end > bo_size || ranges[i].offset < prev_end) {
++			drm_dbg(dev,
++				"BO range %u [%llu, +%llu) is empty, out of the BO, or not after its predecessor.\n",
++				i, ranges[i].offset, ranges[i].size);
++			kvfree(ranges);
++			*ret = -EINVAL;
++			return NULL;
++		}
++		prev_end = end;
++	}
++
++	return ranges;
++}
++
++static void rocket_sync_bo(struct drm_device *dev,
++			   struct drm_gem_shmem_object *shmem_obj,
++			   const struct drm_rocket_bo_range *ranges, u32 count,
++			   bool for_cpu)
++{
++	u32 i;
++
++	if (!ranges) {
++		if (for_cpu)
++			dma_sync_sgtable_for_cpu(dev->dev, shmem_obj->sgt,
++						 DMA_BIDIRECTIONAL);
++		else
++			dma_sync_sgtable_for_device(dev->dev, shmem_obj->sgt,
++						    DMA_BIDIRECTIONAL);
++		return;
++	}
++	for (i = 0; i < count; i++)
++		rocket_sync_range(dev->dev, shmem_obj->sgt, ranges[i].offset,
++				  ranges[i].size, for_cpu);
++}
++
++int rocket_ioctl_prep_bo_ranges(struct drm_device *dev, void *data,
++				struct drm_file *file)
++{
++	struct drm_rocket_prep_bo_ranges *args = data;
++	unsigned long timeout = drm_timeout_abs_to_jiffies(args->timeout_ns);
++	struct drm_rocket_bo_range *ranges;
++	struct drm_gem_shmem_object *shmem_obj;
++	struct drm_gem_object *gem_obj;
++	long ret = 0;
++	int rc;
++
++	if (args->reserved != 0) {
++		drm_dbg(dev, "Reserved field in drm_rocket_prep_bo_ranges struct should be 0.\n");
++		return -EINVAL;
++	}
++
++	gem_obj = drm_gem_object_lookup(file, args->handle);
++	if (!gem_obj)
++		return -ENOENT;
++
++	ranges = rocket_get_ranges(dev, args->ranges, args->range_count,
++				   gem_obj->size, &rc);
++	if (rc) {
++		drm_gem_object_put(gem_obj);
++		return rc;
++	}
++
++	ret = dma_resv_wait_timeout(gem_obj->resv, DMA_RESV_USAGE_WRITE, true, timeout);
++	if (!ret)
++		ret = timeout ? -ETIMEDOUT : -EBUSY;
++	else if (ret > 0)
++		ret = 0;
++
++	shmem_obj = &to_rocket_bo(gem_obj)->base;
++
++	rocket_sync_bo(dev, shmem_obj, ranges, args->range_count, true);
++
++	kvfree(ranges);
++	drm_gem_object_put(gem_obj);
++
++	return ret;
++}
++
++int rocket_ioctl_fini_bo_ranges(struct drm_device *dev, void *data,
++				struct drm_file *file)
++{
++	struct drm_rocket_fini_bo_ranges *args = data;
++	struct drm_rocket_bo_range *ranges;
++	struct drm_gem_shmem_object *shmem_obj;
++	struct drm_gem_object *gem_obj;
++	int rc;
++
++	if (args->reserved != 0) {
++		drm_dbg(dev, "Reserved field in drm_rocket_fini_bo_ranges struct should be 0.\n");
++		return -EINVAL;
++	}
++
++	gem_obj = drm_gem_object_lookup(file, args->handle);
++	if (!gem_obj)
++		return -ENOENT;
++
++	ranges = rocket_get_ranges(dev, args->ranges, args->range_count,
++				   gem_obj->size, &rc);
++	if (rc) {
++		drm_gem_object_put(gem_obj);
++		return rc;
++	}
++
++	shmem_obj = &to_rocket_bo(gem_obj)->base;
++
++	rocket_sync_bo(dev, shmem_obj, ranges, args->range_count, false);
++
++	kvfree(ranges);
++	drm_gem_object_put(gem_obj);
++
++	return 0;
++}
++
+ int rocket_ioctl_fini_bo(struct drm_device *dev, void *data, struct drm_file *file)
+ {
+ 	struct drm_rocket_fini_bo *args = data;
+diff --git a/drivers/accel/rocket/rocket_gem.h b/drivers/accel/rocket/rocket_gem.h
+index b6653b617..c4a4d7a32 100644
+--- a/drivers/accel/rocket/rocket_gem.h
++++ b/drivers/accel/rocket/rocket_gem.h
+@@ -23,6 +23,10 @@ int rocket_ioctl_prep_bo(struct drm_device *dev, void *data, struct drm_file *fi
+ 
+ int rocket_ioctl_fini_bo(struct drm_device *dev, void *data, struct drm_file *file);
+ 
++int rocket_ioctl_prep_bo_ranges(struct drm_device *dev, void *data, struct drm_file *file);
++
++int rocket_ioctl_fini_bo_ranges(struct drm_device *dev, void *data, struct drm_file *file);
++
+ static inline
+ struct  rocket_gem_object *to_rocket_bo(struct drm_gem_object *obj)
+ {
+diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
+index 41c3b4ab9..863dadcb9 100644
+--- a/include/uapi/drm/rocket_accel.h
++++ b/include/uapi/drm/rocket_accel.h
+@@ -15,11 +15,15 @@ extern "C" {
+ #define DRM_ROCKET_SUBMIT			0x01
+ #define DRM_ROCKET_PREP_BO			0x02
+ #define DRM_ROCKET_FINI_BO			0x03
++#define DRM_ROCKET_PREP_BO_RANGES		0x04
++#define DRM_ROCKET_FINI_BO_RANGES		0x05
+ 
+ #define DRM_IOCTL_ROCKET_CREATE_BO		DRM_IOWR(DRM_COMMAND_BASE + DRM_ROCKET_CREATE_BO, struct drm_rocket_create_bo)
+ #define DRM_IOCTL_ROCKET_SUBMIT			DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_SUBMIT, struct drm_rocket_submit)
+ #define DRM_IOCTL_ROCKET_PREP_BO		DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_PREP_BO, struct drm_rocket_prep_bo)
+ #define DRM_IOCTL_ROCKET_FINI_BO		DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_FINI_BO, struct drm_rocket_fini_bo)
++#define DRM_IOCTL_ROCKET_PREP_BO_RANGES		DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_PREP_BO_RANGES, struct drm_rocket_prep_bo_ranges)
++#define DRM_IOCTL_ROCKET_FINI_BO_RANGES		DRM_IOW(DRM_COMMAND_BASE + DRM_ROCKET_FINI_BO_RANGES, struct drm_rocket_fini_bo_ranges)
+ 
+ /*
+  * Flags for drm_rocket_job.flags.
+@@ -143,6 +147,100 @@ struct drm_rocket_fini_bo {
+ 	__u32 reserved;
+ };
+ 
++/**
++ * struct drm_rocket_bo_range - A byte range within a BO.
++ *
++ * Ranges are given to the *_BO_RANGES ioctls in ascending order and must not
++ * overlap; both are checked.  A range is clamped to nothing but the BO's size.
++ */
++struct drm_rocket_bo_range {
++	/**
++	 * @offset: Input: Byte offset of the range within the BO.
++	 */
++	__u64 offset;
++
++	/**
++	 * @size: Input: Length of the range in bytes.  Must not be zero.
++	 */
++	__u64 size;
++};
++
++/**
++ * struct drm_rocket_prep_bo_ranges - ioctl argument for starting CPU ownership
++ * of PART of a BO.
++ *
++ * As DRM_ROCKET_PREP_BO -- it waits for any NPU jobs that might still be using
++ * the buffer -- but the cache synchronization covers only the given ranges
++ * instead of the whole object.  A caller that reads or writes a few bytes of a
++ * large surface pays for those bytes rather than for the surface: the cost of
++ * cache maintenance is proportional to the bytes walked, and the whole-object
++ * form makes it proportional to the allocation.
++ *
++ * @range_count == 0 synchronizes the WHOLE object, so this ioctl is a superset
++ * of DRM_ROCKET_PREP_BO.
++ */
++struct drm_rocket_prep_bo_ranges {
++	/**
++	 * @handle: Input: GEM handle of the buffer object.
++	 */
++	__u32 handle;
++
++	/**
++	 * @range_count: Input: Number of ranges passed in, or 0 for the whole
++	 * object.
++	 */
++	__u32 range_count;
++
++	/**
++	 * @ranges: Input: Pointer to an array of struct drm_rocket_bo_range.
++	 */
++	__u64 ranges;
++
++	/**
++	 * @timeout_ns: Input: Amount of time to wait for NPU jobs.
++	 */
++	__s64 timeout_ns;
++
++	/**
++	 * @reserved: Reserved, must be zero.
++	 */
++	__u64 reserved;
++};
++
++/**
++ * struct drm_rocket_fini_bo_ranges - ioctl argument for finishing CPU ownership
++ * of PART of a BO.
++ *
++ * As DRM_ROCKET_FINI_BO, over the given ranges only.  @range_count == 0
++ * synchronizes the whole object.
++ *
++ * Only the ranges the CPU actually dirtied need be given: a range left out is
++ * not written back, so leaving out a range the CPU wrote leaves the NPU reading
++ * stale memory.
++ */
++struct drm_rocket_fini_bo_ranges {
++	/**
++	 * @handle: Input: GEM handle of the buffer object.
++	 */
++	__u32 handle;
++
++	/**
++	 * @range_count: Input: Number of ranges passed in, or 0 for the whole
++	 * object.
++	 */
++	__u32 range_count;
++
++	/**
++	 * @ranges: Input: Pointer to an array of struct drm_rocket_bo_range.
++	 */
++	__u64 ranges;
++
++	/**
++	 * @reserved: Reserved, must be zero.
++	 */
++	__u64 reserved;
++};
++
+ /**
+  * struct drm_rocket_task - A task to be run on the NPU
+  *
+-- 
+2.43.0
+

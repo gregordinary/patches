@@ -141,6 +141,20 @@
 # uAPI: the bump exists because only from here is a batched stream's length bounded by
 # nothing but that timeout, and a caller that sizes its streams has no other way to tell.
 #
+# 0023 is ours and makes cache maintenance cost what the caller touches rather than what the
+# buffer is. PREP_BO and FINI_BO sync the whole scatterlist, which measures a per-ioctl floor
+# of about a microsecond plus 0.097 us/KiB per direction -- roughly 10.6 GB/s of cache walk --
+# so past a few KiB the ioctl is entirely the walk, and a client reading a handful of bytes
+# of a large surface pays for the surface. DRM_ROCKET_PREP_BO_RANGES and
+# DRM_ROCKET_FINI_BO_RANGES (interface version 1.5) take an array of {offset, size} and sync
+# only those; range_count == 0 means the whole object, so the new ioctls are supersets of the
+# old ones and the old ones are untouched. Ranges must be ascending, non-overlapping and
+# inside the BO, which is a contract rather than a convenience -- each range walks the
+# scatterlist, so an unsorted array would cost O(ranges x segments) in the kernel on a
+# caller's say-so -- and all three are refused with -EINVAL. Each range is split at page
+# boundaries, because one dma_sync_single_*() must cover a PHYSICALLY contiguous span while a
+# scatterlist segment is contiguous only in the DMA address space.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -176,6 +190,7 @@ kernel = [
     "rk3576/npu/0020-accel-rocket-do-not-free-the-task-array-twice.patch",
     "rk3576/npu/0021-accel-rocket-retire-an-rk3576-pooling-job-on-the-ppu-s-completion.patch",
     "rk3576/npu/0022-accel-rocket-retire-an-rk3576-job-on-the-hardware-s-own-account-of-the-kick.patch",
+    "rk3576/npu/0023-accel-rocket-do-cache-maintenance-over-named-ranges-of-a-bo.patch",
 ]
 
 ffmpeg    = []

@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 22 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 23 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -35,6 +35,7 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0020 | accel/rocket: do not free the task array twice (ours) |
 | 0021 | accel/rocket: retire an RK3576 pooling job on the PPU's completion (ours) |
 | 0022 | accel/rocket: retire an RK3576 job on the hardware's own account of the kick (ours) |
+| 0023 | accel/rocket: do cache maintenance over named ranges of a BO (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -344,11 +345,12 @@ what the drain measurements rule out.
 **Version the interface, do not sniff it.** `drm_driver` left `.major`/`.minor` unset, so
 stock rocket reports 0.0.0 and userspace had no way to ask what the kernel guarantees.
 0015 claims **1.0** (extensible descriptors), 0016 **1.1** (`BATCHED`), 0017 **1.2**
-(`NO_DPU_DONE`), 0021 **1.3** (`PPU_DONE`) and 0022 **1.4** (a batched stream's length
-bounded by nothing but the scheduler's job timeout). Userspace must check
-`DRM_IOCTL_VERSION` before self-chaining: an older kernel does not know the flag and would
-run a chained layout down the per-task path. 1.4 is the one bump that adds no uAPI -- what
-it names is a bound, which a caller that sizes its streams has no other way to ask about.
+(`NO_DPU_DONE`), 0021 **1.3** (`PPU_DONE`), 0022 **1.4** (a batched stream's length
+bounded by nothing but the scheduler's job timeout) and 0023 **1.5**
+(`PREP_BO_RANGES`/`FINI_BO_RANGES`). Userspace must check `DRM_IOCTL_VERSION` before
+self-chaining: an older kernel does not know the flag and would run a chained layout
+down the per-task path. 1.4 is the one bump that adds no uAPI -- what it names is a
+bound, which a caller that sizes its streams has no other way to ask about.
 
 ## What 0018, 0019 and 0020 fix: two leaks and a double free
 
@@ -526,6 +528,86 @@ The interface version goes to **1.4** with no uAPI change: the bump exists becau
 from here is a batched stream's length bounded by nothing but the scheduler's job timeout,
 and a caller that sizes its streams has no other way to tell. The RK3588 takes a
 completion interrupt rather than polling, so the polled path is not code it runs.
+
+## What 0023 adds: cache maintenance over named ranges of a BO
+
+`PREP_BO` and `FINI_BO` sync the **whole object** -- `dma_sync_sgtable_for_cpu()` and
+`dma_sync_sgtable_for_device()` over the BO's entire scatterlist -- so a bracket costs what
+the buffer *is* rather than what the caller touches. For a client that reads or writes a
+few bytes of a large surface that is the whole cost.
+
+Measured on core 0 over a ladder of BO sizes from 4 KiB to 4 MiB, 400 iterations each,
+taking the median [HW sweep]:
+
+| call | floor | per KiB |
+|---|---|---|
+| a rejected ioctl (syscall + drm dispatch + GEM lookup) | 1.17 us | -- |
+| `PREP_BO` | 1.33 us | 0.0969 us |
+| `FINI_BO` | 1.11 us | 0.0970 us |
+| one `PREP_BO`/`FINI_BO` pair | 2.24 us | 0.1939 us |
+
+That is about **10.6 GB/s of cache walk per direction** against a per-ioctl floor of
+roughly a microsecond, so past a few KiB the ioctl is entirely the walk. The floor is not
+what needs removing; the bytes are.
+
+The user of this in the rocket-userspace library is a **write guard**. A job whose DPU
+output element is wider than one byte leaves the *next* submit -- of any kind, across
+processes -- completing normally and writing nothing, so before each submit userspace
+stamps a sentinel into every output surface and afterwards asks whether each one changed.
+The check reads a handful of bytes per task, but it has to bracket the whole buffer to
+read them. On four quantized classifiers run as one hardware kick each [HW sweep]:
+
+| graph | wall | guard | brackets | bytes bracketed |
+|---|---|---|---|---|
+| MobileNetV1 | 4.9 ms | 1.99 ms | 30 | 4.8 MiB |
+| MobileNetV2 | 6.7 ms | 3.23 ms | 85 | 8.4 MiB |
+| ResNet-18 | 9.3 ms | 2.67 ms | 51 | 7.9 MiB |
+| Inception V1 | 10.8 ms | 4.58 ms | 122 | 14.1 MiB |
+
+-- 27% to 48% of wall. Brackets times the measured floor is 0.07 to 0.27 ms of that, 4% to
+7%: the rest is bytes that nobody reads.
+
+So name the bytes. `DRM_ROCKET_PREP_BO_RANGES` and `DRM_ROCKET_FINI_BO_RANGES` take an
+array of `{offset, size}` and sync only those. **A `range_count` of zero means the whole
+object**, so the new ioctls are supersets of the old ones and the old ones are untouched.
+
+Ranges must be **ascending, non-overlapping and inside the BO**, and there is a cap on how
+many. That is a contract rather than a convenience: each range walks the scatterlist, so
+an unsorted array would cost O(ranges x segments) in the kernel on a caller's say-so. All
+three are checked and refused with `-EINVAL`.
+
+**One implementation note.** A sync must cover a *physically* contiguous span, because the
+arch back-end resolves the DMA address to a physical one and then walks the cache over
+`[phys, phys + size)`. A scatterlist segment is contiguous in the DMA address space, which
+for an IOMMU-mapped object says nothing about the pages under it -- so a range is split at
+page boundaries, which is safe because mapping is page granular and the offset within a
+page is therefore the same on both sides. (`dma_sync_sgtable_*()` is safe for the same
+reason from the other end: it works from the CPU-side segments, whose lengths are
+physical.)
+
+With the library's guard narrowed to one cache line per (task, channel group) and its
+brackets taken as ranges [HW sweep]:
+
+| graph | wall | guard |
+|---|---|---|
+| MobileNetV1 | 4.9 -> **3.6 ms** | 1.99 -> **0.59 ms** |
+| MobileNetV2 | 6.7 -> **4.7 ms** | 3.23 -> **1.09 ms** |
+| ResNet-18 | 9.3 -> **7.2 ms** | 2.67 -> **0.69 ms** |
+| Inception V1 | 10.8 -> **7.7 ms** | 4.58 -> **1.47 ms** |
+
+-- on the same submits and tasks, every layer still bit-exact against a CPU model of the
+part's arithmetic and every graph still returning TFLite's own top-1. The residual guard
+is well above brackets-times-floor because a range costs per-range kernel work of its own;
+the ranges are 64 bytes each and there are tens per bracket.
+
+The new entry points take a user pointer, a count and offsets from an unprivileged caller
+(`/dev/accel/accel0` is group `render`), so their refusals are gated rather than assumed:
+17 malformations x {`PREP`, `FINI`}, all 34 returning to userspace with the documented
+errno.
+
+The interface version goes to **1.5**. Nothing here is RK3576-specific -- `rocket_gem.c`
+is the shared GEM path -- but it is carried in this series, and `rk3588-accel` does not
+take it.
 
 ## What a board `.dts` must do, and why
 
