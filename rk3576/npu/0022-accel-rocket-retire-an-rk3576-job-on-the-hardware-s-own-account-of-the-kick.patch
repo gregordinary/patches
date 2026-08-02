@@ -1,0 +1,332 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 31 Jul 2026 00:00:00 +0000
+Subject: [PATCH] accel/rocket: retire an RK3576 job on the hardware's own
+ account of the kick
+
+The RK3576 has no completion interrupt, so 0006 polls for the job being
+over and 0012 makes it wait past that for the writing block's own
+completion, bounded by dpu_grace_us.  Neither of the two signals that
+wait is anchored on says what it was taken to say.
+
+PC_OPERATION_ENABLE is a self-clearing GO bit.  The vendor rknpu driver
+writes 1 and then 0 to it back to back (rknpu_job.c) [source-confirmed],
+and on this part it reads back zero at every poll of a kick that is
+still running [HW sweep, H96 MAX M9] -- so "OPERATION_ENABLE == 0", the
+first half of the completion condition, has been vacuously true since
+the polled path was written.  Every wait under it therefore started at
+the FIRST POLL TICK rather than at an event, which is not what
+dpu_grace_us was measured as and not what its name says.
+
+PC_DONE, the other half, is raised per TASK and not per kick.  0016
+made a job of n tasks go out as one hardware kick, and the two PC_DONE
+bits alternate as the program counter retires each program of it.
+Traced at a 10 us poll over the 35-program cross-layer kick of a
+MobileNetV1-224 [HW sweep]:
+
+  t=   12 us   PC_DONE_0 set, task 1 of 35 in flight
+  t=   31 us   PC_DONE_1 set
+   ...         the two alternating, once per task, for 1.9 ms
+  t= 1911 us   task 35 of 35 in flight
+  t= 1921 us   the DPU's own completion, and the kick is over
+
+So dpu_grace_us, measured as one task's drain, was being asked to cover
+a whole stream.  Past it the driver signals the fence while the core is
+still writing: the caller reads a surface that never landed, and the
+next job is programmed into a core that has not finished the last one.
+From userspace that looks like a hardware bound on how long a chained
+stream may be, with a magic number in a shipping path.  It is not one.
+
+Scaling the deadline by the task count is the obvious response and is
+not enough: it is a fitted number, and a stream whose programs each
+take longer than dpu_grace_us outruns it.  A 224x224 k3 convolution at
+256 channels row-splits into 75 chained tasks; scaled, the deadline
+expires at 37.5 ms -- 75 * 500 us to the microsecond -- with the task
+counter reading 67 tasks started of 75 [HW sweep].
+
+The part says exactly where a kick is.  PC_TASK_STATUS -- the register
+the vendor driver reads as its "task counter", and whose offset it
+carries per SoC, 0x3c on RK3588 and 0x48 here [source-confirmed] -- is
+a live pair of counters, both modulo the programmed TASK_NUMBER [HW
+sweep, kicks of 2, 3, 5, 8, 9, 35 and 90 tasks]:
+
+  bits 15:0     tasks started
+  bits 31:16    tasks completed
+
+Mid-stream at least one of the two is non-zero: the started count wraps
+to zero only as the last task starts, and the completed count only once
+every task has retired.  So with a PC_DONE in hand -- something has
+retired -- a zero register means the whole kick is over, and nothing
+else does.
+
+So anchor the wait there: hold it off until PC_DONE says a task has
+retired and, for a batched job, the counter says all of them have.
+dpu_grace_us is then once again the drain it was measured as, applied
+to the program that wrote last, and how long a batched stream may be
+stops being a property of the driver's timing.  A job of one task
+programs TASK_NUMBER = 1, where both counters read zero always, so
+PC_DONE alone is its signal and its wait does not change.
+
+This also closes a race the old condition had: the per-task block
+completion bits do not persist across tasks [HW sweep], so a poll
+landing while a MID-STREAM task's DPU bit was still set would retire
+the job early -- rare enough never to have been caught, and
+indistinguishable from a correct retire when it happened.
+
+What bounds a job that raises no PC_DONE at all is a backstop rather
+than a deadline: it retires after a quarter of the scheduler's job
+timeout, with the reason logged.  It is not a tuning knob, and no job
+in the gates reaches it -- 29 gates, zero backstop hits, which is also
+what says every class raises PC_DONE, the pooling and LUT-load programs
+included.
+
+Measured on an H96 MAX M9 [HW sweep]:
+
+  - the 224x224 k3 convolution above is bit-exact, 150 programs in one
+    kick, where a deadline scaled by the task count retires it at
+    t=37554 us and the layer computes wrong ("a row task wrote nothing
+    over 8 attempts");
+  - 29 gates pass, the kernel taint word unmoved at every one;
+  - MobileNetV1-224 is 6.5 ms per inference in 5 submits and 40 tasks,
+    and the per-submit floor is a median of 348 us: both unchanged,
+    because the DPU's own completion is when the wait ends either way
+    and this patch only changes when it begins.
+
+The interface version goes to 1.4.  No uAPI changes: the bump exists
+because only from here is a batched stream's length bounded by nothing
+but the scheduler's job timeout, and a caller that sizes its streams
+has no other way to tell.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h |  13 ++--
+ drivers/accel/rocket/rocket_drv.c  |  11 ++-
+ drivers/accel/rocket/rocket_job.c  | 110 ++++++++++++++++++++++-------
+ 3 files changed, 103 insertions(+), 31 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 3811bb562..b1b8c10aa 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -41,6 +41,7 @@ struct rocket_soc_data {
+ 	unsigned int num_clks;		/* clk_bulk count: 4 base, 6 with CBUF */
+ 	unsigned int num_resets;	/* reset_bulk count: 2 base, 1 on RK3576 */
+ 	unsigned int task_number_bits;	/* PC_TASK_CON TASK_NUMBER width: 12 base, 16 on RK3576 */
++	unsigned int task_status_offset;/* PC_TASK_STATUS: 0x3c base, 0x48 on RK3576 */
+ 	bool poll_completion;		/* PC_DONE not routable to the GIC; poll it */
+ };
+ 
+@@ -84,11 +85,15 @@ struct rocket_core {
+ 	struct work_struct poll_work;
+ 	atomic_t poll_active;
+ 	/*
+-	 * When PC_DONE was first seen for the task in flight, so the wait
+-	 * for the DPU's own completion can be bounded.  Zero while none
+-	 * has been seen.
++	 * When the kick was seen to be over -- every task of it retired -- so
++	 * the wait for the writing block's own completion can be bounded.  Zero
++	 * while it has not been.
+ 	 */
+-	ktime_t poll_pc_done_at;
++	ktime_t poll_kick_over_at;
++	/* When the kick was started, for the backstop below. */
++	ktime_t poll_started_at;
++	/* How many tasks this job's single kick covers. */
++	unsigned int poll_tasks;
+ 	/*
+ 	 * How long past PC_DONE to keep waiting for that completion, in
+ 	 * microseconds.  Latched per submit from the job's class (see
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 8f1be538b..445cdf3f9 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -165,6 +165,13 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  * - 1.1 - adds DRM_ROCKET_JOB_BATCHED (per-job chained submit).
+  * - 1.2 - adds DRM_ROCKET_JOB_NO_DPU_DONE (per-job completion-class hint).
+  * - 1.3 - adds DRM_ROCKET_JOB_PPU_DONE (retire on the PPU's completion).
++ * - 1.4 - a job's completion wait is anchored on the hardware's own account of
++ *         where the kick is (PC_DONE plus PC_TASK_STATUS) rather than on a
++ *         deadline from the first poll, so how long a batched stream may be is
++ *         bounded by nothing but the scheduler's job timeout.  No new uAPI: the
++ *         bump exists so userspace can tell, because on an older kernel a long
++ *         batched stream can retire with programs still to run and a caller
++ *         that sizes its streams has no other way to know it may stop.
+  *
+  * Userspace MUST NOT self-chain a job's regcmd layout unless the driver reports
+  * >= 1.1: an older kernel does not know the flag, would run that chained layout
+@@ -172,7 +179,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  */
+ static const struct drm_driver rocket_drm_driver = {
+ 	.major			= 1,
+-	.minor			= 3,
++	.minor			= 4,
+ 	.driver_features	= DRIVER_COMPUTE_ACCEL | DRIVER_GEM,
+ 	.open			= rocket_open,
+ 	.postclose		= rocket_postclose,
+@@ -245,6 +252,7 @@ static const struct rocket_soc_data rk3588_soc_data = {
+ 	.num_clks = 4,
+ 	.num_resets = 2,
+ 	.task_number_bits = 12,
++	.task_status_offset = 0x3c,
+ 	.poll_completion = false,
+ };
+ 
+@@ -252,6 +260,7 @@ static const struct rocket_soc_data rk3576_soc_data = {
+ 	.num_clks = 6,
+ 	.num_resets = 1,
+ 	.task_number_bits = 16,
++	.task_status_offset = 0x48,
+ 	.poll_completion = true,
+ };
+ 
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 3139f09a3..dbb5de586 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -82,6 +82,57 @@ static inline ktime_t rocket_poll_period(void)
+ 	return ns_to_ktime((s64)us * NSEC_PER_USEC);
+ }
+ 
++/*
++ * The safety valve, from the kick, for a job that raises no PC_DONE at all: it
++ * still retires well before the scheduler's own timeout takes the core down.
++ * Deliberately far longer than any wait below -- it is not a tuning knob, and
++ * a job reaching it has already gone wrong.
++ */
++#define ROCKET_POLL_BACKSTOP_US (JOB_TIMEOUT_MS * USEC_PER_MSEC / 4)
++
++/*
++ * Is this kick over -- every task of it retired?
++ *
++ * PC_DONE is raised per TASK, not per kick.  On a batched job the two PC_DONE
++ * bits alternate as the program counter retires each program, so the first is
++ * seen a few tens of microseconds into a stream that may run for milliseconds,
++ * and it says nothing about the stream being over.
++ *
++ * PC_TASK_STATUS does.  It is a live pair of counters, both modulo the
++ * programmed TASK_NUMBER [HW sweep, H96 MAX M9]:
++ *
++ *   bits 15:0     tasks started
++ *   bits 31:16    tasks completed
++ *
++ * Mid-stream at least one of the two is non-zero -- the started count only
++ * wraps to zero as the LAST task starts, and the completed count only wraps
++ * once every task has retired -- so with a PC_DONE in hand (something has
++ * retired) a zero register means the whole kick is over, and nothing else does.
++ * A job of one task programs TASK_NUMBER = 1, where both counters are zero
++ * always, so PC_DONE alone is its signal and its behaviour does not change.
++ *
++ * (The vendor rknpu driver reads the same register as its "task counter" and
++ * carries its offset per SoC, 0x3c on RK3588 and 0x48 here [source-confirmed].)
++ *
++ * PC_OPERATION_ENABLE is NOT part of this test on the polled path: OP_EN is a
++ * self-clearing GO bit -- the vendor driver writes 1 then 0 to it back to back
++ * [source-confirmed] -- and it reads back zero at every poll of a kick that is
++ * still running [HW sweep].  Left in the completion condition it is vacuously
++ * true, which is what made every wait below start at the first poll tick
++ * instead of at an event.
++ */
++static bool rocket_poll_kick_over(struct rocket_core *core, u32 raw)
++{
++	if (!(raw & (PC_INTERRUPT_MASK_RK3576_PC_DONE_0 |
++		     PC_INTERRUPT_MASK_RK3576_PC_DONE_1)))
++		return false;
++
++	if (core->poll_tasks <= 1)
++		return true;
++
++	return readl(core->pc_iomem + core->soc->task_status_offset) == 0;
++}
++
+ /*
+  * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
+  * above it: TASK_PP_EN, then TASK_COUNT_CLEAR, then a bit the TRM marks
+@@ -306,10 +357,12 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 	rocket_pc_writel(core, OPERATION_ENABLE, PC_OPERATION_ENABLE_OP_EN(1));
+ 
+ 	if (core->soc->poll_completion) {
+-		core->poll_pc_done_at = 0;
++		core->poll_kick_over_at = 0;
++		core->poll_started_at = ktime_get();
++		core->poll_tasks = job->batched ? job->task_count : 1;
+ 		/*
+-		 * Latch the deadline for THIS job before the timer can fire, so
+-		 * the poll callback never needs to reach for the job.
++		 * Latch the grace for THIS job before the timer can fire, so the
++		 * poll callback never needs to reach for the job.
+ 		 */
+ 		core->poll_grace_us = job->no_dpu_done
+ 			? READ_ONCE(rocket_dpu_blind_us)
+@@ -583,41 +636,46 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ 		return HRTIMER_NORESTART;
+ 
+ 	/*
+-	 * On RK3576, OPERATION_ENABLE is not cleared by hardware on completion;
+-	 * check INTERRUPT_RAW_STATUS bits 28-29 (PC_DONE_0/1) instead.
++	 * On RK3576 there is no completion interrupt, so the kick is followed in
++	 * INTERRUPT_RAW_STATUS: PC_DONE (bits 28-29) per task, and the writing
++	 * block's own completion once the last of them has retired.
++	 *
++	 * The kick being over is not the surface being readable.  PC_DONE says
++	 * the program counter finished issuing, not that the write DMA has
++	 * drained; the writing block raises its own completion -- the bit RK3588
++	 * takes as its interrupt -- tens to hundreds of microseconds later, and a
++	 * fence signalled before that hands the caller a surface whose tail has
++	 * not landed.  WHICH block writes is the job's class: the DPU for a
++	 * convolution or a matmul, the PPU for a pooling program, which enables
++	 * no DPU stage at all.
++	 *
++	 * That wait is bounded by the grace, so a task raising no completion at
++	 * all cannot stall behind one -- and because it now starts when the kick
++	 * is over rather than at the first poll, the grace is once again the
++	 * drain it was measured as.
+ 	 */
+ 	raw = rocket_pc_readl(core, INTERRUPT_RAW_STATUS);
+-	if (rocket_pc_readl(core, OPERATION_ENABLE) == 0 ||
+-	    (raw & (PC_INTERRUPT_MASK_RK3576_PC_DONE_0 |
+-		    PC_INTERRUPT_MASK_RK3576_PC_DONE_1))) {
+-		/*
+-		 * PC_DONE says the program counter finished issuing the task, not
+-		 * that the writing block's DMA has drained.  That block raises its
+-		 * own completion -- the bit RK3588 takes as its interrupt -- tens
+-		 * of microseconds later, and a fence signalled on PC_DONE hands
+-		 * the caller a surface whose tail has not landed yet.  Wait for
+-		 * it.  WHICH block writes is the job's class: the DPU for a
+-		 * convolution or a matmul, the PPU for a pooling program, which
+-		 * enables no DPU stage at all.
+-		 *
+-		 * Bounded, so a task that raises no completion at all cannot
+-		 * stall behind one: after the grace the job retires on PC_DONE
+-		 * as it did before.
+-		 */
++	if (rocket_poll_kick_over(core, raw)) {
+ 		if (raw & core->poll_done_mask)
+ 			goto complete;
+-		if (!core->poll_pc_done_at)
+-			core->poll_pc_done_at = ktime_get();
+-		else if (ktime_us_delta(ktime_get(), core->poll_pc_done_at) >=
++		if (!core->poll_kick_over_at)
++			core->poll_kick_over_at = ktime_get();
++		else if (ktime_us_delta(ktime_get(), core->poll_kick_over_at) >=
+ 			 (s64)core->poll_grace_us)
+ 			goto complete;
++	} else if (ktime_us_delta(ktime_get(), core->poll_started_at) >=
++		   (s64)ROCKET_POLL_BACKSTOP_US) {
++		dev_err(core->dev,
++			"job of %u task(s) raised no PC_DONE in %u us; retiring it\n",
++			core->poll_tasks, (unsigned int)ROCKET_POLL_BACKSTOP_US);
++		goto complete;
+ 	}
+ 
+ 	hrtimer_forward_now(timer, rocket_poll_period());
+ 	return HRTIMER_RESTART;
+ 
+ complete:
+-	core->poll_pc_done_at = 0;
++	core->poll_kick_over_at = 0;
+ 	atomic_set(&core->poll_active, 0);
+ 	schedule_work(&core->poll_work);
+ 	return HRTIMER_NORESTART;
+-- 
+2.43.0
+

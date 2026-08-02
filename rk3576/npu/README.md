@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 21 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 22 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -34,6 +34,7 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0019 | accel/rocket: free the scheduler list the file allocated (ours) |
 | 0020 | accel/rocket: do not free the task array twice (ours) |
 | 0021 | accel/rocket: retire an RK3576 pooling job on the PPU's completion (ours) |
+| 0022 | accel/rocket: retire an RK3576 job on the hardware's own account of the kick (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -177,7 +178,9 @@ raw@retire=0x20000001 -> 0x30000155 after 82us
 — `PC_DONE_1` with no DPU bit, then `DPU_0` (`0x100`).
 
 **Not every task raises one**, so the wait is bounded by `dpu_grace_us` (default
-**500 us**), past which the job retires on `PC_DONE` as it did before. A task whose DPU
+**500 us**), past which the job retires anyway. (What that wait *starts* from is 0022's
+subject: `PC_DONE` alone is a per-task signal, and on a batched job it is not the kick
+being over.) A task whose DPU
 output element is wider than one byte — the int32 writer, and fp16 output — completes CNA
 and CORE and never sets a DPU bit at all (`raw=0x30000055`, held for milliseconds). The
 500 us default is twice what those tasks need: they still fail at 100 us (3 of 43 shapes)
@@ -341,9 +344,11 @@ what the drain measurements rule out.
 **Version the interface, do not sniff it.** `drm_driver` left `.major`/`.minor` unset, so
 stock rocket reports 0.0.0 and userspace had no way to ask what the kernel guarantees.
 0015 claims **1.0** (extensible descriptors), 0016 **1.1** (`BATCHED`), 0017 **1.2**
-(`NO_DPU_DONE`), 0021 **1.3** (`PPU_DONE`). Userspace must check `DRM_IOCTL_VERSION`
-before self-chaining: an older kernel does not know the flag and would run a chained
-layout down the per-task path.
+(`NO_DPU_DONE`), 0021 **1.3** (`PPU_DONE`) and 0022 **1.4** (a batched stream's length
+bounded by nothing but the scheduler's job timeout). Userspace must check
+`DRM_IOCTL_VERSION` before self-chaining: an older kernel does not know the flag and would
+run a chained layout down the per-task path. 1.4 is the one bump that adds no uAPI -- what
+it names is a bound, which a caller that sizes its streams has no other way to ask about.
 
 ## What 0018, 0019 and 0020 fix: two leaks and a double free
 
@@ -436,6 +441,91 @@ draining. The flag names the *last* program's class, and the uapi says so.
 The interface version goes to **1.3**, so userspace can tell a kernel that honors the
 flag from one that ignores it -- and ignoring it is the old behavior, correct and slower.
 The RK3588 takes a completion interrupt rather than polling, so it is untouched.
+
+## What 0022 is for: where a kick actually is
+
+0012 and 0021 pick *which* block's completion retires a job. 0022 is about when the wait
+for it begins -- because neither signal that wait was anchored on says what it was taken
+to say.
+
+`PC_OPERATION_ENABLE` is a self-clearing GO bit. The vendor `rknpu` driver writes 1 and
+then 0 to it back to back (`rknpu_job.c`) [source-confirmed], and on this part it reads
+back zero at every poll of a kick that is still running [HW sweep]. So
+`OPERATION_ENABLE == 0` -- the first half of the completion condition -- has been
+**vacuously true** since the polled path was written, and every wait under it therefore
+started at the *first poll tick* rather than at an event.
+
+`PC_DONE`, the other half, is raised **per task and not per kick**. 0016 made a job of n
+tasks go out as one hardware kick, and the two `PC_DONE` bits alternate as the program
+counter retires each program of it. Traced at a 10 us poll over the 35-program cross-layer
+kick of a MobileNetV1-224 [HW sweep]:
+
+```
+t=   12 us   PC_DONE_0 set, task 1 of 35 in flight
+t=   31 us   PC_DONE_1 set
+ ...         the two alternating, once per task, for 1.9 ms
+t= 1911 us   task 35 of 35 in flight
+t= 1921 us   the DPU's own completion, and the kick is over
+```
+
+So `dpu_grace_us`, measured as one task's drain, was being asked to cover a whole stream.
+Past it the driver signals the fence while the core is still writing: the caller reads a
+surface that never landed, and the next job is programmed into a core that has not
+finished the last one. From userspace that looks like a hardware bound on how long a
+chained stream may be, with a magic number in a shipping path. It is not one.
+
+**Scaling the deadline by the task count is not enough.** It is a fitted number, and a
+stream whose programs each take longer than `dpu_grace_us` outruns it. A 224x224 k3
+convolution at 256 channels row-splits into 75 chained tasks; scaled, the deadline expires
+at 37.5 ms -- 75 x 500 us to the microsecond -- with the task counter reading 67 tasks
+started of 75 [HW sweep].
+
+The part says exactly where a kick is. `PC_TASK_STATUS` -- the register the vendor driver
+reads as its "task counter", and whose offset it carries per SoC, `0x3c` on RK3588 and
+`0x48` here [source-confirmed] -- is a live pair of counters, both modulo the programmed
+`TASK_NUMBER` [HW sweep, kicks of 2, 3, 5, 8, 9, 35 and 90 tasks]:
+
+| bits | counter |
+|---|---|
+| 15:0 | tasks started |
+| 31:16 | tasks completed |
+
+Mid-stream at least one of the two is non-zero: the started count wraps to zero only as
+the last task starts, and the completed count only once every task has retired. So **with
+a `PC_DONE` in hand -- something has retired -- a zero register means the whole kick is
+over**, and nothing else does.
+
+The wait is held off until then. `dpu_grace_us` is once again the drain it was measured
+as, applied to the program that wrote last, and how long a batched stream may be stops
+being a property of the driver's timing. A job of one task programs `TASK_NUMBER = 1`,
+where both counters read zero always, so `PC_DONE` alone is its signal and its wait does
+not change.
+
+This also closes a race the old condition had: the per-task block completion bits do not
+persist across tasks [HW sweep], so a poll landing while a *mid-stream* task's DPU bit was
+still set would retire the job early -- rare enough never to have been caught, and
+indistinguishable from a correct retire when it happened.
+
+What bounds a job that raises no `PC_DONE` at all is a **backstop** rather than a
+deadline: it retires after a quarter of the scheduler's job timeout, with the reason
+logged. It is not a tuning knob, and no job in the gates reaches it -- 29 gates, zero
+backstop hits, which is also what says every class raises `PC_DONE`, the pooling and
+LUT-load programs included.
+
+Measured on an H96 MAX M9 [HW sweep]:
+
+- the 224x224 k3 convolution above is **bit-exact**, 150 programs in one kick, where a
+  deadline scaled by the task count retires it at t=37554 us and the layer computes wrong
+  ("a row task wrote nothing over 8 attempts");
+- 29 gates pass, the kernel taint word unmoved at every one;
+- MobileNetV1-224 is 6.5 ms per inference in 5 submits and 40 tasks, and the per-submit
+  floor is a median of 348 us -- **both unchanged**, because the DPU's own completion is
+  when the wait ends either way and this patch only changes when it begins.
+
+The interface version goes to **1.4** with no uAPI change: the bump exists because only
+from here is a batched stream's length bounded by nothing but the scheduler's job timeout,
+and a caller that sizes its streams has no other way to tell. The RK3588 takes a
+completion interrupt rather than polling, so the polled path is not code it runs.
 
 ## What a board `.dts` must do, and why
 
