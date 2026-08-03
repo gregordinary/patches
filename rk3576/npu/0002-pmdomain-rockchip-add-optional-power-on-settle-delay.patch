@@ -129,3 +129,6 @@ index 1ad2c7946..85b033d98 100644
  };
  
  static const struct rockchip_domain_info rk3588_pm_domains[] = {
+-- 
+2.43.0
+

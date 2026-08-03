@@ -46,4 +46,6 @@ index 62cd6b022..68bd55433 100644
  	rk_iommu_command(iommu, RK_MMU_CMD_ENABLE_STALL);
  
  	ret = readx_poll_timeout(rk_iommu_is_stall_active, iommu, val,
+-- 
+2.43.0
 

@@ -84,4 +84,6 @@ index 1787f62ba..8ce0cc3de 100644
  
  	/* protect the zeroing of pm->num_clks */
  	mutex_lock(&pd->pmu->mutex);
+-- 
+2.43.0
 

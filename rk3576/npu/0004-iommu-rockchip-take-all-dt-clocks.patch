@@ -66,4 +66,6 @@ index 0013cf196..62cd6b022 100644
  
  	err = clk_bulk_prepare(iommu->num_clocks, iommu->clocks);
  	if (err)
+-- 
+2.43.0
 

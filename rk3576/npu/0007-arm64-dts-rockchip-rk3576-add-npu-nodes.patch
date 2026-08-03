@@ -124,4 +124,6 @@ index e12a2a0cf..5033f7628 100644
  		gmac0: ethernet@2a220000 {
  			compatible = "rockchip,rk3576-gmac", "snps,dwmac-4.20a";
  			reg = <0x0 0x2a220000 0x0 0x10000>;
+-- 
+2.43.0
 

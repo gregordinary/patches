@@ -441,4 +441,6 @@ index ac51bff39..b4866d090 100644
  	drm_sched_fini(&core->sched);
  
  	cancel_work_sync(&core->reset.work);
+-- 
+2.43.0
 
