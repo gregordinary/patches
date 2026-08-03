@@ -155,6 +155,19 @@
 # boundaries, because one dma_sync_single_*() must cover a PHYSICALLY contiguous span while a
 # scatterlist segment is contiguous only in the DMA address space.
 #
+# 0024 is ours and stops the completion poll retiring a job it was not queued for. 0012's work
+# item is queued by the hrtimer and runs later, and it is not the only path into
+# rocket_job_handle_irq(): the shared interrupt still reports the DMA-error bits and its thread
+# retires whatever is in flight, as does a reset. So the timer can queue the work for job N, the
+# error thread retire job N, drm_sched push job N+1, and the still-queued work then retire N+1 as
+# well -- signalling its fence while the hardware is still writing, which hands the caller a
+# silently short surface rather than an error. A per-submit sequence number, snapshotted onto the
+# work when it is queued and compared before anything is retired, makes a stale work item a no-op.
+# The window needs a DMA error or a reset inside one poll period, which is not rare on this part
+# while a driver or an encoder is under development. No uAPI change, so the interface version
+# stays at 1.5, and the RK3588 does not reach it at all (it has a completion interrupt, so
+# soc->poll_completion is false and no poll work is ever queued).
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -191,6 +204,7 @@ kernel = [
     "rk3576/npu/0021-accel-rocket-retire-an-rk3576-pooling-job-on-the-ppu-s-completion.patch",
     "rk3576/npu/0022-accel-rocket-retire-an-rk3576-job-on-the-hardware-s-own-account-of-the-kick.patch",
     "rk3576/npu/0023-accel-rocket-do-cache-maintenance-over-named-ranges-of-a-bo.patch",
+    "rk3576/npu/0024-accel-rocket-do-not-let-a-stale-poll-retire-the-next-job.patch",
 ]
 
 ffmpeg    = []

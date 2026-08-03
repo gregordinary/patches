@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 3 Aug 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: do not let a stale poll retire the next job
+
+The RK3576 completion poll queues a work item from the hrtimer and
+retires the job from there.  That work is not the only path into
+rocket_job_handle_irq(): the shared interrupt still reports the DMA-error
+bits, and its thread retires whatever job is in flight.
+
+So the two can cross.  The timer queues the work for job N; the DMA-error
+thread runs first and retires job N; drm_sched pushes job N+1, which
+rocket_job_hw_submit() starts; and the work, still queued from before,
+then retires job N+1 as well -- signalling its fence while the hardware is
+still running it and handing the caller a surface that was never written.
+A reset between the two does the same, since it retires the in-flight job
+before cancel_work_sync() reaches the queued work.
+
+Give each submit a sequence number, snapshot it onto the work when the
+timer queues it, and compare the two before retiring anything.  A work
+item that no longer matches belongs to a job somebody else has already
+finished, and does nothing.
+
+The window is narrow -- it needs a DMA error or a reset to land inside one
+poll period -- but neither is rare on this part while a driver or an
+encoder is under development, and the failure it produces is a silently
+short surface rather than an error.
+
+RK3588 does not reach this: it has a completion interrupt and
+soc->poll_completion is false, so no poll work is ever queued.
+
+Equivalent to the poll_seq/poll_work_seq fix in "[RFC PATCH v4 4/6]
+accel/rocket: add RK3576 NPU (RKNN) support" (Jiaxing Hu, linux-rockchip
+2026-08-03), rewritten against this series, where the poll condition and
+the per-submit state it latches have both moved.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h | 10 ++++++++++
+ drivers/accel/rocket/rocket_job.c  | 11 +++++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index b1b8c10aa..67576a09d 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -106,6 +106,16 @@ struct rocket_core {
+ 	 * has no DPU stage at all.  Latched per submit for the same reason.
+ 	 */
+ 	u32 poll_done_mask;
++	/*
++	 * Which submit the poll work is for.  The work is queued by the timer
++	 * and runs later, and it is not the only path that retires a job: the
++	 * shared interrupt still reports a DMA error, and its thread retires
++	 * whatever is in flight.  Between the two, the work can find a job it
++	 * was not started for.  Bumped per submit, snapshotted onto the work
++	 * when it is queued, and compared before it retires anything.
++	 */
++	unsigned int poll_seq;
++	unsigned int poll_work_seq;
+ 
+ 	struct drm_gpu_scheduler sched;
+ 	u64 fence_context;
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index dbb5de586..fb4dba4eb 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -372,6 +372,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 			   PC_INTERRUPT_RAW_STATUS_PPU_1)
+ 			: (PC_INTERRUPT_RAW_STATUS_DPU_0 |
+ 			   PC_INTERRUPT_RAW_STATUS_DPU_1);
++		core->poll_seq++;
+ 		atomic_set(&core->poll_active, 1);
+ 		hrtimer_start(&core->poll_timer, rocket_poll_period(),
+ 			      HRTIMER_MODE_REL);
+@@ -677,6 +678,7 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ complete:
+ 	core->poll_kick_over_at = 0;
+ 	atomic_set(&core->poll_active, 0);
++	core->poll_work_seq = core->poll_seq;
+ 	schedule_work(&core->poll_work);
+ 	return HRTIMER_NORESTART;
+ }
+@@ -685,6 +687,15 @@ static void rocket_poll_work_fn(struct work_struct *work)
+ {
+ 	struct rocket_core *core = container_of(work, struct rocket_core, poll_work);
+ 
++	/*
++	 * The submit this work was queued for has already been retired -- by the
++	 * DMA-error interrupt thread, or by a reset.  Whatever is in flight now
++	 * is a later job, and retiring it here would signal its fence while the
++	 * hardware is still running it.
++	 */
++	if (core->poll_work_seq != core->poll_seq)
++		return;
++
+ 	rocket_job_handle_irq(core);
+ }
+ 
+-- 
+2.43.0
+

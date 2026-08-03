@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 23 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 24 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -36,6 +36,7 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0021 | accel/rocket: retire an RK3576 pooling job on the PPU's completion (ours) |
 | 0022 | accel/rocket: retire an RK3576 job on the hardware's own account of the kick (ours) |
 | 0023 | accel/rocket: do cache maintenance over named ranges of a BO (ours) |
+| 0024 | accel/rocket: do not let a stale poll retire the next job (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -608,6 +609,36 @@ errno.
 The interface version goes to **1.5**. Nothing here is RK3576-specific -- `rocket_gem.c`
 is the shared GEM path -- but it is carried in this series, and `rk3588-accel` does not
 take it.
+
+## What 0024 fixes: a poll that retires a job it was not queued for
+
+The completion poll 0012 introduced queues a work item from the hrtimer and retires the
+job from there. That work is not the only path into `rocket_job_handle_irq()`: the shared
+interrupt still reports the DMA-error bits, and its thread retires whatever job is in
+flight.
+
+So the two cross. The timer queues the work for job N; the DMA-error thread runs first and
+retires job N; drm_sched pushes job N+1, which `rocket_job_hw_submit()` starts; and the
+work, still queued from before, retires job N+1 as well -- signalling its fence while the
+hardware is still running it and handing the caller a surface that was never written. A
+reset does the same, since it retires the in-flight job before `cancel_work_sync()` reaches
+the queued work.
+
+The fix is a sequence number per submit, snapshotted onto the work when the timer queues
+it and compared before anything is retired. A work item that no longer matches belongs to
+a job somebody else has already finished, and returns without touching the current one.
+
+The window is narrow -- it needs a DMA error or a reset inside one poll period -- but
+neither is rare on this part while a driver or an encoder is under development, and the
+failure it produces is a silently short surface rather than an error. No uAPI change, so
+the interface version stays at **1.5**.
+
+RK3588 does not reach this: it has a completion interrupt and `soc->poll_completion` is
+false, so no poll work is ever queued. `rk3588-accel` therefore does not carry it.
+
+This is equivalent to the `poll_seq`/`poll_work_seq` fix in RFC v4 4/6 of the upstream
+RK3576 series, rewritten against this series, where the poll condition and the per-submit
+state it latches have both moved.
 
 ## What a board `.dts` must do, and why
 
