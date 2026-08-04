@@ -12,7 +12,15 @@
 # rocket scopes). Paths are relative to this repo's root.
 
 # Declared intent; the builder's verify-applies gate is the enforcement.
-applies_to_kernel = ">=7.0, <7.2"
+#
+# The floor is 060's, not the series': `rk3588-base.dtsi` lists `vdec0`'s `reg` and
+# `reg-names` in the order its binding declares from 7.1.5, where earlier 7.1.x
+# transposed "link" and "function". That node is 060's trailing context, so the patch
+# reads one way or the other and cannot read both. It is written against the binding
+# order, which puts the whole series at 7.1.5 -- a kernel that keeps 060 out keeps
+# VEPU580 encode out, so filtering it per-patch would silently ship a different image
+# rather than fail.
+applies_to_kernel = ">=7.1.5, <7.2"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
 # in ascending numeric order satisfies the series' dependencies: npu-volt needs
