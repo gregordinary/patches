@@ -93,5 +93,8 @@ userspace = [
     "media-accel/userspace/001-mpp-allocator-dma-heap-mainline-cma.patch",
 ]
 
-# u-boot tree: the RK1 builds pristine v2026.04 with no patches.
+# u-boot tree: empty, because u-boot is its own axis. This series is the RK3588
+# kernel/ffmpeg/userspace accel stack; a board that wants more than mainline u-boot
+# selects a u-boot series of its own (the RK1's are turing-rk1-recovery and
+# turing-rk1-util, from the rk3588 scope).
 uboot = []
