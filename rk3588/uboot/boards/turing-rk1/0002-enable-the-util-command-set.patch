@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 12:05:00 -0400
+Subject: [PATCH] rockchip: turing-rk1: enable the util command set
+
+The util image is the RK1's recovery and bring-up tool: a u-boot flashed
+to eMMC and driven at the prompt over the module's UART, for a board
+whose OS will not boot or whose disks need work before one exists. Add
+the commands that job needs beyond a booting image.
+
+  * bootmenu  -- pick a boot target interactively instead of typing a
+    bootcmd, which is what an operator on a serial line actually wants.
+  * memtest   -- a DRAM walk before trusting a module.
+  * md5sum,
+    sha1sum   -- hash an image in RAM before it is written to a disk,
+    and hash it back off the disk afterwards. Writing several GiB to an
+    NVMe over a link that has no integrity check of its own is exactly
+    where a silent corruption goes unnoticed.
+  * wget      -- pull that image from an HTTP server. tftp is already
+    here, but a plain web server is one less daemon to stand up on the
+    host driving the recovery.
+  * read,
+    write     -- raw block access to a partition, for dumping a header
+    or restoring one without a filesystem in the way.
+
+The image-writing path itself needs nothing new: gzwrite comes with
+CONFIG_CMD_UNZIP, which CONFIG_CMD_BOOTI already selects on arm64, so
+`gzwrite nvme 0 ${loadaddr} ${filesize}` decompresses and writes a
+gzipped image to the disk in one step.
+
+Autoboot is left alone. Unlike a tool streamed into RAM over maskrom,
+this one is flashed, so it has to stay able to boot the module normally
+between recovery sessions; the interruptible delay is what makes it safe
+to leave installed.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ configs/turing-rk1-rk3588_defconfig | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/configs/turing-rk1-rk3588_defconfig b/configs/turing-rk1-rk3588_defconfig
+index 347a36a2..0e556463 100644
+--- a/configs/turing-rk1-rk3588_defconfig
++++ b/configs/turing-rk1-rk3588_defconfig
+@@ -23,17 +23,24 @@ CONFIG_DISPLAY_BOARDINFO_LATE=y
+ CONFIG_SPL_MAX_SIZE=0x40000
+ # CONFIG_SPL_RAW_IMAGE_SUPPORT is not set
+ CONFIG_SPL_ATF=y
++CONFIG_CMD_BOOTMENU=y
++CONFIG_CMD_MD5SUM=y
++CONFIG_CMD_MEMTEST=y
++CONFIG_CMD_SHA1SUM=y
+ CONFIG_CMD_GPIO=y
+ CONFIG_CMD_GPT=y
+ CONFIG_CMD_I2C=y
+ CONFIG_CMD_MMC=y
+ CONFIG_CMD_PCI=y
++CONFIG_CMD_READ=y
+ # CONFIG_CMD_SATA is not set
+ CONFIG_CMD_USB=y
+ CONFIG_CMD_ROCKUSB=y
+ CONFIG_CMD_USB_MASS_STORAGE=y
++CONFIG_CMD_WRITE=y
+ CONFIG_CMD_TFTPPUT=y
+ CONFIG_CMD_TFTPSRV=y
++CONFIG_CMD_WGET=y
+ CONFIG_CMD_REGULATOR=y
+ # CONFIG_SPL_DOS_PARTITION is not set
+ CONFIG_SPL_OF_CONTROL=y
+-- 
+2.43.0

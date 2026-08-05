@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# series/turing-rk1-recovery.toml
+#
+# The Turing RK1's shipping u-boot: mainline plus one capability, the
+# ability to put any disk the module can see in front of a host.
+#
+# A compute module has no front-panel USB. Its only device-mode
+# controller is usb_host0_xhci, and where that lands is the carrier
+# board's decision -- on a cluster carrier, a management controller that
+# can write the module's eMMC and nothing else. So a disk on the M.2
+# slot behind pcie3x4 is one u-boot enumerates perfectly well and no
+# host can address. `ums 0 nvme 0` closes that: the disk appears to the
+# carrier as USB mass storage and is written, imaged, or checked with
+# ordinary host tools, with no OS on the module.
+#
+# Everything the flow leans on is already mainline in this board's
+# defconfig, which is why the series is one patch: CONFIG_NVME_PCI and
+# CONFIG_PCIE_DW_ROCKCHIP enumerate the M.2 disk, CONFIG_CMD_UNZIP
+# (selected by CONFIG_CMD_BOOTI on arm64) carries `gzwrite`, and the
+# network stack carries `dhcp` and `tftp`.
+#
+# The RK1 u-boot series are:
+#
+#   * turing-rk1-recovery -- this series. The u-boot an image ships
+#                            with: mainline plus `ums` and `setexpr`.
+#   * turing-rk1-util     -- recovery plus a boot menu, memtest, image
+#                            hashing, `wget`, and raw partition
+#                            read/write. The recovery and bring-up tool.
+
+# No version envelope. This series patches only u-boot, so it makes no kernel
+# claim (no applies_to_kernel). The u-boot series targets the one u-boot
+# generation the board runs, so it declares no applies_to_uboot either; the
+# builder's git-am pass is what enforces that the series applies.
+
+# The kernel/ffmpeg/userspace trees are built pristine -- the RK1's media and
+# NPU patches ride the kernel axis in the rk3588-accel series, not here.
+kernel    = []
+ffmpeg    = []
+userspace = []
+
+# u-boot tree, applied with `git am`:
+#
+#   0001  export block devices over USB with `ums`, and restore the
+#         default-y `setexpr` the board defconfig had turned off (a
+#         hand-driven write needs it to turn ${filesize} into the block
+#         count `nvme write` takes).
+uboot = [
+    "rk3588/uboot/boards/turing-rk1/0001-export-block-devices-over-usb-with-ums.patch",
+]

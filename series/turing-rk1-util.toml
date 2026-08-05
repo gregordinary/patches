@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# series/turing-rk1-util.toml
+#
+# The Turing RK1's recovery and bring-up tool: turing-rk1-recovery plus a
+# boot menu, memtest, image hashing, `wget`, and raw partition
+# read/write. For a module whose OS will not boot, or whose disks need
+# work before an OS exists.
+#
+# Delivery differs from the RK3576 tools, and so does the autoboot
+# behaviour. There is no maskrom RAM path here -- this u-boot is flashed
+# to eMMC and driven at the prompt over the module's UART, which a
+# cluster carrier exposes without opening anything. Because it is
+# installed rather than streamed, it has to stay able to boot the module
+# normally between sessions, so it keeps mainline's interruptible
+# autoboot instead of dropping to the prompt unconditionally.
+#
+# The whole-image write needs nothing this series adds: `gzwrite` comes
+# with CONFIG_CMD_UNZIP, which CONFIG_CMD_BOOTI already selects on arm64.
+# What the tool adds around it is the part a careful write wants --
+# fetch, verify, inspect.
+#
+# The RK1 u-boot series are:
+#
+#   * turing-rk1-recovery -- the u-boot an image ships with: mainline
+#                            plus `ums` and `setexpr`.
+#   * turing-rk1-util     -- this series. Recovery plus the diagnostic,
+#                            verification, and fetch commands.
+
+# No version envelope. This series patches only u-boot, so it makes no kernel
+# claim (no applies_to_kernel). The u-boot series targets the one u-boot
+# generation the board runs, so it declares no applies_to_uboot either; the
+# builder's git-am pass is what enforces that the series applies.
+
+# The kernel/ffmpeg/userspace trees are built pristine -- the RK1's media and
+# NPU patches ride the kernel axis in the rk3588-accel series, not here.
+kernel    = []
+ffmpeg    = []
+userspace = []
+
+# u-boot tree, applied with `git am`:
+#
+#   0001  the turing-rk1-recovery patch, shared verbatim: `ums` to export
+#         a block device over USB, and `setexpr` restored.
+#   0002  the util command set -- `bootmenu` to pick a boot target on a
+#         serial line, `memtest` to walk DRAM before trusting a module,
+#         `md5sum`/`sha1sum` to hash an image in RAM before writing it
+#         and off the disk afterwards, `wget` to pull it from a plain web
+#         server, and `read`/`write` for raw partition access.
+uboot = [
+    "rk3588/uboot/boards/turing-rk1/0001-export-block-devices-over-usb-with-ums.patch",
+    "rk3588/uboot/boards/turing-rk1/0002-enable-the-util-command-set.patch",
+]

@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 12:00:00 -0400
+Subject: [PATCH] rockchip: turing-rk1: export block devices over USB with ums
+
+The RK1 is a compute module, so its device-mode USB is not a front-panel
+socket an operator can reach: usb_host0_xhci is the module's only
+OTG-capable controller, and where it lands is the carrier board's
+decision. On a cluster carrier that is a management controller, which
+can write the module's eMMC and nothing else -- an NVMe on the M.2 slot
+behind pcie3x4 is invisible to it. The result is a disk u-boot
+enumerates perfectly well but that no host can address.
+
+`ums` closes that gap. It exports any block device u-boot can reach as
+USB mass storage, so `ums 0 nvme 0` puts the M.2 disk in front of
+whatever sits on the OTG port and it is written, imaged, or fsck'd with
+ordinary host tools, with no OS on the module. The pieces it leans on
+are already here: CONFIG_NVME_PCI and CONFIG_PCIE_DW_ROCKCHIP enumerate
+the disk, and the gadget side is the one CONFIG_CMD_ROCKUSB already
+uses.
+
+Drop the CMD_SETEXPR override in the same change, restoring the
+default-y expression evaluator. Writing an image by hand needs it to
+turn a loaded ${filesize} into the block count `nvme write` takes, and
+it is the one arithmetic primitive a scripted flashing session cannot
+work around.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ configs/turing-rk1-rk3588_defconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configs/turing-rk1-rk3588_defconfig b/configs/turing-rk1-rk3588_defconfig
+index 0b3efec2..347a36a2 100644
+--- a/configs/turing-rk1-rk3588_defconfig
++++ b/configs/turing-rk1-rk3588_defconfig
+@@ -31,7 +31,7 @@ CONFIG_CMD_PCI=y
+ # CONFIG_CMD_SATA is not set
+ CONFIG_CMD_USB=y
+ CONFIG_CMD_ROCKUSB=y
+-# CONFIG_CMD_SETEXPR is not set
++CONFIG_CMD_USB_MASS_STORAGE=y
+ CONFIG_CMD_TFTPPUT=y
+ CONFIG_CMD_TFTPSRV=y
+ CONFIG_CMD_REGULATOR=y
+-- 
+2.43.0

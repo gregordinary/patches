@@ -8,21 +8,31 @@ their own copies, so a fix lands in one place.
 
 ## Scopes
 
+Two kinds of scope live here: **subject** scopes, which collect patches for one
+capability across SoCs, and **SoC** scopes, which collect what one SoC needs on
+top of mainline.
+
 | Dir | Scope |
 |-----|-------|
 | [`rocket/`](rocket/) | Rockchip NPU — patches, UAPI header, and notes for the mainline `rocket` DRM accel driver (RK3588). |
 | [`media-accel/`](media-accel/) | Rockchip HW video transcode (RK35xx/RK3588) — kernel decode/encode/RGA, ffmpeg-rockchip, and MPP/RGA userspace patches. |
+| [`rk3288/`](rk3288/) | RK3288 kernel fixes, written to upstream standards and meant to retire into stable. |
+| [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
+| [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
 
 Each scope is **self-contained** and need not share a common internal layout —
-`rocket/` keeps the shape it had as its own repo. Future scopes (kernel
-video-codec accel, ffmpeg-rockchip, MPP userspace) will be added as the generic
-builder is built out.
+`rocket/` keeps the shape it had as its own repo.
 
 ## Series
 
-[`series/<name>.toml`](series/) manifests bind a kernel-version range
-(`applies_to_kernel`) to an ordered, per-tree patch series drawn from the scopes
-above — the unit a builder consumes.
+[`series/<name>.toml`](series/) manifests bind an ordered, per-tree patch series
+drawn from the scopes above — the unit a builder consumes — to the version range
+it targets: `applies_to_kernel` for the kernel-family trees
+(`kernel`/`ffmpeg`/`userspace`), `applies_to_uboot` for the `uboot` tree, since
+u-boot is its own axis. A series that patches only one of the two declares only
+that range, and a series pinned to a single upstream generation declares neither
+— the builder's `git am` pass is the enforcement either way.
+
 [`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline-7.1 media
 + NPU series: kernel `040`–`088`, ffmpeg `0001`, userspace `001`. A series'
 `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*` then
