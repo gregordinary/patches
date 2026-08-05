@@ -168,6 +168,27 @@
 # stays at 1.5, and the RK3588 does not reach it at all (it has a completion interrupt, so
 # soc->poll_completion is false and no poll work is ever queued).
 #
+# 0025 is ours and closes the half 0022 left. 0022 stopped a batched STREAM's length being a
+# property of the driver's timing; past the kick, one program's own drain was still bounded by
+# dpu_grace_us. PC_DONE means the program counter retired the last task, not that the task has
+# finished computing, and on a job of one task -- TASK_NUMBER = 1, both PC_TASK_STATUS counters
+# reading zero always -- PC_DONE alone is the kick-over signal and is raised while the pipeline
+# still has the whole convolution to run. So a fitted 500 us was covering an entire program's
+# execution, and every value is too small for some program. From userspace that wore a hardware
+# capacity bound: a 112x112 k7 ic32 convolution bit-exact only up to a plane height that FALLS
+# as the output-channel count rises (78 rows at two groups, 44 at four, 32 at six), handing back
+# a full, correctly sized surface whose last rows of the last group are wrong. What those walls
+# share is work, not footprint, and work is a time. The writing block raises its own completion,
+# so wait for that: dpu_grace_us stays as an optional CAP and defaults to 0. 0022's backstop
+# moves to cover this wait too, so a job whose block never completes retires there loudly
+# instead of returning a truncated surface. What it costs is paid by a job that raises no
+# completion and does not name itself with DRM_ROCKET_JOB_NO_DPU_DONE or
+# DRM_ROCKET_JOB_PPU_DONE: it now waits out the backstop rather than losing 500 us. Over a
+# 58-gate list only two rows move, both raw test submits passing no class flag; every library
+# path names its class and is unmoved. Interface version 1.6 carries no new uAPI -- the bump
+# exists because a caller that sizes its programs has no other way to tell an older kernel,
+# where the failure is silent and looks like a capacity bound.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -205,6 +226,7 @@ kernel = [
     "rk3576/npu/0022-accel-rocket-retire-an-rk3576-job-on-the-hardware-s-own-account-of-the-kick.patch",
     "rk3576/npu/0023-accel-rocket-do-cache-maintenance-over-named-ranges-of-a-bo.patch",
     "rk3576/npu/0024-accel-rocket-do-not-let-a-stale-poll-retire-the-next-job.patch",
+    "rk3576/npu/0025-accel-rocket-wait-for-the-writing-block-not-for-a-deadline.patch",
 ]
 
 ffmpeg    = []

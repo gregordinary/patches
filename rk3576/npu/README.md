@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 24 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
+Patches 8 to 25 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
 RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
 upstream commit messages and `Signed-off-by` lines intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
@@ -37,6 +37,7 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0022 | accel/rocket: retire an RK3576 job on the hardware's own account of the kick (ours) |
 | 0023 | accel/rocket: do cache maintenance over named ranges of a BO (ours) |
 | 0024 | accel/rocket: do not let a stale poll retire the next job (ours) |
+| 0025 | accel/rocket: wait for the writing block, not for a deadline (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -179,10 +180,11 @@ raw@retire=0x20000001 -> 0x30000155 after 82us
 
 — `PC_DONE_1` with no DPU bit, then `DPU_0` (`0x100`).
 
-**Not every task raises one**, so the wait is bounded by `dpu_grace_us` (default
-**500 us**), past which the job retires anyway. (What that wait *starts* from is 0022's
-subject: `PC_DONE` alone is a per-task signal, and on a batched job it is not the kick
-being over.) A task whose DPU
+**Not every task raises one**, so the wait is bounded by `dpu_grace_us`, at the 500 us
+this patch defaults it to, past which the job retires anyway. (What that wait *starts*
+from is 0022's subject: `PC_DONE` alone is a per-task signal, and on a batched job it is
+not the kick being over. Whether that wait is bounded at all is 0025's: the shipped
+default is 0, which waits for the block.) A task whose DPU
 output element is wider than one byte — the int32 writer, and fp16 output — completes CNA
 and CORE and never sets a DPU bit at all (`raw=0x30000055`, held for milliseconds). The
 500 us default is twice what those tasks need: they still fail at 100 us (3 of 43 shapes)
@@ -347,11 +349,12 @@ what the drain measurements rule out.
 stock rocket reports 0.0.0 and userspace had no way to ask what the kernel guarantees.
 0015 claims **1.0** (extensible descriptors), 0016 **1.1** (`BATCHED`), 0017 **1.2**
 (`NO_DPU_DONE`), 0021 **1.3** (`PPU_DONE`), 0022 **1.4** (a batched stream's length
-bounded by nothing but the scheduler's job timeout) and 0023 **1.5**
-(`PREP_BO_RANGES`/`FINI_BO_RANGES`). Userspace must check `DRM_IOCTL_VERSION` before
+bounded by nothing but the scheduler's job timeout), 0023 **1.5**
+(`PREP_BO_RANGES`/`FINI_BO_RANGES`) and 0025 **1.6** (one program's length bounded the
+same way). Userspace must check `DRM_IOCTL_VERSION` before
 self-chaining: an older kernel does not know the flag and would run a chained layout
-down the per-task path. 1.4 is the one bump that adds no uAPI -- what it names is a
-bound, which a caller that sizes its streams has no other way to ask about.
+down the per-task path. 1.4 and 1.6 are the bumps that add no uAPI -- what each names is
+a bound, which a caller that sizes its programs has no other way to ask about.
 
 ## What 0018, 0019 and 0020 fix: two leaks and a double free
 
@@ -639,6 +642,74 @@ false, so no poll work is ever queued. `rk3588-accel` therefore does not carry i
 This is equivalent to the `poll_seq`/`poll_work_seq` fix in RFC v4 4/6 of the upstream
 RK3576 series, rewritten against this series, where the poll condition and the per-submit
 state it latches have both moved.
+
+## What 0025 fixes: a deadline standing in for one program's execution
+
+0022 bounded how long a batched *stream* may be by the hardware's own account of the kick.
+What it left is the other half: how long **one program** may be. Past the kick the driver
+waited `dpu_grace_us` for the writing block's completion, and that bound falls on the last
+program of the kick. `PC_DONE` does not mean that program has finished computing -- it
+means the program counter retired it -- and on a job of one task, where `TASK_NUMBER = 1`
+and both `PC_TASK_STATUS` counters read zero always, `PC_DONE` alone is the kick-over
+signal, raised while the CNA/CORE/DPU pipeline still has the whole convolution to run. So
+the grace was covering an entire program's execution, and every value is too small for
+some program.
+
+**From userspace this wore a hardware capacity bound convincingly.** A single 112x112 k7
+ic32 convolution is bit-exact up to a plane height that *falls* as the output-channel count
+rises -- 78 rows at two output-channel groups, 44 at four, 32 at six -- handing back a
+full, correctly sized surface whose last rows of the last output-channel group are wrong.
+No "feature + weights <= pool" form states that: one group computes at a total of 6888 CBUF
+granules where two groups fail at 5992. What the walls share is **work** -- 766 to 830
+MMACs, at a footprint that falls 2.4x across them -- and work is a time. Raising
+`dpu_grace_us` to 750 makes all of them bit-exact at unchanged shape, program and CBUF
+budget, and restoring 500 brings them back [HW sweep, H96 MAX M9].
+
+Two more measurements say the governing quantity is the program's execution and not the
+bytes it writes. At the same plane and a 3x3 kernel -- 5.4x fewer MACs per output element,
+and a *larger* surface -- the convolution is bit-exact at every reachable height to 109,
+where the output is 1.47 MB against the 516 KB the k7 wall sits at. And at 64 input
+channels, where the MACs per output element double and the surface halves, the wall
+returns.
+
+So the block raises its own completion; wait for that. `dpu_grace_us` stays as an optional
+**cap** and defaults to **0**, which waits for the block. Setting it non-zero restores the
+bounded wait, which is what makes the two comparable on one kernel. 0022's backstop moves
+out of the kick-unfinished branch to cover this wait too, so a job whose writing block
+never completes retires there -- loudly, with the core and the task count logged -- instead
+of silently handing back a truncated surface.
+
+**What it costs is paid by a job that raises no completion and does not say so.**
+`DRM_ROCKET_JOB_NO_DPU_DONE` and `DRM_ROCKET_JOB_PPU_DONE` are advisory, and a job in the
+wrong class used to lose 500 us; it now waits out the backstop. Raising `dpu_grace_us` to
+5000 on the old behaviour shows which submits ride it to completion, since those are the
+ones whose wall scales with it. Over a 58-gate list [HW sweep, H96 MAX M9] the whole run
+moves +1.0% and every graph is inside noise -- MobileNetV1 623 ms either way, Inception V3
+65917 -> 65351 ms -- so nothing on the library's own paths rides it: those name their class.
+Two probe rows do, 153 -> 535 ms and 214 -> 404 ms, which is ~85 and ~42 grace-bound
+submits, and both are raw test submits that pass no class flag at all. With this patch
+applied those two rows are 153 -> 10303 ms and 214 -> 4767 ms -- the 125 ms backstop times
+the submit counts the grace sweep predicted, to within 10% -- and they stay `rc=0`: the
+surfaces are right and the wait is long. Every other row of the 58 is unmoved. The
+population that pays is jobs with no flag naming their writer, and the fix for that is to
+name it, not to keep a deadline for everyone.
+
+Measured with this patch applied, as an out-of-tree build of the same source against the
+board's own headers [HW sweep, H96 MAX M9]:
+
+- the 112x112 k7 ic32 convolution at four output-channel groups is bit-exact at every
+  height from 40 to 56, 51 runs, 0 wrong;
+- setting `dpu_grace_us = 500` on that same kernel brings the failure back -- 13 of those
+  17 heights wrong, 30 runs of 51, the wrong elements a suffix of the rows of the last
+  output-channel group as before -- so the two behaviours are one A/B on one binary;
+- the unmodified series, rebuilt the same way, is 58 of 58 gates `rc=0` at taint 4096 in
+  205 s against the shipped module's 202 s, which is what says the rebuild is faithful
+  before anything is read off it.
+
+The interface version goes to **1.6** with no new uAPI: the bump exists because on an
+older kernel a single program whose drain outruns `dpu_grace_us` retires with its last
+output rows unwritten, silently and looking exactly like a capacity bound, and a caller
+that sizes its programs has no other way to tell.
 
 ## What a board `.dts` must do, and why
 
