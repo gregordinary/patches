@@ -75,7 +75,6 @@ board-specific u-boot support gets its own series that layers a board patch (fro
 | `0016-rockchip-rk3576-mux-the-console-over-serial-and-vidc` | the default console muxed over serial + vidconsole, so the panel shows it with no `setenv` |
 | `0017-phy-rockchip-inno-usb2-mirror-the-kernel-s-RK3576-PH` | kernel-mirrored inno-usb2 bring-up; its CRU reset clears the BootROM's device-mode session state, otherwise read as a phantom host-port connect |
 | `0018-rockchip-rk3576-generic-run-USB-host-on-the-second-c` | host runs on drd1, the upstream-proven path, leaving the USB 3.0 port free for the maskrom cable |
-| `0019-clk-rockchip-rk3576-report-the-USB3-OTG-reference-cl` | CRU reports CLK_REF_USB3OTG0/1 as 24 MHz; without it dwc3 computes a garbage reference period and every controller timer runs ~10x slow |
 | `0020-usb-hub-poll-for-port-reset-completion-instead-of-re` | the port-reset loop arms once and polls, instead of re-arming a nearly-enabled port back into reset forever |
 | `0021-usb-dwc3-mark-the-generic-host-as-DMA-active-for-OS-` | `DM_FLAG_ACTIVE_DMA` so bootm halts the xhci before the OS jump; a live event ring otherwise corrupts the loaded initrd and FDT |
 | `0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP` | the SoC clock bring-up runs at SPL bind under `CONFIG_XPL_BUILD`; the old `CONFIG_SPL_BUILD` guard was dead code after the xPL rename |

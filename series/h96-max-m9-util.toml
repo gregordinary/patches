@@ -58,7 +58,6 @@ uboot = [
     "rk3576/uboot/0016-rockchip-rk3576-mux-the-console-over-serial-and-vidc.patch",
     "rk3576/uboot/0017-phy-rockchip-inno-usb2-mirror-the-kernel-s-RK3576-PH.patch",
     "rk3576/uboot/0018-rockchip-rk3576-generic-run-USB-host-on-the-second-c.patch",
-    "rk3576/uboot/0019-clk-rockchip-rk3576-report-the-USB3-OTG-reference-cl.patch",
     "rk3576/uboot/0020-usb-hub-poll-for-port-reset-completion-instead-of-re.patch",
     "rk3576/uboot/0021-usb-dwc3-mark-the-generic-host-as-DMA-active-for-OS-.patch",
     "rk3576/uboot/0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP.patch",

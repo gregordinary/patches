@@ -78,10 +78,6 @@ userspace = []
 #              regulator) - the upstream-proven RK3576 host path; on the
 #              EVB-derived boards that is the USB 2.0 Type-A port, so the
 #              USB 3.0 port stays free for the maskrom download cable.
-#   0019       CRU get_rate reports CLK_REF_USB3OTG0/1 as 24 MHz; without
-#              it the dwc3 core computes a garbage reference-clock period
-#              and every controller timer runs ~10x slow (port resets,
-#              halt, SOF).
 #   0020       usb_hub port-reset loop arms the reset once per try and
 #              polls to completion instead of re-arming (which knocked a
 #              nearly-enabled port back into reset forever).
@@ -117,7 +113,6 @@ uboot = [
     "rk3576/uboot/0016-rockchip-rk3576-mux-the-console-over-serial-and-vidc.patch",
     "rk3576/uboot/0017-phy-rockchip-inno-usb2-mirror-the-kernel-s-RK3576-PH.patch",
     "rk3576/uboot/0018-rockchip-rk3576-generic-run-USB-host-on-the-second-c.patch",
-    "rk3576/uboot/0019-clk-rockchip-rk3576-report-the-USB3-OTG-reference-cl.patch",
     "rk3576/uboot/0020-usb-hub-poll-for-port-reset-completion-instead-of-re.patch",
     "rk3576/uboot/0021-usb-dwc3-mark-the-generic-host-as-DMA-active-for-OS-.patch",
     "rk3576/uboot/0022-clk-rockchip-rk3576-run-the-SoC-clock-bring-up-at-SP.patch",
