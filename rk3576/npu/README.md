@@ -60,8 +60,12 @@ a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series)
 merged macro/table carry both arguments (GPU `regulator = true`, the NPU domains
 `delay = 15`). Re-derive it the same way on a future RFC re-sync.
 
-**0007 carries three local changes**, all on `rknn_core_1` and all invisible upstream,
-because the RFC ships both cores `disabled` and its board patch enables core 0 alone.
+**0007 carries three local changes**, all on `rknn_core_1` and all invisible in any
+booting configuration, because the RFC ships both cores `disabled` and neither its board
+patch nor the H96 MAX M9's enables core 1 (see
+[What a board `.dts` must do](#what-a-board-dts-must-do-and-why)). They stay because a
+dtsi describes the part whether or not a board opts in, and an inaccurate node is a trap
+for whoever enables it next.
 
 **Core 1 sits at `0x27708000`.** The two cores are the two halves of one 64 KB `RKNN TOP`
 window: the RK3576 TRM v1.2 address map has `RKNN TOP` at `0x27700000` (64 KB) and the
@@ -713,25 +717,59 @@ that sizes its programs has no other way to tell.
 
 ## What a board `.dts` must do, and why
 
-0007 adds the SoC nodes `disabled`; a board enables and wires them. For the H96 MAX M9
-that is `devices/h96-max-m9/dts/rk3576-h96-max-m9.dts` in the boot2deb tree, which
-enables both cores. The rail below fails in a way that does not point at itself, so
+0007 adds the SoC nodes `disabled`; a board enables and wires the ones it wants. For the
+H96 MAX M9 that is `devices/h96-max-m9/dts/rk3576-h96-max-m9.dts` in the boot2deb tree,
+which enables core 0. The rail below fails in a way that does not point at itself, so
 take it together with the rest, not as a menu:
 
 | node | change |
 |---|---|
 | `&rknn_core_0` (`/soc/npu@27700000`) | `npu-supply = <&vdd_npu_s0>`, `status = "okay"` |
-| `&rknn_core_1` (`/soc/npu@27708000`) | the same two |
 | `&rknn_mmu_0` (`/soc/iommu@27702000`) | `status = "okay"` |
-| `&rknn_mmu_1` (`/soc/iommu@2770a000`) | `status = "okay"` |
+| `&rknn_core_1` (`/soc/npu@27708000`) | none -- left `disabled`, see below |
+| `&rknn_mmu_1` (`/soc/iommu@2770a000`) | none -- left `disabled` |
 | `&vdd_npu_s0` (PMIC `dcdc-reg2` on this board) | `regulator-always-on` |
+
+**Bind one core.** Two jobs in flight at once compute wrong answers on this part:
+96-100% of calls wrong, over as much as 94% of the surface, deltas spanning the whole
+int8 range, and it crosses process boundaries. Simultaneous execution is the entire
+condition, isolated by driving two fds across both cores through a mutex so only one job
+is ever in flight -- every call exact, 96 calls per cell over three shapes -- against the
+same two fds run concurrently, which is where the corruption appears. Neither the second
+core's existence, nor what a job inherits from its predecessor, nor the IOMMU mapping
+discriminates. So a board that binds one core leaves the kernel nowhere to schedule a
+concurrent job, and the class is unreachable by construction rather than merely rare.
+
+The shared CBUF is the mechanism this points at, reached by elimination and held as a
+candidate rather than a settled cause: there is one 1 MB buffer at `0x3fe80000`, outside
+either core's register bank, gated by a single `NPU_GRF_MEMGATE_CON0` field and the one
+clock pair both core nodes list, and nothing an encoder emits depends on which core runs
+it, so both cores stage into the same region. The vendor driver is the only Rockchip NPU
+configuration carrying a `cache_sgt_init`, and what it does is hand each core a disjoint
+slice -- core 0 banks {0-6, 14}, core 1 {7-13, 15}. Mainline `rocket` has no such
+partitioning, which is what makes this a userspace encoder's job to solve rather than the
+kernel's; no RK3576 encoder exists yet, so the second core has no consumer that could use
+it correctly today.
+
+The second core buys nothing meanwhile. Measured against a one-core control rather than
+against a single fd, two fds on core 0 alone run 1.51-1.69x (8x64x32), 1.62-1.66x
+(32x1024x512) and 1.49-1.51x (128x1024x1024); with both cores bound the same shapes give
+1.55-1.74x, 1.49-1.68x and 1.38-1.42x -- inside the one-core range at the small shapes and
+below it at the large one. The 1.5-1.7x is submit pipelining, not parallelism: one core is
+not saturated by one fd at a ~340 us submit floor, so filling its dispatch gaps is the
+whole gain, and a single core delivers that on its own.
+
+Prefer the DT over a runtime unbind: leaving the node `disabled` survives kernel package
+upgrades, and unbinding does not.
 
 **The power domains are not a board's job.** Both core nodes list both `RK3576_PD_NPU0`
 and `RK3576_PD_NPU1` in the SoC dtsi, because the requirement is a property of the part,
 not of any board. It matches the vendor, which powers both NPU domains from one node even
 on a single core -- the CBUF->CMAC read path is only fully powered with NPU1 up. genpd
 reference-counts the two shared domains, so each core holding both costs nothing and keeps
-the pair up while either core is active. Each core lists its own domain first.
+the pair up while either core is active -- which is also why a board that enables core 0
+alone still gets a fully fed buffer, core 1's node having no part in it. Each core lists
+its own domain first.
 
 `rocket_core_init()` calls `devm_pm_domain_attach_list()` unconditionally and takes the
 count from the node, so the DT is the only place that says how many domains a core spans.
