@@ -15,9 +15,9 @@
 # real silicon, including multi-task row-windowed programs submitted with no gap
 # between tasks.
 #
-# 0001-0007 come from the linux-rockchip RFC "accel/rocket: RK3576 NPU
-# (RKNN) enablement" (Jiaxing Hu); everything else is ours. 0003, 0004 and 0005 are
-# verbatim; 0001, 0002, 0006 and 0007 carry local changes. 0001 widens the binding to describe the
+# 0001-0007, 0030 and 0031 come from the linux-rockchip RFC "accel/rocket: RK3576 NPU
+# (RKNN) enablement" (Jiaxing Hu); everything else is ours. 0003, 0004, 0005, 0030 and
+# 0031 are verbatim; 0001, 0002, 0006 and 0007 carry local changes. 0001 widens the binding to describe the
 # RK3576 node at all -- upstream constrains every countable property to the RK3588's
 # count, so the five register banks, six clocks, two power domains and one reset that
 # 0007 emits validate against nothing -- and pins the exact shape per compatible, which
@@ -29,9 +29,10 @@
 # .delay_us and .need_regulator arguments). 0007 corrects rknn_core_1, which sits at
 # 0x27708000 -- the two cores are the halves of one 64 KB RKNN TOP window and 0x27710000
 # is the unrelated RKNN_NSP block -- gives it the two CBUF clocks its own IOMMU and
-# power domain already list, and puts both NPU power domains on both core nodes, which
+# power domain already list, puts both NPU power domains on both core nodes, which
 # the part requires of every RK3576 core and so belongs to the SoC rather than to each
-# board. See rk3576/npu/README.md for all of them. The RFC's board patch
+# board, and names the MMU nodes' clocks, which rockchip,iommu requires and 0031
+# widens to five. See rk3576/npu/README.md for all of them. The RFC's board patch
 # (enable NPU on the Radxa Rock 4D) is dropped: the board enable is board-specific,
 # and the H96 wires its own via its device `.dts` (npu-supply = vdd_npu_s0 and
 # status = "okay").
@@ -214,6 +215,21 @@
 # rocket_job_init(), because struct rocket_core outlives an unbind whenever another
 # core stays bound and a rebinding core would otherwise never retire again.
 #
+# 0030 and 0031 are the schema for what 0003 and 0007 describe, and they are last
+# only because Documentation/ has no apply-order dependency on anything. Both DTs
+# they cover are rejected without them: pd-node carries no `resets` property and is
+# unevaluatedProperties: false at every nesting level, so the SRST_A_RKNN0/1_BIU
+# phandles 0007 puts on the NPU power domains do not validate; and rockchip,iommu
+# pins `clocks` and `clock-names` at exactly the aclk/iface pair and REQUIRES
+# clock-names, so the five-clock MMU nodes fail on both counts. 0031 widens the
+# clock list to five with minItems at 2, which leaves every existing devicetree --
+# all of them exactly aclk and iface -- unaffected. The driver side of 0031 is 0004
+# in this series; it is also accepted upstream as 841363ebb508 ("iommu/rockchip:
+# Take all DT clocks"), which is NOT in 7.1.x and is why 0004 is still carried here.
+# When this series moves to a kernel that has it, 0004 becomes a redundant patch that
+# `git am --3way` will absorb silently rather than reject, so it has to be dropped by
+# hand at that bump.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -256,6 +272,8 @@ kernel = [
     "rk3576/npu/0027-accel-rocket-stop-the-block-under-the-job-lock.patch",
     "rk3576/npu/0028-accel-rocket-do-not-touch-a-gated-core-from-an-idle-poll.patch",
     "rk3576/npu/0029-accel-rocket-sequence-the-completion-poll-against-scheduler-teardown.patch",
+    "rk3576/npu/0030-dt-bindings-power-rockchip-allow-resets-in-a-power-domain-node.patch",
+    "rk3576/npu/0031-dt-bindings-iommu-rockchip-allow-the-rk3576-npu-mmu-clock-set.patch",
 ]
 
 ffmpeg    = []

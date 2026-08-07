@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 0008 to 0029 are ours; 0001-0007 come from the linux-rockchip RFC
+Patches 0008 to 0029 are ours; 0001-0007, 0030 and 0031 come from the linux-rockchip RFC
 series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
 (`gahing@gahingwoo.com`), with their upstream commit messages and `Signed-off-by` lines
 intact. They compose after `rk3576-fixes` on the RK3576 kernel and apply with
@@ -43,8 +43,11 @@ intact. They compose after `rk3576-fixes` on the RK3576 kernel and apply with
 | 0027 | accel/rocket: stop the block under the job lock (ours) |
 | 0028 | accel/rocket: do not touch a gated core from an idle poll (ours) |
 | 0029 | accel/rocket: sequence the completion poll against scheduler teardown (ours) |
+| 0030 | dt-bindings: power: rockchip: allow resets in a power domain node |
+| 0031 | dt-bindings: iommu: rockchip: allow the RK3576 NPU MMU clock set |
 
-Four of the carried patches have local changes; the rest are verbatim.
+Four of the carried patches have local changes; the rest are verbatim. 0030 and 0031
+are last because `Documentation/` has no apply-order dependency on anything else here.
 
 **0001 describes the RK3576 node shape.** The upstream schema is written for the
 RK3588 and constrains every countable property to the RK3588's count, so the RK3576
@@ -65,7 +68,7 @@ a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series)
 merged macro/table carry both arguments (GPU `regulator = true`, the NPU domains
 `delay = 15`). Re-derive it the same way on a future RFC re-sync.
 
-**0007 carries three local changes**, all on `rknn_core_1` and all invisible in any
+**0007 carries four local changes.** The first three are all on `rknn_core_1` and all invisible in any
 booting configuration, because the RFC ships both cores `disabled` and neither its board
 patch nor the H96 MAX M9's enables core 1 (see
 [What a board `.dts` must do](#what-a-board-dts-must-do-and-why)). They stay because a
@@ -104,6 +107,13 @@ consistent with the three, and the clock framework reference-counts the sharing.
 **Both core nodes list both power domains.** See
 [What a board `.dts` must do](#what-a-board-dts-must-do-and-why) for why a single entry
 fails, and why this belongs to the SoC and not to each board.
+
+**The MMU nodes name their clocks.** `rockchip,iommu` lists `clock-names` under
+`required:`, so a node carrying `clocks` and no names does not validate at all -- and
+0031 widens the pair to the five the RK3576 NPU MMUs take, which is the other half of
+the same failure. The driver reaches them either way, since 0004 switched `rk_iommu`
+to `devm_clk_bulk_get_all()`, which resolves by index; the names are what makes the
+node describable.
 
 ## What 0026 to 0029 fix: four defects in the driver's own bookkeeping
 
@@ -869,9 +879,10 @@ row-windowed programs are bit-exact submitted back to back with no gap. Re-sync 
 a later RFC revision by re-splitting the series into this directory and updating
 `series/rk3576-npu.toml`.
 
-**0026 to 0029 have not been on hardware.** They are reasoned from the source and
+**0026 to 0031 have not been on hardware.** They are reasoned from the source and
 build clean, and none of them changes what a correct submit does: 0026 and 0027 are
-the same operations with a different count and a different lock scope, and 0028 and
-0029 are paths a passing run does not take. Every measurement above stands, but the
-H96 has not been through a run with them applied -- the checks that would close that
-are a submit sweep unchanged and an unbind and rebind with a job in flight.
+the same operations with a different count and a different lock scope, 0028 and 0029
+are paths a passing run does not take, and 0030 and 0031 are `Documentation/`. Every
+measurement above stands, but the H96 has not been through a run with them applied --
+the checks that would close that are a submit sweep unchanged, an unbind and rebind
+with a job in flight, and `dtbs_check` clean on `rk3576.dtsi`.
