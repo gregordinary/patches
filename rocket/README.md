@@ -22,6 +22,7 @@ cherry-pick.
 | **Required** | `085-rocket-drv-uapi-extensible-structs.patch` | Fixes a **kernel oops any client can trigger with one malformed submit** (a NULL `job->domain` dereferenced on the cleanup path) and a submit error the ioctl was silently discarding. Also makes the descriptors extensible, which is the precondition for `086`. |
 | **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. Verified on RK3588 silicon, and on the RK3576 where the function is byte-identical. |
 | **Required** | `088-rocket-drv-reset-before-iommu-detach.patch` | Resets the NPU **before** detaching its IOMMU domain. Detaching a core that is still mid-DMA makes the `rk_iommu` stall handshake time out — a `dev_err` per MMU bank on every faulting job, and a **WARN in the IOMMU core** (a taint, and a panic under `panic_on_warn`) when the handshake behind the group's default domain fails too. Reached by any client of `/dev/accel` pointing one unvalidated `regcmd` field at an unmapped address. Needs `083`. |
+| **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -46,8 +47,8 @@ Four, and all of them are real (not just diff context):
   `083` introduces. On a tree without `083` there is a per-job detach instead, and the
   reordering has nothing to move.
 
-`081`, `083`, `084`, `085` and `087` each apply to a pristine tree on their own, in any
-combination. **Applying in ascending numeric order always satisfies the dependencies**, so
+`081`, `083`, `084`, `085`, `087` and `089` each apply to a pristine tree on their own,
+in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
 if you are unsure, just apply them lowest-number first.
 
 `087` in particular depends on nothing: the `fail:` path it removes the `kvfree()` from is
@@ -591,6 +592,35 @@ disproven kernel-only descriptor-table model: [`BATCHED_SUBMIT_FINDINGS.md`](BAT
 
 ---
 
+## Core clocks by name (`089-rocket-drv-clocks-by-name.patch`)
+
+Igor Paunovic's patch, taken from linux-rockchip where it is headed upstream with a
+`Fixes:` tag and four review and test tags. Carried here because it is not in 7.1.
+
+`rocket_core_init()` hands `core->clks` to `devm_clk_bulk_get()` without setting any
+`.id`. The array is `devm_kcalloc`'d and `rocket_probe()` fills in only `.rdev`, `.dev`
+and `.index`, so all four entries are requested with a `NULL` `con_id` — and
+`clk_get(dev, NULL)` reaches `of_clk_get_hw(np, 0, NULL)`, where `of_parse_clkspec()`
+consults `clock-names` **only when a name was passed**. The index stays 0 for all four,
+so every handle is on the first clock of the DT property: `ACLK_NPUn`, four times.
+
+Nothing fails. Probe succeeds, `rocket_device_runtime_resume()` prepares and enables the
+AXI clock four times, and `hclk`, `pclk` and the SCMI compute clock are never touched by
+this driver at all — the NPU runs because the Rockchip power-domain driver sets
+`GENPD_FLAG_PM_CLK` and its `attach_dev()` walks the node with `of_clk_get()`, adding
+every clock to the `pm_clk` list. So the bug is latent, and what it costs today is that
+the driver holds no reference to the clock `081` re-rates, which is the wrong footing for
+that lever and blocks any OPP/devfreq work.
+
+Setting the ids is a tightening for out-of-tree DTs: a named request fails probe with
+`-ENOENT` when one of the four names is missing, where the old index lookup succeeded
+whatever `clock-names` said. `rk3588-base.dtsi` carries `aclk`, `hclk`, `npu` and `pclk`
+on all three cores, so nothing in tree is affected.
+
+`rk3576/npu` 0006 carries the same four lines for its own SoC. When a kernel arrives with
+this upstream, both copies have to be dropped by hand — `git am --3way` absorbs a
+redundant patch silently rather than rejecting it.
+
 ## NPU IRQ affinity (runtime knob, no patch)
 
 A companion runtime lever — no driver change, but in the same dispatch-floor family as the
@@ -642,6 +672,7 @@ git am --3way $P/085-rocket-drv-uapi-extensible-structs.patch  # required (oops 
 git am --3way $P/086-rocket-drv-batched-submit.patch           # recommended; needs 083 + 085
 git am --3way $P/087-rocket-drv-fix-task-array-double-free.patch  # required (double-free fix)
 git am --3way $P/088-rocket-drv-reset-before-iommu-detach.patch    # required (IOMMU stall/WARN); needs 083
+git am --3way $P/089-rocket-drv-clocks-by-name.patch           # required (driver holds the wrong clocks)
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 

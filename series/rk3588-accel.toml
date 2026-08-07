@@ -58,6 +58,20 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # stall timeouts without it, exactly two per fault, and zero with it, the thirty
 # job timeouts unchanged. The RK3576 reaches the same detach and produces the same
 # stall lines but not the WARN, so it is carried here only.
+#
+# 089 is Igor Paunovic's, taken from linux-rockchip where it is headed upstream, and
+# it is the reason the driver holds the clocks it says it does. rocket_core_init()
+# hands core->clks to devm_clk_bulk_get() with every .id left NULL, and a NULL con_id
+# resolves by INDEX, so all four entries come back holding the first clock of the DT
+# property -- ACLK_NPUn, four times. hclk, pclk and the SCMI compute clock are never
+# prepared or enabled by this driver at all; the NPU runs only because the power-domain
+# driver sets GENPD_FLAG_PM_CLK and its attach_dev() adds every clock in the node to
+# the pm_clk list. 081's clock lever is unaffected either way, since it acquires "npu"
+# by name itself, but a driver that holds no handle on the clock it re-rates is one
+# accident away from a real defect and blocks any OPP work. rk3588-base.dtsi names all
+# four clocks on all three cores, so the named lookup cannot fail here. rk3576/npu 0006
+# carries the same four lines for its own SoC; when a kernel arrives with 089 upstream,
+# both copies have to go.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -73,6 +87,7 @@ kernel = [
     "rocket/086-rocket-drv-batched-submit.patch",
     "rocket/087-rocket-drv-fix-task-array-double-free.patch",
     "rocket/088-rocket-drv-reset-before-iommu-detach.patch",
+    "rocket/089-rocket-drv-clocks-by-name.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
