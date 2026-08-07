@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 12:00:00 +0000
+Subject: [PATCH] rocket: stop the block under the job lock
+
+rocket_job_handle_irq() writes OPERATION_ENABLE = 0 and clears the
+interrupt state before it takes job_lock, while rocket_job_hw_submit()
+writes OPERATION_ENABLE = 1 from inside that lock.  The two orderings are
+not equivalent: a completion's zero that lands after a submit's one stops
+a task the hardware has only just been given, and the job then waits out
+its completion for a program that is no longer running.
+
+The completion handler cannot race itself -- one irqaction's thread is
+not re-entered concurrently -- so what opens the window here is a second
+writer, and rocket_reset() is one: it is entered from
+rocket_job_timedout(), which an unprivileged client reaches by pointing
+drm_rocket_task.regcmd at an unmapped address, and it runs a submit path
+of its own while a completion may be between its two writes.
+
+Move both writes inside the existing scoped_guard.  Nothing else changes:
+the retire path was already under the lock, and the early return for a
+job with tasks left still unlocks through the guard.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_job.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 67e4f48a5..47f1e4c70 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -430,10 +430,15 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ {
+ 	pm_runtime_mark_last_busy(core->dev);
+ 
+-	rocket_pc_writel(core, OPERATION_ENABLE, 0x0);
+-	rocket_pc_writel(core, INTERRUPT_CLEAR, 0x1ffff);
++	scoped_guard(mutex, &core->job_lock) {
++		/*
++		 * Stopping the block belongs under the lock.  rocket_job_hw_submit()
++		 * writes OPERATION_ENABLE from inside it, so this zero landing after
++		 * that one stops a task that has only just started.
++		 */
++		rocket_pc_writel(core, OPERATION_ENABLE, 0x0);
++		rocket_pc_writel(core, INTERRUPT_CLEAR, 0x1ffff);
+ 
+-	scoped_guard(mutex, &core->job_lock)
+ 		if (core->in_flight_job) {
+ 			/*
+ 			 * A batched job advanced next_task_idx straight to task_count
+@@ -450,6 +455,7 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 			pm_runtime_put_autosuspend(core->dev);
+ 			core->in_flight_job = NULL;
+ 		}
++	}
+ }
+ 
+ static void
+-- 
+2.43.0

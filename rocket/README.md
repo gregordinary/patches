@@ -23,6 +23,7 @@ cherry-pick.
 | **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. Verified on RK3588 silicon, and on the RK3576 where the function is byte-identical. |
 | **Required** | `088-rocket-drv-reset-before-iommu-detach.patch` | Resets the NPU **before** detaching its IOMMU domain. Detaching a core that is still mid-DMA makes the `rk_iommu` stall handshake time out — a `dev_err` per MMU bank on every faulting job, and a **WARN in the IOMMU core** (a taint, and a panic under `panic_on_warn`) when the handshake behind the group's default domain fails too. Reached by any client of `/dev/accel` pointing one unvalidated `regcmd` field at an unmapped address. Needs `083`. |
 | **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
+| **Required** | `090-rocket-drv-irq-under-job-lock.patch` | Takes the completion's `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` under `job_lock`. `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside that lock, so the completion's zero can land after a submit's one and stop a task that has only just started. The second writer is `rocket_reset()`, which a client reaches through the same unvalidated `regcmd` IOVA as `088`. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -47,8 +48,8 @@ Four, and all of them are real (not just diff context):
   `083` introduces. On a tree without `083` there is a per-job detach instead, and the
   reordering has nothing to move.
 
-`081`, `083`, `084`, `085`, `087` and `089` each apply to a pristine tree on their own,
-in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
+`081`, `083`, `084`, `085`, `087`, `089` and `090` each apply to a pristine tree on their
+own, in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
 if you are unsure, just apply them lowest-number first.
 
 `087` in particular depends on nothing: the `fail:` path it removes the `kvfree()` from is
@@ -621,6 +622,28 @@ on all three cores, so nothing in tree is affected.
 this upstream, both copies have to be dropped by hand — `git am --3way` absorbs a
 redundant patch silently rather than rejecting it.
 
+## Completion under the job lock (`090-rocket-drv-irq-under-job-lock.patch`)
+
+`rocket_job_handle_irq()` wrote `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` before
+taking `job_lock`, while `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from
+inside it. The orderings are not equivalent: a completion's zero landing after a submit's
+one stops a task the hardware has only just been given, and the job then waits out its
+completion for a program that is no longer running — which the scheduler eventually calls
+a timeout, taking the core through a reset.
+
+One irqaction's thread is not re-entered concurrently, so the completion handler cannot
+race itself and the second writer has to come from somewhere else. `rocket_reset()` is
+that somewhere: it is entered from `rocket_job_timedout()`, which any client of
+`/dev/accel` reaches by pointing `drm_rocket_task.regcmd` at an unmapped address — the
+same unvalidated field `088` is about — and it drives the block while a completion may be
+between its two writes.
+
+Both writes move inside the existing `scoped_guard`. The retire path was already under
+the lock, and the early return for a job with tasks left still unlocks through the guard,
+so nothing else changes. `rk3576/npu` 0027 is the same change for that SoC, where the
+completion poll and the interrupt thread are separate contexts and make the two writers
+concurrent outright.
+
 ## NPU IRQ affinity (runtime knob, no patch)
 
 A companion runtime lever — no driver change, but in the same dispatch-floor family as the
@@ -673,6 +696,7 @@ git am --3way $P/086-rocket-drv-batched-submit.patch           # recommended; ne
 git am --3way $P/087-rocket-drv-fix-task-array-double-free.patch  # required (double-free fix)
 git am --3way $P/088-rocket-drv-reset-before-iommu-detach.patch    # required (IOMMU stall/WARN); needs 083
 git am --3way $P/089-rocket-drv-clocks-by-name.patch           # required (driver holds the wrong clocks)
+git am --3way $P/090-rocket-drv-irq-under-job-lock.patch       # required (completion vs submit race)
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 

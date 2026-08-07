@@ -72,6 +72,15 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # four clocks on all three cores, so the named lookup cannot fail here. rk3576/npu 0006
 # carries the same four lines for its own SoC; when a kernel arrives with 089 upstream,
 # both copies have to go.
+#
+# 090 takes rocket_job_handle_irq()'s OPERATION_ENABLE and INTERRUPT_CLEAR writes under
+# job_lock. rocket_job_hw_submit() writes OPERATION_ENABLE from inside that lock, so a
+# completion's zero landing after a submit's one stops a task that has only just
+# started. The threaded handler cannot race itself, so the second writer here is
+# rocket_reset() -- entered from rocket_job_timedout(), which a client reaches through
+# the same unvalidated regcmd IOVA that 088 covers. rk3576/npu 0027 is the same change
+# for that SoC, where the poll work and the interrupt thread make the two writers
+# concurrent outright.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -88,6 +97,7 @@ kernel = [
     "rocket/087-rocket-drv-fix-task-array-double-free.patch",
     "rocket/088-rocket-drv-reset-before-iommu-detach.patch",
     "rocket/089-rocket-drv-clocks-by-name.patch",
+    "rocket/090-rocket-drv-irq-under-job-lock.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
