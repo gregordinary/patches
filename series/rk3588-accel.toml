@@ -73,6 +73,15 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # carries the same four lines for its own SoC; when a kernel arrives with 089 upstream,
 # both copies have to go.
 #
+# 050 ends in a defconfig hunk (`CONFIG_VSI_IOMMU=m`), and that hunk is load bearing:
+# a consumer whose `base_defconfig` is the in-tree arm64 `defconfig` gets the AV1
+# decoder's IOMMU from here and from nowhere else, since no kconfig fragment sets it.
+# Upstream is re-sending the same line as part of "arm64: defconfig: enable Rockchip
+# Multimedia drivers" (Sebastian Reichel), the first attempt having been this series'
+# own 5/5. When a kernel arrives carrying it, 050's last hunk is a duplicate line
+# rather than a rejection -- the same silent-absorption trap 0004 has in the rk3576
+# series -- so re-curate 050 at that bump instead of trusting `git am --3way`.
+#
 # 090 takes rocket_job_handle_irq()'s OPERATION_ENABLE and INTERRUPT_CLEAR writes under
 # job_lock. rocket_job_hw_submit() writes OPERATION_ENABLE from inside that lock, so a
 # completion's zero landing after a submit's one stops a task that has only just
