@@ -26,7 +26,9 @@
 # lists instead of deciding from the SoC it matched, so the phandle count is a hardware
 # description and not a driver-dispatch signal. 0002 is rebased over rk3576-fixes (both
 # extend the pm-domains.c DOMAIN_RK3576 macro and table; the merge carries both the
-# .delay_us and .need_regulator arguments). 0007 corrects rknn_core_1, which sits at
+# .delay_us and .need_regulator arguments). 0003 tracks the RFC's current form, which
+# takes the domain's resets with dev_err_probe(), so a reset controller that has not
+# probed yet defers quietly instead of logging a failure. 0007 corrects rknn_core_1, which sits at
 # 0x27708000 -- the two cores are the halves of one 64 KB RKNN TOP window and 0x27710000
 # is the unrelated RKNN_NSP block -- gives it the two CBUF clocks its own IOMMU and
 # power domain already list, puts both NPU power domains on both core nodes, which

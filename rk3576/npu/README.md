@@ -60,6 +60,10 @@ is caught: `dtbs_check` names the property, at build time.
 **0006 attaches whatever `power-domains` the node lists**, rather than deciding from
 the SoC it matched. See "The power domains are not a board's job" below.
 
+**0003 tracks the RFC's current form**, which takes the power domain's resets with
+`dev_err_probe()` rather than `dev_err()`, so a reset controller that has not probed
+yet produces a `-EPROBE_DEFER` retry instead of a logged failure. It stays verbatim.
+
 **0002 is rebased over `rk3576-fixes`.** That series and this one both extend
 `drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
 the RK3576 power-domain table) -- one adds a `.need_regulator` argument, the other a
