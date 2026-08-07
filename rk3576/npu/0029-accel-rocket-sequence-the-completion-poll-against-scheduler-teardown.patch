@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: sequence the completion poll against scheduler
+ teardown
+
+rocket_job_fini() cancels the poll timer and its work and then calls
+drm_sched_fini().  In that order the cancel does not hold: a job still in
+flight retires through the poll, rocket_job_handle_irq() re-arms the next
+task, and rocket_job_hw_submit() starts the timer again behind the cancel
+that has already run.  What it fires into is a scheduler drm_sched_fini()
+is in the middle of tearing down, and a fence signalled from there belongs
+to a job that no longer has an owner.
+
+The two operations are not interchangeable and both are needed, so
+sequence them: stop the poll ACTING before the scheduler goes, and CANCEL
+it after, at a point where nothing can re-arm it.  A poll_dying flag does
+the first half -- the work item checks it and returns, which is enough,
+since the timer only ever queues that work.
+
+The flag is not a one-way latch.  struct rocket_core is allocated for the
+device, not for a binding, so it outlives an unbind whenever another core
+keeps the device alive; a core that came back would otherwise carry the
+dying flag from its previous teardown and never retire a job again.
+rocket_job_init() clears it.  On a single-core RK3576 every unbind is the
+last one and the array is reallocated, which is why the ROCK 4D and the
+H96 both miss this.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h |  8 ++++++++
+ drivers/accel/rocket/rocket_job.c  | 28 ++++++++++++++++++++++++++--
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 4779aa3a7..535e0dce4 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -123,6 +123,14 @@ struct rocket_core {
+ 	 */
+ 	unsigned int poll_seq;
+ 	unsigned int poll_work_seq;
++	/*
++	 * Set while the core is being torn down, to keep the poll from starting
++	 * hardware work the scheduler is no longer there to own.  Not a one-way
++	 * latch: struct rocket_core outlives an unbind whenever another core
++	 * stays bound, so rocket_job_init() clears it and a rebinding core polls
++	 * again.
++	 */
++	bool poll_dying;
+ 
+ 	struct drm_gpu_scheduler sched;
+ 	u64 fence_context;
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 5ce897aa9..e892c882e 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -714,6 +714,10 @@ static void rocket_poll_work_fn(struct work_struct *work)
+ {
+ 	struct rocket_core *core = container_of(work, struct rocket_core, poll_work);
+ 
++	/* The core is going away; rocket_job_fini() owns what is left. */
++	if (READ_ONCE(core->poll_dying))
++		return;
++
+ 	/*
+ 	 * The submit this work was queued for has already been retired -- by the
+ 	 * DMA-error interrupt thread, or by a reset.  Whatever is in flight now
+@@ -929,6 +933,13 @@ int rocket_job_init(struct rocket_core *core)
+ 	hrtimer_setup(&core->poll_timer, rocket_poll_timer_fn, CLOCK_MONOTONIC,
+ 		      HRTIMER_MODE_REL);
+ 	atomic_set(&core->poll_active, 0);
++	/*
++	 * Cleared, not merely initialised: this core may be one rocket_job_fini()
++	 * has already set, since struct rocket_core survives an unbind whenever
++	 * another core keeps the device around.  Leaving it set would give the
++	 * rebound core a poll that never retires anything.
++	 */
++	WRITE_ONCE(core->poll_dying, false);
+ 	spin_lock_init(&core->fence_lock);
+ 	mutex_init(&core->job_lock);
+ 
+@@ -970,12 +981,25 @@ int rocket_job_init(struct rocket_core *core)
+ 
+ void rocket_job_fini(struct rocket_core *core)
+ {
++	/*
++	 * The poll starts hardware work -- rocket_job_handle_irq() re-arms a
++	 * multi-task job's next task -- and drm_sched_fini() does not wait for a
++	 * work item already queued, so the two have to be sequenced rather than
++	 * merely both done.
++	 *
++	 * Stop the poll ACTING first, and CANCEL it after the scheduler is gone.
++	 * Cancelling first is the ordering that does not work: a job still in
++	 * flight re-arms the timer from hw_submit() behind the cancel, and it
++	 * then fires into a scheduler that drm_sched_fini() has torn down.
++	 */
++	WRITE_ONCE(core->poll_dying, true);
++
++	drm_sched_fini(&core->sched);
++
+ 	atomic_set(&core->poll_active, 0);
+ 	hrtimer_cancel(&core->poll_timer);
+ 	cancel_work_sync(&core->poll_work);
+ 
+-	drm_sched_fini(&core->sched);
+-
+ 	cancel_work_sync(&core->reset.work);
+ 	destroy_workqueue(core->reset.wq);
+ }
+-- 
+2.43.0
+

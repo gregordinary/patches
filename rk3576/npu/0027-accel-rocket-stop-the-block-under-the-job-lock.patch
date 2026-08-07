@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: stop the block under the job lock
+
+rocket_job_handle_irq() writes OPERATION_ENABLE = 0 and clears the
+interrupt state before it takes job_lock, while rocket_job_hw_submit()
+writes OPERATION_ENABLE = 1 from inside that lock.  The two orderings are
+not equivalent: a completion's zero that lands after a submit's one stops
+a task the hardware has only just been given, and the job then waits out
+its completion for a program that is no longer running.
+
+On RK3588, where the completion arrives as an interrupt, the two writers
+are the same threaded handler and the window needs the reset path to open
+it.  On RK3576 they are genuinely concurrent contexts -- the completion is
+sampled by a work item queued from the hrtimer, and the shared interrupt
+thread still handles the DMA-error bits -- so either can be inside
+hw_submit while the other is between its two writes.
+
+Move both writes inside the existing scoped_guard.  Nothing else changes:
+the retire path was already under the lock, and the early return for a
+job with tasks left still unlocks through the guard.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_job.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 4d835dc97..728442e66 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -740,10 +740,18 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 
+ 	pm_runtime_mark_last_busy(core->dev);
+ 
+-	rocket_pc_writel(core, OPERATION_ENABLE, 0x0);
+-	rocket_pc_writel(core, INTERRUPT_CLEAR, clear);
++	scoped_guard(mutex, &core->job_lock) {
++		/*
++		 * Stopping the block belongs under the lock.  rocket_job_hw_submit()
++		 * writes OPERATION_ENABLE from inside it, so this zero landing after
++		 * that one stops a task that has only just started -- and on RK3576
++		 * the two writers really are concurrent: the completion poll runs in
++		 * a work item and the DMA-error handler in the interrupt thread, and
++		 * both arrive here.
++		 */
++		rocket_pc_writel(core, OPERATION_ENABLE, 0x0);
++		rocket_pc_writel(core, INTERRUPT_CLEAR, clear);
+ 
+-	scoped_guard(mutex, &core->job_lock)
+ 		if (core->in_flight_job) {
+ 			/*
+ 			 * A batched job advanced next_task_idx straight to
+@@ -761,6 +769,7 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 			pm_runtime_put_autosuspend(core->dev);
+ 			core->in_flight_job = NULL;
+ 		}
++	}
+ }
+ 
+ static void
+-- 
+2.43.0
+

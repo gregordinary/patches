@@ -6,10 +6,11 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 8 to 25 are ours; patches 1-7 are patches 1-7 of the linux-rockchip RFC v2 series **"accel/rocket:
-RK3576 NPU (RKNN) enablement"** by Jiaxing Hu (`gahing@gahingwoo.com`), with their
-upstream commit messages and `Signed-off-by` lines intact. They compose after
-`rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
+Patches 0008 to 0029 are ours; 0001-0007 come from the linux-rockchip RFC
+series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
+(`gahing@gahingwoo.com`), with their upstream commit messages and `Signed-off-by` lines
+intact. They compose after `rk3576-fixes` on the RK3576 kernel and apply with
+`git am --3way`.
 
 | file | upstream subject |
 |------|------------------|
@@ -38,6 +39,10 @@ upstream commit messages and `Signed-off-by` lines intact. They compose after
 | 0023 | accel/rocket: do cache maintenance over named ranges of a BO (ours) |
 | 0024 | accel/rocket: do not let a stale poll retire the next job (ours) |
 | 0025 | accel/rocket: wait for the writing block, not for a deadline (ours) |
+| 0026 | accel/rocket: reset the cores this SoC acquired (ours) |
+| 0027 | accel/rocket: stop the block under the job lock (ours) |
+| 0028 | accel/rocket: do not touch a gated core from an idle poll (ours) |
+| 0029 | accel/rocket: sequence the completion poll against scheduler teardown (ours) |
 
 Four of the carried patches have local changes; the rest are verbatim.
 
@@ -99,6 +104,61 @@ consistent with the three, and the clock framework reference-counts the sharing.
 **Both core nodes list both power domains.** See
 [What a board `.dts` must do](#what-a-board-dts-must-do-and-why) for why a single entry
 fails, and why this belongs to the SoC and not to each board.
+
+## What 0026 to 0029 fix: four defects in the driver's own bookkeeping
+
+None of these is a property of the RK3576. They are places where the driver's
+accounting of its own state is wrong, three of them in code this series added and one
+of them in code the RK3588 shares (`rocket/090` is 0027 for that SoC).
+
+**0026 -- resetting a line that was never acquired.** `rocket_core_init()` takes the
+reset bulk with `soc->num_resets`, which is 1 here and 2 on the RK3588, while
+`rocket_core_reset()` still walked `ARRAY_SIZE(core->resets)`. `struct rocket_core` is
+`kzalloc`'d and the reset core accepts a `NULL` `rstc`, so the extra entry has been a
+pair of no-ops. It stops being harmless as soon as the missing reset is real: `srst_h`
+is not absent on this part, it is driven from the NPU power domain by 0003, and a
+reset that silently covers one of two lines reads identically in the source to one
+that covers one of one.
+
+**0027 -- the block stopped from outside the lock.** `rocket_job_handle_irq()` wrote
+`OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` before taking `job_lock`, while
+`rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside it. A completion's
+zero landing after a submit's one stops a task the hardware has only just been given,
+and the job then waits out a completion for a program that is no longer running. On
+this SoC the two writers are genuinely concurrent contexts -- the completion arrives
+through the poll work queued from the hrtimer, and the shared interrupt thread still
+handles the DMA-error bits -- so either can be inside `hw_submit()` while the other is
+between its two writes. Both writes are now inside the existing `scoped_guard`.
+
+**0028 -- an idle poll writing to a gated core.** The two writes above are an
+*acknowledgement* for an interrupt and nothing at all for the poll, which sampled a
+status register and has no hardware condition to end. When the submit the work was
+queued for has already been retired -- by the DMA-error thread, or by a reset -- and
+nothing was submitted behind it, there is no block left to stop; and that retire ran
+`pm_runtime_put_autosuspend()`, so the core may be runtime-suspended by the time the
+work is scheduled and the writes reach an NPU whose clocks are gated. 0024's
+`poll_seq` does not cover this case: it only advances in `rocket_job_hw_submit()`, so
+it catches a retire *followed by another submit* and not a retire with nothing behind
+it, where the work still looks current. `in_flight_job` is the state that separates
+them, so the poll now returns early when the core is idle. The interrupt path is
+unchanged -- its condition is level-triggered and `INTERRUPT_CLEAR` is what ends it,
+so it clears whatever is in flight, including nothing.
+
+**0029 -- a cancel that does not hold.** `rocket_job_fini()` cancelled the poll timer
+and its work and *then* called `drm_sched_fini()`. In that order the cancel does not
+stick: a job still in flight retires through the poll, `rocket_job_handle_irq()`
+re-arms the next task, and `rocket_job_hw_submit()` starts the timer again behind the
+cancel that already ran -- into a scheduler `drm_sched_fini()` is in the middle of
+tearing down. The two operations are not interchangeable and both are needed, so they
+are sequenced: a `poll_dying` flag stops the poll **acting** before the scheduler
+goes, and the timer and work are **cancelled** after, at a point where nothing can
+re-arm them. The flag is deliberately not a one-way latch. `struct rocket_core` is
+allocated for the device rather than for a binding, so it outlives an unbind whenever
+another core keeps the device alive, and a core that came back would otherwise carry
+the dying flag from its previous teardown and never retire a job again;
+`rocket_job_init()` clears it. On a single-core RK3576 -- the supported configuration
+-- every unbind is the last one and the array is reallocated, which is why no test on
+this hardware reaches it.
 
 ## What 0010 fixes, and why it is not RK3576-specific
 
@@ -808,3 +868,10 @@ bit-exact against a CPU model on real silicon (H96 MAX M9), and multi-task
 row-windowed programs are bit-exact submitted back to back with no gap. Re-sync from
 a later RFC revision by re-splitting the series into this directory and updating
 `series/rk3576-npu.toml`.
+
+**0026 to 0029 have not been on hardware.** They are reasoned from the source and
+build clean, and none of them changes what a correct submit does: 0026 and 0027 are
+the same operations with a different count and a different lock scope, and 0028 and
+0029 are paths a passing run does not take. Every measurement above stands, but the
+H96 has not been through a run with them applied -- the checks that would close that
+are a submit sweep unchanged and an unbind and rebind with a job in flight.

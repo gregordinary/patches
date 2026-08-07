@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: do not touch a gated core from an idle poll
+
+The completion poll queues a work item from the hrtimer and retires the
+job from rocket_job_handle_irq(), which opens with OPERATION_ENABLE = 0
+and INTERRUPT_CLEAR before it looks at what is in flight.  For an
+interrupt those two writes are the acknowledgement and have to happen
+whatever the state; for the poll they are neither.  It sampled a status
+register, so there is no condition to end, and if the submit it was
+queued for has already been retired -- by the DMA-error interrupt thread,
+or by a reset -- there is no block left to stop either.
+
+That retire also ran pm_runtime_put_autosuspend(), so by the time the
+work is scheduled the core may be runtime-suspended: the writes then
+reach an NPU whose clocks are gated, which on this SoC is not a lost
+write but a hang.
+
+poll_seq does not cover this.  It advances only in
+rocket_job_hw_submit(), so it catches a retire followed by another submit
+-- the case it was added for -- and not a retire with nothing behind it,
+where the work still looks current because nothing has been submitted
+since.  The state that distinguishes them is in_flight_job.
+
+Tell rocket_job_handle_irq() which path it is on and let the poll return
+early when the core is idle.  The interrupt path is unchanged: its
+condition is level-triggered, so it clears whatever is in flight,
+including nothing.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_job.c | 26 ++++++++++++++++++++++----
+ 1 file changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 728442e66..5ce897aa9 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -641,7 +641,7 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+ 	return fence;
+ }
+ 
+-static void rocket_job_handle_irq(struct rocket_core *core);
++static void rocket_job_handle_irq(struct rocket_core *core, bool from_poll);
+ 
+ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+ {
+@@ -723,10 +723,10 @@ static void rocket_poll_work_fn(struct work_struct *work)
+ 	if (core->poll_work_seq != core->poll_seq)
+ 		return;
+ 
+-	rocket_job_handle_irq(core);
++	rocket_job_handle_irq(core, true);
+ }
+ 
+-static void rocket_job_handle_irq(struct rocket_core *core)
++static void rocket_job_handle_irq(struct rocket_core *core, bool from_poll)
+ {
+ 	u32 clear = 0x1ffff;
+ 
+@@ -741,6 +741,24 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 	pm_runtime_mark_last_busy(core->dev);
+ 
+ 	scoped_guard(mutex, &core->job_lock) {
++		/*
++		 * The poll took no interrupt, so it has no hardware condition to
++		 * acknowledge: with the submit it was queued for already retired --
++		 * by the DMA-error thread or by a reset -- and nothing resubmitted
++		 * behind it, there is no block to stop and nothing to clear.  The
++		 * retire it missed also dropped the runtime-PM reference, so the
++		 * core can be suspended by now and these writes would reach a gated
++		 * NPU.  poll_seq does not cover this: it only advances in
++		 * rocket_job_hw_submit(), so a retire with no submit after it leaves
++		 * the work looking current.
++		 *
++		 * The interrupt path has the opposite obligation.  Its condition is
++		 * level-triggered and INTERRUPT_CLEAR is what ends it, so it clears
++		 * whatever is in flight, including nothing.
++		 */
++		if (from_poll && !core->in_flight_job)
++			return;
++
+ 		/*
+ 		 * Stopping the block belongs under the lock.  rocket_job_hw_submit()
+ 		 * writes OPERATION_ENABLE from inside it, so this zero landing after
+@@ -859,7 +877,7 @@ static irqreturn_t rocket_job_irq_handler_thread(int irq, void *data)
+ {
+ 	struct rocket_core *core = data;
+ 
+-	rocket_job_handle_irq(core);
++	rocket_job_handle_irq(core, false);
+ 
+ 	return IRQ_HANDLED;
+ }
+-- 
+2.43.0
+

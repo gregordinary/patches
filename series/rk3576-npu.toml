@@ -15,9 +15,9 @@
 # real silicon, including multi-task row-windowed programs submitted with no gap
 # between tasks.
 #
-# The series is patches 1-7 of the linux-rockchip RFC v2 "accel/rocket: RK3576 NPU
-# (RKNN) enablement" (Jiaxing Hu), plus 0008 from this repo. Patches 3-5 are verbatim;
-# 0001, 0002, 0006 and 0007 carry local changes. 0001 widens the binding to describe the
+# 0001-0007 come from the linux-rockchip RFC "accel/rocket: RK3576 NPU
+# (RKNN) enablement" (Jiaxing Hu); everything else is ours. 0003, 0004 and 0005 are
+# verbatim; 0001, 0002, 0006 and 0007 carry local changes. 0001 widens the binding to describe the
 # RK3576 node at all -- upstream constrains every countable property to the RK3588's
 # count, so the five register banks, six clocks, two power domains and one reset that
 # 0007 emits validate against nothing -- and pins the exact shape per compatible, which
@@ -31,9 +31,10 @@
 # is the unrelated RKNN_NSP block -- gives it the two CBUF clocks its own IOMMU and
 # power domain already list, and puts both NPU power domains on both core nodes, which
 # the part requires of every RK3576 core and so belongs to the SoC rather than to each
-# board. See rk3576/npu/README.md for all of them. Patch 8 of that RFC (enable NPU on
-# the Radxa Rock 4D) is dropped: the board enable is board-specific, and the H96 wires
-# its own via its device `.dts` (npu-supply = vdd_npu_s0 and status = "okay").
+# board. See rk3576/npu/README.md for all of them. The RFC's board patch
+# (enable NPU on the Radxa Rock 4D) is dropped: the board enable is board-specific,
+# and the H96 wires its own via its device `.dts` (npu-supply = vdd_npu_s0 and
+# status = "okay").
 #
 # 0008 is ours and is required for back-to-back submits. It gives rocket_soc_data a
 # task_number_bits field, because PC_TASK_CON's TASK_NUMBER is 12 bits wide on the
@@ -189,6 +190,30 @@
 # exists because a caller that sizes its programs has no other way to tell an older kernel,
 # where the failure is silent and looks like a capacity bound.
 #
+# 0026-0029 are ours and are four ways the driver's own bookkeeping is wrong rather
+# than four ways the hardware is. 0026 resets with soc->num_resets, the count the
+# resets were acquired with, instead of ARRAY_SIZE: on this SoC that walked an entry
+# nothing asked for, which the reset core absorbs as a no-op against a NULL rstc and
+# which stops being harmless now that 0003 makes srst_h a real line the power domain
+# drives. 0027 takes rocket_job_handle_irq()'s two register writes under job_lock.
+# rocket_job_hw_submit() writes OPERATION_ENABLE from inside that lock, so a
+# completion's zero landing after a submit's one stops a task that has only just
+# started; here the two writers are genuinely concurrent contexts, the poll work and
+# the shared interrupt thread, and either can be inside hw_submit while the other is
+# between its writes. 0028 stops the poll writing registers with nothing in flight.
+# An interrupt has a level-triggered condition that INTERRUPT_CLEAR ends, so it must
+# write whatever the state; the poll sampled a status register and has nothing to
+# acknowledge, and the retire it missed already dropped the runtime-PM reference, so
+# the core can be suspended and the write reaches a gated NPU. 0024's poll_seq does
+# not cover it -- that only advances in hw_submit, so a retire with nothing submitted
+# behind it leaves the work looking current -- and in_flight_job is the state that
+# does. 0029 sequences the poll against teardown: the poll starts hardware work and
+# drm_sched_fini() does not wait for a queued work item, so a poll_dying flag stops
+# it ACTING before the scheduler goes and the timer is CANCELLED after, where a job
+# in flight can no longer re-arm it from behind the cancel. The flag is cleared in
+# rocket_job_init(), because struct rocket_core outlives an unbind whenever another
+# core stays bound and a rebinding core would otherwise never retire again.
+#
 # Patch 6 gates the RK3576 support behind of_device_id match data
 # (rk3576_soc_data), so the RK3588 code path is byte-unchanged and the rk3588-accel
 # series is unaffected; 0008 keeps that property, since RK3588 at 12 bits still
@@ -227,6 +252,10 @@ kernel = [
     "rk3576/npu/0023-accel-rocket-do-cache-maintenance-over-named-ranges-of-a-bo.patch",
     "rk3576/npu/0024-accel-rocket-do-not-let-a-stale-poll-retire-the-next-job.patch",
     "rk3576/npu/0025-accel-rocket-wait-for-the-writing-block-not-for-a-deadline.patch",
+    "rk3576/npu/0026-accel-rocket-reset-the-cores-this-soc-acquired.patch",
+    "rk3576/npu/0027-accel-rocket-stop-the-block-under-the-job-lock.patch",
+    "rk3576/npu/0028-accel-rocket-do-not-touch-a-gated-core-from-an-idle-poll.patch",
+    "rk3576/npu/0029-accel-rocket-sequence-the-completion-poll-against-scheduler-teardown.patch",
 ]
 
 ffmpeg    = []

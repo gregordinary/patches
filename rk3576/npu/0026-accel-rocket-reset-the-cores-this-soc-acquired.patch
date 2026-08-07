@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 12:00:00 +0000
+Subject: [PATCH] accel/rocket: reset the cores this SoC acquired
+
+rocket_core_init() takes the reset bulk with soc->num_resets, one on
+RK3576 and two on RK3588, but rocket_core_reset() still walks
+ARRAY_SIZE(core->resets).  On RK3576 that asserts and deasserts an entry
+nothing acquired.
+
+Nothing has gone wrong so far because struct rocket_core is kzalloc'd
+and the reset core accepts a NULL rstc, so the extra entry is a pair of
+no-ops.  It stops being harmless the moment the missing reset is real:
+srst_h is not absent on RK3576, it is driven from the NPU power domain,
+so a reset here that silently covers one of two lines and a reset that
+covers one of one read the same in the code and differ on the hardware.
+
+Use the count the resets were acquired with.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
+index 9b4cf979e..86654521c 100644
+--- a/drivers/accel/rocket/rocket_core.c
++++ b/drivers/accel/rocket/rocket_core.c
+@@ -149,9 +149,14 @@ void rocket_core_fini(struct rocket_core *core)
+ 
+ void rocket_core_reset(struct rocket_core *core)
+ {
+-	reset_control_bulk_assert(ARRAY_SIZE(core->resets), core->resets);
++	/*
++	 * The same array rocket_core_init() acquired, so the same count: walking
++	 * ARRAY_SIZE() here reaches an entry no SoC asked for, which on RK3576 is
++	 * the srst_h its power domain drives instead.
++	 */
++	reset_control_bulk_assert(core->soc->num_resets, core->resets);
+ 
+ 	udelay(10);
+ 
+-	reset_control_bulk_deassert(ARRAY_SIZE(core->resets), core->resets);
++	reset_control_bulk_deassert(core->soc->num_resets, core->resets);
+ }
+-- 
+2.43.0
+
