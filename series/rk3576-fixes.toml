@@ -34,11 +34,24 @@ applies_to_kernel = ">=7.1, <7.2"
 # identity mapping the register already holds, so none of them can observe it.
 # Re-applying the routing from runtime_resume also keeps it across PM cycles.
 # Upstream-destined; this is a driver defect, not a board quirk.
+#
+# 104 arms the VDPU383's three reference read caches. The vendor driver
+# configures, invalidates and bounds them before every decode; mainline's HEVC
+# and H.264 backends issue no cache configuration at all, and cannot -- probe
+# maps only the "function" and "link" reg regions, so the window those registers
+# live in is never mapped, though rk3576.dtsi has described it all along. The
+# caches serve reads only, so this is throughput with decoded output unchanged;
+# a read_cache module parameter measures the two configurations against each
+# other without a rebuild. This one is on the SoC layer's decoder, so the base
+# h96-max-m9/forky image gets it too, not just media-accel. Upstream-destined
+# like the rest -- offered to the mainline maintainers, not merged, so unlike
+# 100-102 there is no landed commit to retire it against yet.
 kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
     "rk3576/kernel/102-arm64-dts-rk3576-cpu-caches.patch",
     "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
+    "rk3576/kernel/104-media-rkvdec-vdpu383-read-cache.patch",
 ]
 
 ffmpeg    = []

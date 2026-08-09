@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sun, 9 Aug 2026 12:00:00 -0400
+Subject: [PATCH] media: rkvdec: vdpu383: configure the reference read caches
+
+The VDPU383 has three reference read caches. The vendor driver arms them
+before every decode -- configure, invalidate, then bound the outstanding
+reads -- but this driver never has: probe maps only the "function" and
+"link" reg regions, so the window the cache registers live in is not even
+mapped, and both VDPU383 backends kick a decode with the caches in
+whatever state they were left in.
+
+Map the "cache" region and arm the caches from the HEVC and H.264
+backends immediately before the DEC_E kick.
+
+The region is optional. Only the VDPU383 variants have these caches, and
+a device tree predating them does not describe the window; leaving it
+unmapped costs throughput, not correctness, so a missing resource must
+not fail the probe.
+
+Measured on RK3576 (H96 MAX M9, 7.1.7), decoding 300-frame clips of
+real content through ffmpeg with the frames left in DRM PRIME. Repeats
+were interleaved between the two configurations and the medians taken;
+"before" is this driver's existing behaviour, reached through the
+read_cache module parameter this patch adds:
+
+  1080p H.264   97.5 ->  256.8 fps   2.63x
+  1080p HEVC   168.2 ->  429.8 fps   2.56x
+  4K    H.264   21.8 ->   68.6 fps   3.15x
+  4K    HEVC    46.6 ->  125.5 fps   2.69x
+
+Two content profiles were used at each point, one with deliberately poor
+reference locality and one with good; the spread across all eight clips
+was 2.44x to 3.15x. No IOMMU fault or decode timeout was seen in any run.
+
+The caches only ever serve reads, so decoded output does not change: on
+every HEVC clip the output hash is identical with the caches configured
+and not. H.264 output on this SoC is not reproducible run to run even
+without this patch -- an unmodified driver returns two different hashes
+across six decodes of the same clip -- so H.264 cannot be used to make
+that comparison either way. That is a separate defect.
+
+Register offsets, values and semantics follow the vendor driver
+(rockchip-linux/kernel, drivers/video/rockchip/mpp/mpp_rkvdec2.c): the
+three banks sit 0x40 apart at cache+0x1c/+0x5c/+0x9c for configuration
+and cache+0x10/+0x50/+0x90 for invalidation, and max-outstanding-reads
+is a single register at cache+0x18. The vendor quotes those offsets
+against a reg base of 0x27b00100, which is this driver's "function"
+base, and they land in the "cache" window rk3576.dtsi describes at
+0x27b00600.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../rockchip/rkvdec/rkvdec-vdpu383-h264.c     |  2 +
+ .../rockchip/rkvdec/rkvdec-vdpu383-hevc.c     |  2 +
+ .../rockchip/rkvdec/rkvdec-vdpu383-regs.h     | 16 +++++++
+ .../media/platform/rockchip/rkvdec/rkvdec.c   | 42 +++++++++++++++++++
+ .../media/platform/rockchip/rkvdec/rkvdec.h   |  6 +++
+ 5 files changed, 68 insertions(+)
+
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-h264.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-h264.c
+index fb4f849d7..acfd4b102 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-h264.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-h264.c
+@@ -516,6 +516,8 @@ static int rkvdec_h264_run(struct rkvdec_ctx *ctx)
+ 	timeout_threshold = h264_ctx->regs.common.reg013_core_timeout_threshold;
+ 	rkvdec_schedule_watchdog(rkvdec, timeout_threshold);
+ 
++	rkvdec_vdpu383_config_read_cache(rkvdec);
++
+ 	/* Start decoding! */
+ 	writel(timeout_threshold, rkvdec->link + VDPU383_LINK_TIMEOUT_THRESHOLD);
+ 	writel(0, rkvdec->link + VDPU383_LINK_IP_ENABLE);
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
+index 96d938ee7..156590683 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
+@@ -626,6 +626,8 @@ static int rkvdec_hevc_run(struct rkvdec_ctx *ctx)
+ 	timeout_threshold = hevc_ctx->regs.common.reg013_core_timeout_threshold;
+ 	rkvdec_schedule_watchdog(rkvdec, timeout_threshold);
+ 
++	rkvdec_vdpu383_config_read_cache(rkvdec);
++
+ 	/* Start decoding! */
+ 	writel(timeout_threshold, rkvdec->link + VDPU383_LINK_TIMEOUT_THRESHOLD);
+ 	writel(VDPU383_IP_CRU_MODE, rkvdec->link + VDPU383_LINK_IP_ENABLE);
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h
+index 04eb23297..2ecb953f8 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h
+@@ -42,6 +42,22 @@
+ #define VDPU383_STA_INT_SOFTRESET_RDY	(BIT(10) | BIT(11))
+ #define VDPU383_STA_INT_ALL		0x3ff
+ 
++/*
++ * Reference read caches, in the "cache" reg region. Three identical banks
++ * 0x40 apart; MAX_READS is a single register that bounds outstanding reads for
++ * the block as a whole, and happens to sit inside bank 0's range.
++ */
++#define VDPU383_NUM_CACHES		3
++#define VDPU383_CACHE_STRIDE		0x40
++#define VDPU383_CACHE_CLR(n)		(0x10 + (n) * VDPU383_CACHE_STRIDE)
++#define VDPU383_CACHE_SIZE(n)		(0x1c + (n) * VDPU383_CACHE_STRIDE)
++#define VDPU383_CACHE_CACHEABLE_ACCESS	BIT(0)
++#define VDPU383_CACHE_READ_ALLOCATE	BIT(1)
++#define VDPU383_CACHE_LINE_SIZE_64	BIT(4)
++
++#define VDPU383_CACHE_MAX_READS		0x18
++#define VDPU383_CACHE_MAX_READS_VAL	0x1c
++
+ struct vdpu383_regs_common {
+ 	u32 reg008_dec_mode;
+ 
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.c b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
+index 1d1e9bfef..14501fb7d 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
+@@ -34,6 +34,11 @@
+ #include "rkvdec-vdpu383-regs.h"
+ #include "rkvdec-rcb.h"
+ 
++static bool read_cache = true;
++module_param(read_cache, bool, 0644);
++MODULE_PARM_DESC(read_cache,
++		 "Enable the VDPU383 reference read caches (default 1; 0 to measure against)");
++
+ static bool rkvdec_image_fmt_match(enum rkvdec_image_fmt fmt1,
+ 				   enum rkvdec_image_fmt fmt2)
+ {
+@@ -1144,6 +1149,33 @@ void rkvdec_memcpy_toio(void __iomem *dst, void *src, size_t len)
+ #endif
+ }
+ 
++/*
++ * Arm the reference read caches for one decode. Call this from a VDPU383
++ * backend immediately before the DEC_E kick: the caches are configured and
++ * invalidated per decode, so that a run cannot hit lines left over from the
++ * previous frame's reference set.
++ *
++ * The caches only ever serve reads, so this changes throughput and nothing
++ * else -- decoded output is identical either way.
++ */
++void rkvdec_vdpu383_config_read_cache(struct rkvdec_dev *rkvdec)
++{
++	u32 cfg = VDPU383_CACHE_CACHEABLE_ACCESS | VDPU383_CACHE_READ_ALLOCATE |
++		  VDPU383_CACHE_LINE_SIZE_64;
++	unsigned int i;
++
++	if (!read_cache || !rkvdec->cache)
++		return;
++
++	for (i = 0; i < VDPU383_NUM_CACHES; i++)
++		writel(cfg, rkvdec->cache + VDPU383_CACHE_SIZE(i));
++
++	for (i = 0; i < VDPU383_NUM_CACHES; i++)
++		writel(1, rkvdec->cache + VDPU383_CACHE_CLR(i));
++
++	writel(VDPU383_CACHE_MAX_READS_VAL, rkvdec->cache + VDPU383_CACHE_MAX_READS);
++}
++
+ void rkvdec_schedule_watchdog(struct rkvdec_dev *rkvdec, u32 timeout_threshold)
+ {
+ 	/* Set watchdog at 2 times the hardware timeout threshold */
+@@ -1807,6 +1839,16 @@ static int rkvdec_probe(struct platform_device *pdev)
+ 		rkvdec->link = devm_platform_ioremap_resource_byname(pdev, "link");
+ 		if (IS_ERR(rkvdec->link))
+ 			return PTR_ERR(rkvdec->link);
++
++		/*
++		 * Optional: only the VDPU383 variants have reference read
++		 * caches, and a device tree predating them does not describe
++		 * the region. Leaving it unmapped costs throughput, not
++		 * correctness, so it must not fail the probe.
++		 */
++		rkvdec->cache = devm_platform_ioremap_resource_byname(pdev, "cache");
++		if (IS_ERR(rkvdec->cache))
++			rkvdec->cache = NULL;
+ 	}
+ 
+ 	ret = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.h b/drivers/media/platform/rockchip/rkvdec/rkvdec.h
+index a24be6638..5f3918205 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec.h
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.h
+@@ -136,6 +136,11 @@ struct rkvdec_dev {
+ 	struct clk *axi_clk;
+ 	void __iomem *regs;
+ 	void __iomem *link;
++	/*
++	 * Reference read caches. Only the VDPU383 variants describe this region,
++	 * so it is NULL on everything else.
++	 */
++	void __iomem *cache;
+ 	struct mutex vdev_lock; /* serializes ioctls */
+ 	struct delayed_work watchdog_work;
+ 	struct gen_pool *sram_pool;
+@@ -180,6 +185,7 @@ void rkvdec_run_preamble(struct rkvdec_ctx *ctx, struct rkvdec_run *run);
+ void rkvdec_run_postamble(struct rkvdec_ctx *ctx, struct rkvdec_run *run);
+ void rkvdec_memcpy_toio(void __iomem *dst, void *src, size_t len);
+ void rkvdec_schedule_watchdog(struct rkvdec_dev *rkvdec, u32 timeout_threshold);
++void rkvdec_vdpu383_config_read_cache(struct rkvdec_dev *rkvdec);
+ 
+ void rkvdec_quirks_disable_qos(struct rkvdec_ctx *ctx);
+ 
+-- 
+2.43.0
