@@ -113,12 +113,19 @@ kernel = [
 # materialized as an ordered `git am` series (0001-0004; one commit needs a 3-way
 # resolution a cherry-pick cannot reproduce — see media-accel/ffmpeg/README.md),
 # then the NV15/NV20 fix that scale_rkrga expects (0005).
+#
+# 0006 belongs to the base, not the graft: it teaches hwcontext_vulkan's DRM
+# importer the composed one-layer/N-plane descriptor that hwcontext_v4l2request
+# emits, which the importer rejects today for plain 8-bit NV12 against every
+# Vulkan driver. It shares no file with 0001-0005, and when the RK3576 series
+# gains an ffmpeg scope it wants this same patch: nothing in it is RK3588-specific.
 ffmpeg = [
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
     "media-accel/ffmpeg/0003-lavu-add-RKMPP-hwcontext.patch",
     "media-accel/ffmpeg/0004-lavf-rkrga-add-RKRGA-scale-vpp-and-overlay-filters.patch",
     "media-accel/ffmpeg/0005-rkrga-accept-v4l2request-10bit-nv15-nv20.patch",
+    "media-accel/ffmpeg/0006-hwcontext-vulkan-import-multiplanar-drm-frames.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
