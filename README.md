@@ -19,9 +19,11 @@ top of mainline.
 | [`rk3288/`](rk3288/) | RK3288 kernel fixes, written to upstream standards and meant to retire into stable. |
 | [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
 | [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
+| [`jellyfin/`](jellyfin/) | Jellyfin **server** patches for Rockchip boards on a mainline kernel. Not part of any series — no builder here compiles Jellyfin; apply them to a Jellyfin checkout and build with Jellyfin's own toolchain. |
 
 Each scope is **self-contained** and need not share a common internal layout —
-`rocket/` keeps the shape it had as its own repo.
+`rocket/` keeps the shape it had as its own repo, and `jellyfin/` is applied by
+hand rather than by a series.
 
 ## Series
 
