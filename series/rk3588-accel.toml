@@ -34,6 +34,21 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
 #
+# 073 bounds the HEVC tile counts. `num_tile_columns_minus1` and
+# `num_tile_rows_minus1` arrive from userspace as u8 and index fixed-size arrays --
+# the backends' own stack scratch and the control's own `column_width_minus1[20]` /
+# `row_height_minus1[22]` -- with no range check anywhere. The V4L2 core zeroes those
+# fields when TILES_ENABLED is clear but does not bound them when it is set, so
+# `compute_tiles_uniform()` loops to 256 writing a 20-entry stack array, and
+# `compute_tiles_non_uniform()` also reads past the control payload and writes what it
+# finds. Reachable by any local user in group `video`, and by anything feeding the
+# decoder controls parsed from an untrusted bitstream -- which is this project's
+# threat model, since a media server hands ffmpeg arbitrary files. The fix rejects in
+# `try_ctrl` rather than clamping, so a bad stream fails cleanly instead of decoding
+# wrong, and the bound is the uAPI array size, which is also the HEVC maximum -- no
+# conforming stream is refused. Not RK3588-specific: it fixes all three rkvdec HEVC
+# backends, so the RK3576 wants it too (see the sibling series' TODO).
+#
 # 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
 # it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
 # frees it again on the way out of the ioctl. Both reaching failures are ordinary
@@ -97,6 +112,7 @@ kernel = [
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
     "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
     "media-accel/kernel/072-rk3588-rga-dts.patch",
+    "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",

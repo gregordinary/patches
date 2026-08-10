@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 10 Aug 2026 00:25:28 -0400
+Subject: [PATCH] media: rkvdec: bound the HEVC tile counts before they index
+ arrays
+
+num_tile_columns_minus1 and num_tile_rows_minus1 arrive from userspace as
+u8 and reach fixed-size arrays without ever being range-checked.
+
+v4l2_ctrl_hevc_pps declares column_width_minus1[20] and row_height_minus1[22],
+and the three HEVC backends size their scratch to match: vdpu381 uses
+column_width[20]/row_height[22] and vdpu383 column_width[22]/row_height[22],
+both on the stack. compute_tiles_uniform() then loops to
+num_tile_columns_minus1 + 1 writing column_width[i], so a count of 255
+writes roughly 470 bytes past a 40-byte stack array.
+compute_tiles_non_uniform() additionally reads pps->column_width_minus1[i]
+with the same unbounded index, past the end of the control payload, and
+writes what it finds. The VDPU2-era backend has its own copy of the loop and
+reads the control arrays out of bounds the same way.
+
+The V4L2 core does not catch this. std_validate_compound() zeroes the tile
+fields when V4L2_HEVC_PPS_FLAG_TILES_ENABLED is clear, but when it is set
+both counts pass through unvalidated.
+
+Reject an out-of-range count in try_ctrl instead, so userspace gets -EINVAL
+at VIDIOC_S_EXT_CTRLS rather than the decoder corrupting its own stack. The
+uAPI array sizes are the HEVC maxima -- 20 tile columns and 22 tile rows --
+so nothing a conforming stream can produce is refused, and no decode that
+works today changes.
+
+/dev/videoN is group video, so this is reachable by any local user in that
+group, and by anything that feeds the decoder controls parsed from an
+untrusted bitstream.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../rockchip/rkvdec/rkvdec-hevc-common.c      | 23 +++++++++++++++++++
+ .../rockchip/rkvdec/rkvdec-hevc-common.h      |  2 ++
+ .../platform/rockchip/rkvdec/rkvdec-hevc.c    |  3 +++
+ .../rockchip/rkvdec/rkvdec-vdpu381-hevc.c     |  3 +++
+ .../rockchip/rkvdec/rkvdec-vdpu383-hevc.c     |  3 +++
+ 5 files changed, 34 insertions(+)
+
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
+index 3119f3bc9..ca1ed7309 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
+@@ -32,6 +32,29 @@ struct calculated_rps_st_set {
+ 	s32 delta_poc_s1[16];
+ };
+ 
++/*
++ * The tile counts index fixed-size arrays: the caller's own column_width[] and
++ * row_height[] in compute_tiles_uniform()/compute_tiles_non_uniform(), and the
++ * control's column_width_minus1[]/row_height_minus1[]. They arrive as u8 and the
++ * V4L2 core only zeroes them when TILES_ENABLED is clear, so an out-of-range count
++ * from userspace reaches those loops unclamped.
++ *
++ * The uAPI array sizes are also the HEVC maxima (20 tile columns, 22 tile rows),
++ * so bounding against them rejects nothing a conforming stream can produce.
++ */
++int rkvdec_hevc_validate_pps(struct rkvdec_ctx *ctx,
++			     const struct v4l2_ctrl_hevc_pps *pps)
++{
++	if (!(pps->flags & V4L2_HEVC_PPS_FLAG_TILES_ENABLED))
++		return 0;
++
++	if (pps->num_tile_columns_minus1 >= ARRAY_SIZE(pps->column_width_minus1) ||
++	    pps->num_tile_rows_minus1 >= ARRAY_SIZE(pps->row_height_minus1))
++		return -EINVAL;
++
++	return 0;
++}
++
+ void compute_tiles_uniform(struct rkvdec_hevc_run *run, u16 log2_min_cb_size,
+ 			   u16 width, u16 height, s32 pic_in_cts_width,
+ 			   s32 pic_in_cts_height, u16 *column_width, u16 *row_height)
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h
+index 6f4faca4c..ec80415d7 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h
+@@ -87,6 +87,8 @@ struct scaling_factor {
+ 	u8 reserved[4];		/*16Bytes align*/
+ };
+ 
++int rkvdec_hevc_validate_pps(struct rkvdec_ctx *ctx,
++			     const struct v4l2_ctrl_hevc_pps *pps);
+ void compute_tiles_uniform(struct rkvdec_hevc_run *run, u16 log2_min_cb_size,
+ 			   u16 width, u16 height, s32 pic_in_cts_width,
+ 			   s32 pic_in_cts_height, u16 *column_width, u16 *row_height);
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc.c
+index fd664ac63..7a4d0c0cb 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc.c
+@@ -601,6 +601,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+ 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_SPS)
+ 		return rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
+ 
++	if (ctrl->id == V4L2_CID_STATELESS_HEVC_PPS)
++		return rkvdec_hevc_validate_pps(ctx, ctrl->p_new.p_hevc_pps);
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c
+index bd68120b7..4e4749924 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c
+@@ -626,6 +626,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+ 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_SPS)
+ 		return rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
+ 
++	if (ctrl->id == V4L2_CID_STATELESS_HEVC_PPS)
++		return rkvdec_hevc_validate_pps(ctx, ctrl->p_new.p_hevc_pps);
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
+index 5170ca35f..d1aac3603 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
+@@ -639,6 +639,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+ 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_SPS)
+ 		return rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
+ 
++	if (ctrl->id == V4L2_CID_STATELESS_HEVC_PPS)
++		return rkvdec_hevc_validate_pps(ctx, ctrl->p_new.p_hevc_pps);
++
+ 	return 0;
+ }
+ 
+-- 
+2.43.0
