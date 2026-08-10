@@ -3,8 +3,8 @@
 
 `ffmpeg-rk` is a hybrid FFmpeg: mainline V4L2-request stateless **decode** from the
 Kwiboo base, with Rockchip **rkmpp encode** + **rkrga scale** grafted on from
-nyanmisaka. This scope is that graft plus the Vulkan import fix the hybrid needs,
-applied with `git am` onto the base.
+nyanmisaka. This scope carries that graft plus the fixes the hybrid needs, applied
+with `git am` onto the base.
 
 ## Series (apply order)
 
@@ -14,10 +14,41 @@ applied with `git am` onto the base.
 4. `0004-lavf-rkrga-add-RKRGA-scale-vpp-and-overlay-filters.patch`
 5. `0005-rkrga-accept-v4l2request-10bit-nv15-nv20.patch`
 6. `0006-hwcontext-vulkan-import-multiplanar-drm-frames.patch`
+7. `0007-rkrga-do-not-free-frame-owned-by-ff-filter-frame.patch`
+8. `0008-rkrga-clear-output-frame-crop-rectangle.patch`
+9. `0009-rkmppenc-validate-drm-descriptor-before-import.patch`
+10. `0010-hwcontext-rkmpp-free-mapping-on-non-linear-reject.patch`
+11. `0011-hwcontext-rkmpp-honour-device-level-cacheable-flags.patch`
+12. `0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch`
+13. `0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch`
 
 Patches 0001–0004 are the graft; 0005 normalizes the v4l2-request 10-bit planar
 tags to the semi-planar NV15/NV20 that `scale_rkrga` expects. 0006 is independent
 of the graft — it makes the base's own V4L2-request frames importable into Vulkan.
+0007–0013 are defect fixes in the grafted code.
+
+## 0007–0013 — defect fixes
+
+Each follows the patch that introduces the file it touches: 0007/0008 need 0004,
+0010–0012 need 0003, 0013 needs 0002. `rkmppenc.c` comes from the base, so 0009 has
+no graft dependency beyond `--enable-rkmpp`.
+
+| patch | defect |
+|---|---|
+| `0007` | **Use-after-free then double free.** Both RGA async delivery paths called `av_frame_free()` on a frame `ff_filter_frame()` had already taken. Its contract in `libavfilter/filters.h` says the receiving filter owns the frame on error, and it frees on every negative return — freeing its own parameter, which leaves the caller's pointer dangling. The queue's `queued` count also went unbalanced on that path. |
+| `0008` | Only `crop_top` was cleared on the output frame, so a crop the RGA had already applied propagated downstream and asked for a second one. `crop_left` is the field that leaks in practice; all four leak when a caller sets `apply_cropping = 0`. |
+| `0009` | **The encoder's DRM import trusted the descriptor.** No `nb_objects`/`nb_layers`/`nb_planes` checks before indexing them; `planes[1].offset / stride` with no check that the stride is non-zero, which is SIGFPE rather than an error; and a frame whose planes live in several dma-bufs imported object 0 and encoded whatever was at that offset. |
+| `0010` | The non-linear `ENOSYS` return leaked the mapping descriptor allocated just above it. |
+| `0011` | Cacheable buffers requested through the *device* context got no `DMA_BUF_IOCTL_SYNC` — only the frames-level flag was read. The effective answer is now decided once at map time so unmap cannot disagree. |
+| `0012` | The pool buffer size multiplied three `int`s before widening to `size_t`. Hardening: reaching `INT_MAX` needs roughly 13000×13000. |
+| `0013` | `nv15_20ToPlanarWrapper` stepped whole 5-byte groups (`src_w / 4`, `chrSrcW / 2`), dropping up to three luma samples and one chroma pair at the end of a row. 1920 and 3840 divide cleanly; 1366 loses two pixels per row. The chroma *slice height* truncation is deliberately left alone — see the patch. |
+
+Origins are `yisding/rock-5b-ysp`'s fix-candidate list, re-derived against this tree
+rather than ported: two of the defects it describes are not present here, and 0009's
+divide-by-zero and 0010's leak are not in it.
+
+**None of the seven has run on hardware.** They compile warning-clean and the series
+reproduces byte-for-byte; that is not the same claim.
 
 ## 0006 — multi-planar DRM import
 

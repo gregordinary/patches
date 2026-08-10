@@ -119,6 +119,24 @@ kernel = [
 # emits, which the importer rejects today for plain 8-bit NV12 against every
 # Vulkan driver. It shares no file with 0001-0005, and when the RK3576 series
 # gains an ffmpeg scope it wants this same patch: nothing in it is RK3588-specific.
+#
+# 0007-0013 are defect fixes in the grafted code, so each one follows the patch
+# that introduces the file it touches: 0007/0008 need 0004's rkrga filters,
+# 0010-0012 need 0003's RKMPP hwcontext, and 0013 needs 0002's swscale converter.
+# 0009 is the exception — `rkmppenc.c` comes from the base — but it is grouped
+# here because it only compiles under `--enable-rkmpp`, which is the graft's
+# configure surface.
+#
+# The two that matter are 0007 and 0009. 0007 is a use-after-free followed by a
+# double free: both RGA async delivery paths called `av_frame_free()` on a frame
+# `ff_filter_frame()` had already taken and freed, which its own contract in
+# `libavfilter/filters.h` says it does on every error return. 0009 is the
+# encoder's DRM import reading `layers[0]`, `planes[0..1]` and `objects[0]` with
+# no count checks, dividing by a stride it never checks for zero, and silently
+# importing object 0 for a frame whose planes live elsewhere.
+#
+# None of the seven has run on hardware. They compile warning-clean and the
+# series reproduces byte-for-byte, which is not the same thing.
 ffmpeg = [
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
@@ -126,6 +144,13 @@ ffmpeg = [
     "media-accel/ffmpeg/0004-lavf-rkrga-add-RKRGA-scale-vpp-and-overlay-filters.patch",
     "media-accel/ffmpeg/0005-rkrga-accept-v4l2request-10bit-nv15-nv20.patch",
     "media-accel/ffmpeg/0006-hwcontext-vulkan-import-multiplanar-drm-frames.patch",
+    "media-accel/ffmpeg/0007-rkrga-do-not-free-frame-owned-by-ff-filter-frame.patch",
+    "media-accel/ffmpeg/0008-rkrga-clear-output-frame-crop-rectangle.patch",
+    "media-accel/ffmpeg/0009-rkmppenc-validate-drm-descriptor-before-import.patch",
+    "media-accel/ffmpeg/0010-hwcontext-rkmpp-free-mapping-on-non-linear-reject.patch",
+    "media-accel/ffmpeg/0011-hwcontext-rkmpp-honour-device-level-cacheable-flags.patch",
+    "media-accel/ffmpeg/0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch",
+    "media-accel/ffmpeg/0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
