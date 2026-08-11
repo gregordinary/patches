@@ -170,7 +170,14 @@ ffmpeg = [
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
-# default_cma_region heap so VEPU580 encode works against the mainline kernel.
+# default_cma_region heap so VEPU580 encode works against the mainline kernel, and
+# mark every heap entry cacheable, because that heap's mapping is. An entry left
+# claiming MPP_ALLOC_FLAG_NONE is a false statement about the memory: MPP skips
+# DMA_BUF_IOCTL_SYNC for it, and the encoder's own stream buffer -- CPU-written
+# parameter sets and SEI, VPU-written slice data, one buffer -- never becomes
+# coherent. That produces a packet of the right length whose every IDR has garbage
+# where the slice start code belongs, which is a defect no encode test catches
+# unless it decodes its own output.
 userspace = [
     "media-accel/userspace/001-mpp-allocator-dma-heap-mainline-cma.patch",
 ]
