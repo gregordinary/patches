@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Detlev Casanova <detlev.casanova@collabora.com>
+Date: Mon, 10 Aug 2026 11:22:13 -0400
+Subject: [PATCH] v4l2: export v4l2_m2m_set_max_parallel_jobs
+
+---
+Detlev Casanova's "media: rkvdec: Enable multi-core support" v2, patch 3/5,
+posted 2026-08-10, state `New` as of 2026-08-13:
+https://patchwork.kernel.org/project/linux-rockchip/list/?series=1143522
+
+Carried with the empty commit message and missing Signed-off-by it was posted
+with. The series' cover letter says why: "The v4l2 commit is not signed as it
+should be part of Sven's patch set v2." It exports the symbol 030 adds, so the
+two retire together.
+
+Regenerated against this series' base, v7.1.7 (c7ba9d6d); the change is
+identical to the posting.
+
+ drivers/media/v4l2-core/v4l2-mem2mem.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/media/v4l2-core/v4l2-mem2mem.c b/drivers/media/v4l2-core/v4l2-mem2mem.c
+index 14ac9c858..f6f8864f2 100644
+--- a/drivers/media/v4l2-core/v4l2-mem2mem.c
++++ b/drivers/media/v4l2-core/v4l2-mem2mem.c
+@@ -128,6 +128,7 @@ void v4l2_m2m_set_max_parallel_jobs(struct v4l2_m2m_dev *m2m_dev,
+ {
+ 	m2m_dev->max_parallel_jobs = max_parallel_jobs;
+ }
++EXPORT_SYMBOL(v4l2_m2m_set_max_parallel_jobs);
+ 
+ struct vb2_queue *v4l2_m2m_get_vq(struct v4l2_m2m_ctx *m2m_ctx,
+ 				       enum v4l2_buf_type type)
+-- 
+2.43.0

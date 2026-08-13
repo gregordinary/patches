@@ -8,13 +8,18 @@ series fits together.
 
 ## Series (apply order)
 
-1. `040-vdpu381-multicore-v1-curated.patch`
-2. `050-av1-iommu-v14-curated.patch`
-3. `060-vepu580-rcawston-v3.patch`
-4. `070-rga-multicore-vendor-oot.patch`
-5. `071-rga-multicore-7.1-fixups.patch`
-6. `072-rk3588-rga-dts.patch`
-7. `073-rkvdec-hevc-bound-tile-counts.patch`
+1. `030-v4l2-mem2mem-parallel-jobs.patch`
+2. `041-rkvdec-rcb-correct-size.patch`
+3. `042-rkvdec-remove-unused-need-reset.patch`
+4. `043-v4l2-export-max-parallel-jobs.patch`
+5. `044-rkvdec-split-core-and-master.patch`
+6. `045-rkvdec-multicore.patch`
+7. `050-av1-iommu-v14-curated.patch`
+8. `060-vepu580-rcawston-v3.patch`
+9. `070-rga-multicore-vendor-oot.patch`
+10. `071-rga-multicore-7.1-fixups.patch`
+11. `072-rk3588-rga-dts.patch`
+12. `073-rkvdec-hevc-bound-tile-counts.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -24,10 +29,20 @@ in without renumbering a committed series.
 
 The patches here come from different places, and they age differently:
 
-- **`040` / `050` — mainline-track, curated.** Stateless V4L2 decode and the AV1 helper
-  library, taken from upstream posting series and curated to apply as one. These are the
-  patches most likely to be absorbed by mainline, which retires them: a patch that stops
-  applying because the code is already there is an upper bound on its range, not a break.
+- **`030` / `041`–`045` — two unmerged upstream series, vendored whole.** `041`–`045` are
+  Detlev Casanova's rkvdec multi-core v2 series, one file per posted patch, and `030` is
+  the one patch of Pengutronix's RGA multi-core series they depend on:
+  `v4l2_m2m_set_max_parallel_jobs()`, which no released kernel has. Each file names its
+  patchwork series and msgid in the region after `---`. The pair retires as a pair — when
+  a kernel arrives carrying the merged rkvdec series, all six are deleted rather than
+  rebased, because `030` and `043` exist only for as long as the symbol is unexported.
+  `030` is the one with reach beyond this driver: it rewrites five functions in
+  `v4l2-mem2mem.c` for every m2m driver in the image, defaulting them to the
+  one-job-at-a-time behaviour they have today.
+- **`050` — mainline-track, curated.** The AV1 helper library, taken from an upstream
+  posting series and curated to apply as one. It is the patch most likely to be absorbed
+  by mainline, which retires it: a patch that stops applying because the code is already
+  there is an upper bound on its range, not a break.
 - **`060` — out-of-tree by its author's intent.** The VEPU580 encoder is an OOT driver on
   the MPP framework, explicitly not offered for upstream, so it does not retire on its
   own — it stays until something replaces it.

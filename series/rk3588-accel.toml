@@ -31,6 +31,43 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # any userspace declaring the pre-@flags size. The npu-clk and BO-use-after-free
 # patches are the ones that matter; the rest raise the performance ceiling.
 #
+# 030 and 041-045 are the rkvdec multi-core stack, and they are one decision
+# taken in two scopes. 041-045 are Detlev Casanova's "media: rkvdec: Enable
+# multi-core support" v2 (patchwork series 1143522), carried as five files
+# because that is what it is: an upstream series whose patches read in order.
+# 041 sizes the RCB buffer per run so a resolution change cannot overflow it,
+# 042 removes a dead need_reset check, 044 restructures rkvdec into split core
+# and master platform drivers on the component framework, and 045 drives both
+# hardware cores behind the single /dev/video0 -- one job per m2m context, but N
+# streams across N cores. 043 exports v4l2_m2m_set_max_parallel_jobs(), which 045
+# calls.
+#
+# 030 is why 043 has something to export. The function is in no released kernel:
+# it comes from Sven Puschel's "Rockchip RGA multi-core" series (patchwork 1106861,
+# patch 05/17), which is unmerged, so there is no commit to backport and the patch
+# itself has to be vendored. It sorts ahead of the rkvdec patches because the whole
+# series depends on it, and it is a separate file from them so it can be deleted on
+# its own. Its blast radius is the reason to name it here rather than fold it in:
+# it deletes curr_ctx from struct v4l2_m2m_dev and rewrites v4l2_m2m_try_run(),
+# _v4l2_m2m_job_finish(), v4l2_m2m_get_curr_priv(), v4l2_m2m_suspend() and
+# v4l2_m2m_streamoff() for every m2m driver in the kernel, not just rkvdec. The
+# image builds others -- the two hantro nodes, VP8/MPEG decode and VEPU121 JPEG
+# encode, go through the same core. max_parallel_jobs defaults to 1 in
+# v4l2_m2m_init(), so every driver that does not set it keeps one-job-at-a-time
+# behaviour.
+#
+# What this buys is concurrency headroom, not speed. A context is never run twice
+# in parallel, so a single stream cannot use both cores and no decode gets shorter;
+# what rises is how many independent streams the decoder sustains before frames
+# drop. It is taken for maintenance alignment: both series are aimed at mainline,
+# so a kernel that carries them absorbs this instead of colliding with it.
+#
+# Both are unmerged and both retire together: when a kernel this project bumps to
+# carries the merged rkvdec series, 041-045 are dropped rather than rebased, and
+# 030 and 043 go with them. rk3576/kernel/104 needs re-curation at that same bump
+# -- it conflicts with 044 in four files and `git am --3way` cannot resolve it. It
+# is named here because this is where that was found, not because it is RK3588 work.
+#
 # The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
 #
@@ -152,7 +189,12 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # those is a reason to hold the series out of a build, and all of them are a reason to
 # expect a v4 and to re-sync rather than to carry these files forever.
 kernel = [
-    "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
+    "media-accel/kernel/030-v4l2-mem2mem-parallel-jobs.patch",
+    "media-accel/kernel/041-rkvdec-rcb-correct-size.patch",
+    "media-accel/kernel/042-rkvdec-remove-unused-need-reset.patch",
+    "media-accel/kernel/043-v4l2-export-max-parallel-jobs.patch",
+    "media-accel/kernel/044-rkvdec-split-core-and-master.patch",
+    "media-accel/kernel/045-rkvdec-multicore.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
     "media-accel/kernel/060-vepu580-rcawston-v3.patch",
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",

@@ -12,7 +12,12 @@ Validated together on Turing RK1 (RK3588) + mainline kernel 7.1-rc6.
 
 | Patch | What it enables | Target / notes |
 |-------|-----------------|----------------|
-| `040-vdpu381-multicore-v1-curated.patch` | VDPU381 H.264/HEVC stateless **decode**, multi-core | mainline V4L2 stateless; curated v1 |
+| `030-v4l2-mem2mem-parallel-jobs.patch` | `v4l2_m2m_set_max_parallel_jobs()`, so one m2m device can run N jobs | Pengutronix RGA series 05/17, unmerged; core change, every m2m driver |
+| `041-rkvdec-rcb-correct-size.patch` | Re-sizes the RCB buffer per run, so a resolution change cannot overflow it | rkvdec multi-core v2 1/5 |
+| `042-rkvdec-remove-unused-need-reset.patch` | Drops a dead `need_reset` check | rkvdec multi-core v2 2/5 |
+| `043-v4l2-export-max-parallel-jobs.patch` | Exports the symbol `045` calls | rkvdec multi-core v2 3/5; placeholder, retires with `030` |
+| `044-rkvdec-split-core-and-master.patch` | Splits rkvdec into core and master platform drivers on the component framework | rkvdec multi-core v2 4/5; the restructure `rk3576/104` collides with |
+| `045-rkvdec-multicore.patch` | Both VDPU381 **decode** cores behind one `/dev/video0` | rkvdec multi-core v2 5/5; N streams over N cores, no single-stream gain |
 | `050-av1-iommu-v14-curated.patch` | AV1 **decode** (AV1 helper lib) + Verisilicon IOMMU | curated v14; helper-lib refactor may force re-curation on rebase |
 | `060-vepu580-rcawston-v3.patch` | VEPU580 H.264/HEVC hardware **encode** | rcawston OOT driver (MPP framework), RK3588; author "not for upstream" |
 | `070-rga-multicore-vendor-oot.patch` | RGA 2D **scale / CSC / blend** via `/dev/rga` | vendor multicore OOT driver (3 cores); the ABI `librga.so` speaks |
