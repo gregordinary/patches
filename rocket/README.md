@@ -1,6 +1,6 @@
 # rocket — RK3588 NPU kernel patches
 
-Eight patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+Eleven patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
@@ -8,8 +8,8 @@ and job hooks, so the NPU power domain is always powered first: a register acces
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
 **Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
-only configuration the userspace projects' published figures describe. Five of the eight are
-required: four of them fix bugs that can crash the kernel, and the fifth is the one that
+only configuration the userspace projects' published figures describe. Eight of the eleven are
+required: four of them fix bugs that can crash the kernel, and one is the one that
 makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume.
 Exactly one — the voltage patch — costs you nothing to omit at today's operating point. The
 tiers below say what you give up by leaving a patch out; they are not an invitation to
@@ -24,6 +24,7 @@ cherry-pick.
 | **Required** | `088-rocket-drv-reset-before-iommu-detach.patch` | Resets the NPU **before** detaching its IOMMU domain. Detaching a core that is still mid-DMA makes the `rk_iommu` stall handshake time out — a `dev_err` per MMU bank on every faulting job, and a **WARN in the IOMMU core** (a taint, and a panic under `panic_on_warn`) when the handshake behind the group's default domain fails too. Reached by any client of `/dev/accel` pointing one unvalidated `regcmd` field at an unmapped address. Needs `083`. |
 | **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
 | **Required** | `090-rocket-drv-irq-under-job-lock.patch` | Takes the completion's `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` under `job_lock`. `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside that lock, so the completion's zero can land after a submit's one and stop a task that has only just started. The second writer is `rocket_reset()`, which a client reaches through the same unvalidated `regcmd` IOVA as `088`. |
+| **Required** | `091-rocket-drv-irq-sync-before-reset.patch` | `090`'s other half. `rocket_reset()` calls `drm_sched_stop()`, which stops the scheduler and returns without waiting for a threaded handler that is already running — so the comment that followed it, "Remaining interrupts have been handled", stated an assumption rather than something the code arranged. A `synchronize_irq()` between the stop and the `job_lock` guard makes it true. Igor Paunovic's, from the v8 posting of the RK3576 series. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -48,7 +49,7 @@ Four, and all of them are real (not just diff context):
   `083` introduces. On a tree without `083` there is a per-job detach instead, and the
   reordering has nothing to move.
 
-`081`, `083`, `084`, `085`, `087`, `089` and `090` each apply to a pristine tree on their
+`081`, `083`, `084`, `085`, `087`, `089`, `090` and `091` each apply to a pristine tree on their
 own, in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
 if you are unsure, just apply them lowest-number first.
 
@@ -56,6 +57,11 @@ if you are unsure, just apply them lowest-number first.
 mainline's, so the double free is reachable on a tree with none of the others applied. `085`
 adds a second way *into* that path — a submit carrying a trailing field the kernel does not
 know — but it does not create the bug.
+
+`091` is correct on its own too — `synchronize_irq()` after `drm_sched_stop()` fences a
+running handler whatever else is applied. What `090` changes is only *where* it may go:
+once the handler holds `job_lock` for its whole body, the wait can no longer be moved
+inside the guard, and the comment in `091` says so.
 
 ## The uAPI header is part of the kernel you build
 

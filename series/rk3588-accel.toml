@@ -90,6 +90,20 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # the same unvalidated regcmd IOVA that 088 covers. rk3576/npu 0027 is the same change
 # for that SoC, where the poll work and the interrupt thread make the two writers
 # concurrent outright.
+#
+# 091 is 090's other half and Igor Paunovic's observation, from the v8 posting of the
+# RK3576 series. rocket_reset() calls drm_sched_stop(), which stops the scheduler and
+# returns; it does not wait for a threaded handler that is already running, so the
+# comment that followed it -- "Remaining interrupts have been handled" -- stated an
+# assumption rather than something the code arranged. A handler mid-flight when the
+# reset starts keeps running against a core rocket_core_reset() is about to put through
+# a reset, and against an in_flight_job the reset has already dropped. The
+# synchronize_irq() has to sit between drm_sched_stop() and the job_lock guard: after
+# 090 the handler holds job_lock for its whole body, so waiting for it from inside that
+# lock would deadlock rather than fence anything, and both callers run in process
+# context so sleeping there is allowed. It does not close the window where a handler
+# has already read in_flight_job -- that is 090's -- and the two are complementary.
+# rk3576/npu 0028 is the same change for that SoC.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -107,6 +121,7 @@ kernel = [
     "rocket/088-rocket-drv-reset-before-iommu-detach.patch",
     "rocket/089-rocket-drv-clocks-by-name.patch",
     "rocket/090-rocket-drv-irq-under-job-lock.patch",
+    "rocket/091-rocket-drv-irq-sync-before-reset.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
