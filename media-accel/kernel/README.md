@@ -13,6 +13,8 @@ series fits together.
 3. `060-vepu580-rcawston-v3.patch`
 4. `070-rga-multicore-vendor-oot.patch`
 5. `071-rga-multicore-7.1-fixups.patch`
+6. `072-rk3588-rga-dts.patch`
+7. `073-rkvdec-hevc-bound-tile-counts.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -20,7 +22,7 @@ in without renumbering a committed series.
 
 ## Provenance, and what that implies
 
-The four scopes here come from different places, and they age differently:
+The patches here come from different places, and they age differently:
 
 - **`040` / `050` — mainline-track, curated.** Stateless V4L2 decode and the AV1 helper
   library, taken from upstream posting series and curated to apply as one. These are the
@@ -33,6 +35,14 @@ The four scopes here come from different places, and they age differently:
   and `071` is the forward-port that keeps it building on a newer kernel. This pair is
   where a kernel bump most often lands: `070` is the driver, `071` is the delta that
   tracks the kernel, so a rework normally touches `071` alone.
+- **`072` — our own devicetree wiring.** The RGA driver in `070` is SoC-neutral, so each
+  SoC points its own nodes at it; this is the RK3588's.
+- **`073` — our own defect fix, upstream-shaped.** A missing bound on the HEVC tile
+  counts, which index fixed-size arrays in all three rkvdec HEVC backends and are not
+  range-checked by the V4L2 core. It is not Rockchip-configuration work and carries no
+  vendor code, so unlike everything above it is offerable to mainline as-is; it retires
+  when an equivalent bound lands there. See the patch header for the reachability
+  argument.
 
 Anything NPU-shaped lives in the sibling [`../../rocket/`](../../rocket/) scope, which
 has its own dependency notes.
