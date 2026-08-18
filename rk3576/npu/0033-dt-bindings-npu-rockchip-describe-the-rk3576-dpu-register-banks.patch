@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 12:00:00 +0000
+Subject: [PATCH] dt-bindings: npu: rockchip: describe the RK3576 DPU
+ register banks
+
+The RK3576 core node this series emits carries five register banks, not
+three: the driver retires a job on the DPU's own completion rather than
+on PC_DONE, and reads the DPU and DPU-RDMA status registers to do it, so
+both banks have to be mapped.  The schema pins reg and reg-names at
+exactly three, so those nodes do not validate.
+
+Widen the shared properties to three-to-five and pin each SoC back to
+its own count in the allOf that is already there, the same way the
+clocks, power domains and resets are pinned.  RK3588 keeps exactly
+three, so nothing loosens for it.
+
+Add an RK3576 example, which is what exercises the widened shape.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../npu/rockchip,rk3588-rknn-core.yaml        | 47 ++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml b/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml
+index 3b611b64c..6fa4532bc 100644
+--- a/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml
++++ b/Documentation/devicetree/bindings/npu/rockchip,rk3588-rknn-core.yaml
+@@ -25,13 +25,17 @@ properties:
+       - rockchip,rk3588-rknn-core
+ 
+   reg:
+-    maxItems: 3
++    minItems: 3
++    maxItems: 5
+ 
+   reg-names:
++    minItems: 3
+     items:
+       - const: pc # Program Control-related registers
+       - const: cna # Convolution Neural Network Accelerator registers
+       - const: core # Main NPU core processing unit registers
++      - const: dpu # Data Processing Unit registers
++      - const: dpu_rdma # Read DMA of the Data Processing Unit
+ 
+   clocks:
+     minItems: 4
+@@ -92,6 +96,10 @@ allOf:
+             const: rockchip,rk3588-rknn-core
+     then:
+       properties:
++        reg:
++          maxItems: 3
++        reg-names:
++          maxItems: 3
+         clocks:
+           maxItems: 4
+         clock-names:
+@@ -106,6 +114,10 @@ allOf:
+         - sram-supply
+     else:
+       properties:
++        reg:
++          minItems: 5
++        reg-names:
++          minItems: 5
+         clocks:
+           minItems: 6
+         clock-names:
+@@ -150,4 +162,37 @@ examples:
+         sram-supply = <&vdd_npu_mem_s0>;
+       };
+     };
++
++  - |
++    #include <dt-bindings/clock/rockchip,rk3576-cru.h>
++    #include <dt-bindings/interrupt-controller/irq.h>
++    #include <dt-bindings/interrupt-controller/arm-gic.h>
++    #include <dt-bindings/power/rockchip,rk3576-power.h>
++    #include <dt-bindings/reset/rockchip,rk3576-cru.h>
++
++    bus {
++      #address-cells = <2>;
++      #size-cells = <2>;
++
++      npu@27700000 {
++        compatible = "rockchip,rk3576-rknn-core";
++        reg = <0x0 0x27700000 0x0 0x1000>,
++              <0x0 0x27701000 0x0 0x1000>,
++              <0x0 0x27703000 0x0 0x1000>,
++              <0x0 0x27704000 0x0 0x1000>,
++              <0x0 0x27705000 0x0 0x1000>;
++        reg-names = "pc", "cna", "core", "dpu", "dpu_rdma";
++        clocks = <&cru ACLK_RKNN0>, <&cru HCLK_RKNN_ROOT>,
++                 <&cru CLK_RKNN_DSU0>, <&cru PCLK_NPUTOP_ROOT>,
++                 <&cru ACLK_RKNN_CBUF>, <&cru HCLK_RKNN_CBUF>;
++        clock-names = "aclk", "hclk", "npu", "pclk",
++                      "aclk_cbuf", "hclk_cbuf";
++        interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;
++        iommus = <&rknn_mmu_0>;
++        npu-supply = <&vdd_npu_s0>;
++        power-domains = <&power RK3576_PD_NPU0>, <&power RK3576_PD_NPU1>;
++        resets = <&cru SRST_A_RKNN0>;
++        reset-names = "srst_a";
++      };
++    };
+ ...
+-- 
+2.43.0
+

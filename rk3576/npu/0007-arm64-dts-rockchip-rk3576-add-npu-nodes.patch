@@ -3,26 +3,53 @@ From: Jiaxing Hu <gahing@gahingwoo.com>
 Date: Sat, 18 Jul 2026 15:11:45 +1200
 Subject: [PATCH] arm64: dts: rockchip: rk3576: add NPU (RKNN) nodes
 
-Add the RK3576 NPU: rknn_core_0/1 and rknn_mmu_0/1, with register
-addresses, GIC_SPI 247/248 interrupts, clocks, resets and power-domains.
+Add the two RKNN cores and their IOMMUs.  Both cores are disabled by
+default; boards enable what they wire up.
 
-Run the full RKNN clock set (CLK_RKNN_DSU0, ACLK_RKNN0/1, HCLK_RKNN_ROOT,
-ACLK/HCLK_RKNN_CBUF) during the NPU0/NPU1 power transitions and on the
-MMU nodes; without the functional and CBUF clocks the block powers on but
-its registers (including the IOMMU banks) read back dead. Drive the RKNN
-BIU reset (SRST_A_RKNN0/1_BIU) from the power domain so it fires before
-the IOMMU resumes.
+PD_NPU0 and PD_NPU1 are siblings under PD_NPUTOP and hold one core each,
+but the convolution buffer and the DSU sit above them: ACLK_RKNN_CBUF,
+HCLK_RKNN_CBUF and CLK_RKNN_DSU0 belong to the block rather than to
+either core, and PD_NPUTOP already lists all three.  Add them to both
+core domains as well, so a core domain switching state has the clocks of
+the path it shares running, and give each core domain the BIU reset that
+the pmdomain driver now cycles once power is on.
+
+Each core lists both core domains, its own first, so that a core in use
+has the whole block powered.  Whether a single core can reach the shared
+path with the sibling domain off is not something this series
+establishes; listing both is the description that has been tested here.
+The IOMMU in front of each core lists that core's domain only.
+
+Label the outer PD_NPU node so a board can attach the NPU rail to the
+domain that gates the block.
+
+The two cores are the halves of one 64 KB RKNN TOP window, so core 1 sits
+at 0x27708000 with a stride of 0x8000 rather than the RK3588's 0x10000;
+0x27710000 is the unrelated RKNN_NSP block, and a core pointed there binds,
+reads a plausible version word and times out on every job while writing PC
+registers into the NPU MCU subsystem.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
+[each core takes five register banks rather than three: this series drives
+ the DPU's own completion, which needs the dpu and dpu_rdma banks mapped]
 ---
- arch/arm64/boot/dts/rockchip/rk3576.dtsi | 86 +++++++++++++++++++++++-
- 1 file changed, 84 insertions(+), 2 deletions(-)
+ arch/arm64/boot/dts/rockchip/rk3576.dtsi | 88 +++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 3 deletions(-)
 
 diff --git a/arch/arm64/boot/dts/rockchip/rk3576.dtsi b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
-index 353a86746..6e2e9d38a 100644
+index 84f6092e1..f27d8aca2 100644
 --- a/arch/arm64/boot/dts/rockchip/rk3576.dtsi
 +++ b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
-@@ -1144,14 +1144,22 @@ power-domain@RK3576_PD_NPUTOP {
+@@ -1116,7 +1116,7 @@
+ 				#address-cells = <1>;
+ 				#size-cells = <0>;
+ 
+-				power-domain@RK3576_PD_NPU {
++				pd_npu: power-domain@RK3576_PD_NPU {
+ 					reg = <RK3576_PD_NPU>;
+ 					#power-domain-cells = <1>;
+ 					#address-cells = <1>;
+@@ -1144,14 +1144,22 @@
  						power-domain@RK3576_PD_NPU0 {
  							reg = <RK3576_PD_NPU0>;
  							clocks = <&cru HCLK_RKNN_ROOT>,
@@ -47,7 +74,7 @@ index 353a86746..6e2e9d38a 100644
  							pm_qos = <&qos_npu_m1>;
  							#power-domain-cells = <0>;
  						};
-@@ -1878,6 +1886,80 @@ qos_npu_m1ro: qos@27f22100 {
+@@ -1878,6 +1886,80 @@
  			reg = <0x0 0x27f22100 0x0 0x20>;
  		};
  
@@ -74,7 +101,7 @@ index 353a86746..6e2e9d38a 100644
 +		};
 +
 +		rknn_mmu_0: iommu@27702000 {
-+			compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
++			compatible = "rockchip,rk3576-npu-iommu", "rockchip,rk3568-iommu";
 +			reg = <0x0 0x27702000 0x0 0x100>,
 +			      <0x0 0x27702100 0x0 0x100>;
 +			interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;
@@ -111,7 +138,7 @@ index 353a86746..6e2e9d38a 100644
 +		};
 +
 +		rknn_mmu_1: iommu@2770a000 {
-+			compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
++			compatible = "rockchip,rk3576-npu-iommu", "rockchip,rk3568-iommu";
 +			reg = <0x0 0x2770a000 0x0 0x100>,
 +			      <0x0 0x2770a100 0x0 0x100>;
 +			interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;

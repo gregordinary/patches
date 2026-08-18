@@ -63,7 +63,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  4 files changed, 51 insertions(+), 25 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 2a7276124..04946685a 100644
+index f2e9ce20d..5fe69ba0d 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -30,6 +30,13 @@ rocket_iommu_domain_destroy(struct kref *kref)
@@ -143,18 +143,19 @@ index 2a7276124..04946685a 100644
  	kfree(rocket_priv);
  	module_put(THIS_MODULE);
 diff --git a/drivers/accel/rocket/rocket_drv.h b/drivers/accel/rocket/rocket_drv.h
-index 2c673bb99..e294ea982 100644
+index 0096c4ab1..83f062499 100644
 --- a/drivers/accel/rocket/rocket_drv.h
 +++ b/drivers/accel/rocket/rocket_drv.h
-@@ -6,22 +6,35 @@
- 
+@@ -7,23 +7,36 @@
  #include <drm/drm_mm.h>
  #include <drm/gpu_scheduler.h>
+ #include <linux/mod_devicetable.h>
 +#include <linux/mutex.h>
  
  #include "rocket_device.h"
  
  extern const struct dev_pm_ops rocket_pm_ops;
+ extern const struct of_device_id rocket_dt_match[];
  
 +/*
 + * The per-context IOMMU domain. The IOVA allocator (mm/mm_lock) lives HERE, not
@@ -236,7 +237,7 @@ index a5fffa51f..5026a2816 100644
  	if (ret)
  		goto err;
  
-@@ -122,9 +125,9 @@ int rocket_ioctl_create_bo(struct drm_device *dev, void *data, struct drm_file *
+@@ -122,9 +125,9 @@ err_unmap:
  		    rkt_obj->mm.start, rkt_obj->size);
  
  err_remove_node:

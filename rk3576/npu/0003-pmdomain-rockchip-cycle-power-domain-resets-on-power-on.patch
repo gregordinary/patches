@@ -1,39 +1,36 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jiaxing Hu <gahing@gahingwoo.com>
-Date: Sat, 18 Jul 2026 15:11:41 +1200
+Date: Mon, 17 Aug 2026 23:35:59 +1200
 Subject: [PATCH] pmdomain/rockchip: cycle optional power-domain resets on
  power-on
 
-Some power domains contain hardware bus interfaces that require an
-explicit assert/deassert edge on their reset line after the domain is
-powered on.  The CRU preserves reset state across power cycles (stays
-deasserted), so the hardware never sees the edge it needs unless the
-driver pulses it explicitly.
+Some Rockchip domains come out of power-on with their bus interface in
+an undefined state.  On the RK3576 NPU this shows up as a hang on the
+first register access after the domain is switched on, and pulsing the
+domain's resets at this point clears it.
 
-Add an optional resets property to rockchip_pm_domain.  When present,
-the resets are asserted and deasserted (with a 10 us hold) inside
-rockchip_pd_power() after the idle bits are cleared and the delay_us
-settling time has elapsed, but before any device in the domain resumes.
-The resets are released in rockchip_pm_remove_one_domain().
+Take the domain node's resets if it has any, and pulse them between
+releasing idle and restoring QoS.  The resets are optional, so domains
+that do not list any are unaffected.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
 ---
- drivers/pmdomain/rockchip/pm-domains.c | 18 ++++++++++++++++++
- 1 file changed, 18 insertions(+)
+ drivers/pmdomain/rockchip/pm-domains.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
 
 diff --git a/drivers/pmdomain/rockchip/pm-domains.c b/drivers/pmdomain/rockchip/pm-domains.c
-index 85b033d98..bdce2aece 100644
+index ae20c10ea..e5ec891e6 100644
 --- a/drivers/pmdomain/rockchip/pm-domains.c
 +++ b/drivers/pmdomain/rockchip/pm-domains.c
-@@ -18,6 +18,7 @@
- #include <linux/of_address.h>
+@@ -19,6 +19,7 @@
  #include <linux/of_clk.h>
  #include <linux/clk.h>
+ #include <linux/delay.h>
 +#include <linux/reset.h>
  #include <linux/regmap.h>
  #include <linux/regulator/consumer.h>
  #include <linux/mfd/syscon.h>
-@@ -102,6 +103,7 @@ struct rockchip_pm_domain {
+@@ -103,6 +104,7 @@ struct rockchip_pm_domain {
  	struct clk_bulk_data *clks;
  	struct device_node *node;
  	struct regulator *supply;
@@ -41,20 +38,21 @@ index 85b033d98..bdce2aece 100644
  };
  
  struct rockchip_pmu {
-@@ -672,6 +674,12 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
+@@ -675,6 +677,13 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
  		if (pd->info->delay_us)
  			udelay(pd->info->delay_us);
  
++		/* Optional: some domains need their resets cycled after power-on. */
 +		if (pd->resets) {
 +			reset_control_assert(pd->resets);
-+			udelay(10);
++			usleep_range(10, 20);
 +			reset_control_deassert(pd->resets);
 +		}
 +
  		rockchip_pmu_restore_qos(pd);
  	}
  
-@@ -841,6 +849,14 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
+@@ -844,6 +853,14 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
  	if (error)
  		goto err_put_clocks;
  
@@ -69,7 +67,7 @@ index 85b033d98..bdce2aece 100644
  	pd->num_qos = of_count_phandle_with_args(node, "pm_qos",
  						 NULL);
  
-@@ -911,6 +927,7 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
+@@ -914,6 +931,7 @@ err_unprepare_clocks:
  	clk_bulk_unprepare(pd->num_clks, pd->clks);
  err_put_clocks:
  	clk_bulk_put(pd->num_clks, pd->clks);
@@ -77,7 +75,7 @@ index 85b033d98..bdce2aece 100644
  	return error;
  }
  
-@@ -929,6 +946,7 @@ static void rockchip_pm_remove_one_domain(struct rockchip_pm_domain *pd)
+@@ -932,6 +950,7 @@ static void rockchip_pm_remove_one_domain(struct rockchip_pm_domain *pd)
  
  	clk_bulk_unprepare(pd->num_clks, pd->clks);
  	clk_bulk_put(pd->num_clks, pd->clks);

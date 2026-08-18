@@ -27,19 +27,28 @@ and let the DT say.  The driver core attaches the single-domain case
 itself and reports -EEXIST for it, which is that job already done and not
 a failure.
 
+Counting the cores walks the driver's own match table rather than a
+second, hand-kept list of compatibles.  The array sized from that count
+is indexed by every core that goes on to probe, so the two lists cannot
+be allowed to disagree; the table is exported as rocket_dt_match for
+rocket_device_init() to reach.
+
 Tested on a Radxa ROCK 4D: the NPU probes, powers on, brings up its
 IOMMUs and runs submitted jobs to completion.  Full multi-layer inference
 is not yet correct on this SoC (only the first operation per power session
 produces valid output); see the cover letter.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
+[count the cores over the match table rather than a second compatible
+ list, after the same change in the v8 posting of this series]
 ---
  drivers/accel/rocket/rocket_core.c   |  36 +++++++-
  drivers/accel/rocket/rocket_core.h   |  22 ++++-
- drivers/accel/rocket/rocket_device.c |   4 +
- drivers/accel/rocket/rocket_drv.c    |  20 ++++-
+ drivers/accel/rocket/rocket_device.c |   9 +-
+ drivers/accel/rocket/rocket_drv.c    |  26 ++++--
+ drivers/accel/rocket/rocket_drv.h    |   2 +
  drivers/accel/rocket/rocket_job.c    | 127 +++++++++++++++++++++++++--
- 5 files changed, 195 insertions(+), 14 deletions(-)
+ 6 files changed, 204 insertions(+), 18 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
 index b3b2fa9ba..2540e5e3a 100644
@@ -168,22 +177,34 @@ index f6d738285..7f2291ec7 100644
  	u64 fence_context;
  	u64 emit_seqno;
 diff --git a/drivers/accel/rocket/rocket_device.c b/drivers/accel/rocket/rocket_device.c
-index 46e6ee1e7..bfb00f967 100644
+index 46e6ee1e7..4c47fc9b9 100644
 --- a/drivers/accel/rocket/rocket_device.c
 +++ b/drivers/accel/rocket/rocket_device.c
-@@ -31,6 +31,10 @@ struct rocket_device *rocket_device_init(struct platform_device *pdev,
+@@ -9,6 +9,7 @@
+ #include <linux/of.h>
+ 
+ #include "rocket_device.h"
++#include "rocket_drv.h"
+ 
+ struct rocket_device *rocket_device_init(struct platform_device *pdev,
+ 					 const struct drm_driver *rocket_drm_driver)
+@@ -27,7 +28,13 @@ struct rocket_device *rocket_device_init(struct platform_device *pdev,
+ 	ddev = &rdev->ddev;
+ 	dev_set_drvdata(dev, rdev);
+ 
+-	for_each_compatible_node(core_node, NULL, "rockchip,rk3588-rknn-core")
++	/*
++	 * Count over the same match table the platform driver binds with, so
++	 * that a core added there is counted here without a second edit.  The
++	 * array sized from this count is indexed by every core that goes on to
++	 * probe, so the two lists cannot be allowed to disagree.
++	 */
++	for_each_matching_node(core_node, rocket_dt_match)
  		if (of_device_is_available(core_node))
  			num_cores++;
  
-+	for_each_compatible_node(core_node, NULL, "rockchip,rk3576-rknn-core")
-+		if (of_device_is_available(core_node))
-+			num_cores++;
-+
- 	rdev->cores = devm_kcalloc(dev, num_cores, sizeof(*rdev->cores), GFP_KERNEL);
- 	if (!rdev->cores)
- 		return ERR_PTR(-ENOMEM);
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 8bbbce594..6e9701f1a 100644
+index 8bbbce594..f5490b7c5 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -176,6 +176,7 @@ static int rocket_probe(struct platform_device *pdev)
@@ -194,10 +215,12 @@ index 8bbbce594..6e9701f1a 100644
  	rdev->cores[core].index = core;
  
  	rdev->num_cores++;
-@@ -213,8 +214,21 @@ static void rocket_remove(struct platform_device *pdev)
+@@ -213,11 +214,24 @@ static void rocket_remove(struct platform_device *pdev)
  	}
  }
  
+-static const struct of_device_id dt_match[] = {
+-	{ .compatible = "rockchip,rk3588-rknn-core" },
 +static const struct rocket_soc_data rk3588_soc_data = {
 +	.num_clks = 4,
 +	.num_resets = 2,
@@ -210,13 +233,16 @@ index 8bbbce594..6e9701f1a 100644
 +	.poll_completion = true,
 +};
 +
- static const struct of_device_id dt_match[] = {
--	{ .compatible = "rockchip,rk3588-rknn-core" },
++const struct of_device_id rocket_dt_match[] = {
 +	{ .compatible = "rockchip,rk3588-rknn-core", .data = &rk3588_soc_data },
 +	{ .compatible = "rockchip,rk3576-rknn-core", .data = &rk3576_soc_data },
  	{}
  };
- MODULE_DEVICE_TABLE(of, dt_match);
+-MODULE_DEVICE_TABLE(of, dt_match);
++MODULE_DEVICE_TABLE(of, rocket_dt_match);
+ 
+ static int find_core_for_dev(struct device *dev)
+ {
 @@ -240,7 +254,7 @@ static int rocket_device_runtime_resume(struct device *dev)
  	if (core < 0)
  		return -ENODEV;
@@ -235,6 +261,32 @@ index 8bbbce594..6e9701f1a 100644
  
  	return 0;
  }
+@@ -276,7 +290,7 @@ static struct platform_driver rocket_driver = {
+ 	.driver	 = {
+ 		.name = "rocket",
+ 		.pm = pm_ptr(&rocket_pm_ops),
+-		.of_match_table = dt_match,
++		.of_match_table = rocket_dt_match,
+ 	},
+ };
+ 
+diff --git a/drivers/accel/rocket/rocket_drv.h b/drivers/accel/rocket/rocket_drv.h
+index 2c673bb99..0096c4ab1 100644
+--- a/drivers/accel/rocket/rocket_drv.h
++++ b/drivers/accel/rocket/rocket_drv.h
+@@ -6,10 +6,12 @@
+ 
+ #include <drm/drm_mm.h>
+ #include <drm/gpu_scheduler.h>
++#include <linux/mod_devicetable.h>
+ 
+ #include "rocket_device.h"
+ 
+ extern const struct dev_pm_ops rocket_pm_ops;
++extern const struct of_device_id rocket_dt_match[];
+ 
+ struct rocket_iommu_domain {
+ 	struct iommu_domain *domain;
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
 index ac51bff39..b4866d090 100644
 --- a/drivers/accel/rocket/rocket_job.c
@@ -430,7 +482,7 @@ index ac51bff39..b4866d090 100644
  	spin_lock_init(&core->fence_lock);
  	mutex_init(&core->job_lock);
  
-@@ -487,6 +594,10 @@ int rocket_job_init(struct rocket_core *core)
+@@ -487,6 +594,10 @@ err_sched:
  
  void rocket_job_fini(struct rocket_core *core)
  {

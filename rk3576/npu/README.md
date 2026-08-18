@@ -6,11 +6,11 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 0008 to 0029 are ours; 0001-0007, 0030 and 0031 come from the linux-rockchip RFC
-series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
-(`gahing@gahingwoo.com`), with their upstream commit messages and `Signed-off-by` lines
-intact. They compose after `rk3576-fixes` on the RK3576 kernel and apply with
-`git am --3way`.
+Patches 0008 to 0030 and 0033 are ours; 0001-0007, 0031 and 0032 come from the
+linux-rockchip series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
+(`gahing@gahingwoo.com`), tracked at its **v8** posting, with their upstream commit
+messages, `Signed-off-by` and `Reviewed-by` lines intact. They compose after
+`rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
 
 | file | upstream subject |
 |------|------------------|
@@ -41,28 +41,49 @@ intact. They compose after `rk3576-fixes` on the RK3576 kernel and apply with
 | 0025 | accel/rocket: wait for the writing block, not for a deadline (ours) |
 | 0026 | accel/rocket: reset the cores this SoC acquired (ours) |
 | 0027 | accel/rocket: stop the block under the job lock (ours) |
-| 0028 | accel/rocket: do not touch a gated core from an idle poll (ours) |
-| 0029 | accel/rocket: sequence the completion poll against scheduler teardown (ours) |
-| 0030 | dt-bindings: power: rockchip: allow resets in a power domain node |
-| 0031 | dt-bindings: iommu: rockchip: allow the RK3576 NPU MMU clock set |
+| 0028 | accel/rocket: wait for a running IRQ handler before resetting a core (ours) |
+| 0029 | accel/rocket: do not touch a gated core from an idle poll (ours) |
+| 0030 | accel/rocket: sequence the completion poll against scheduler teardown (ours) |
+| 0031 | dt-bindings: power: rockchip: allow resets in a power domain node |
+| 0032 | dt-bindings: iommu: rockchip: describe the RK3576 NPU MMU |
+| 0033 | dt-bindings: npu: rockchip: describe the RK3576 DPU register banks (ours) |
 
-Four of the carried patches have local changes; the rest are verbatim. 0030 and 0031
+Three of the carried patches have local changes; the rest are verbatim. 0031 to 0033
 are last because `Documentation/` has no apply-order dependency on anything else here.
 
 **0001 describes the RK3576 node shape.** The upstream schema is written for the
 RK3588 and constrains every countable property to the RK3588's count, so the RK3576
-nodes 0007 adds -- five register banks, six clocks, two power domains, one reset --
-validate against nothing. The shared properties carry the union of the two parts and
-an `allOf` pins the exact shape per compatible, including `power-domains` at exactly
-two for `rockchip,rk3576-rknn-core`. That is where an RK3576 node listing one domain
-is caught: `dtbs_check` names the property, at build time.
+nodes 0007 adds -- six clocks, two power domains, one reset -- validate against
+nothing. The shared properties carry the union of the two parts and an `allOf` pins
+the exact shape per compatible, including `power-domains` at exactly two for
+`rockchip,rk3576-rknn-core`. That is where an RK3576 node listing one domain is
+caught: `dtbs_check` names the property, at build time. It carries
+`Reviewed-by: Krzysztof Kozlowski` and stays verbatim; the register banks are 0033.
+
+**0033 adds the register banks 0001 does not.** The upstream node has three -- pc,
+cna, core -- because upstream retires a job on `PC_DONE`. This series retires on the
+DPU's and the PPU's own completions (0012, 0021, 0022, 0025), which means reading the
+`dpu` and `dpu_rdma` banks, so the node 0007 emits has five. 0033 widens
+`reg`/`reg-names` to three-to-five and pins RK3588 back to exactly three in the same
+`allOf`, and carries an RK3576 example that exercises the widened shape. It is ours
+and separate so that 0001 stays the reviewed patch.
 
 **0006 attaches whatever `power-domains` the node lists**, rather than deciding from
-the SoC it matched. See "The power domains are not a board's job" below.
+the SoC it matched. See "The power domains are not a board's job" below. This is the
+one place where this series and upstream differ on mechanism rather than on wording:
+upstream gates the attach on a per-SoC `multi_power_domain` flag in `rocket_soc_data`.
 
-**0003 tracks the RFC's current form**, which takes the power domain's resets with
-`dev_err_probe()` rather than `dev_err()`, so a reset controller that has not probed
-yet produces a `-EPROBE_DEFER` retry instead of a logged failure. It stays verbatim.
+**0006 also counts the cores over the driver's own match table.** `rocket_device_init()`
+sized `rdev->cores` by walking a hand-written list of compatible strings, which meant
+adding a SoC in two places. The table is exported as `rocket_dt_match` and the count
+walks it with `for_each_matching_node()`. The array sized from that count is indexed by
+every core that goes on to probe, so the two lists cannot be allowed to disagree, and
+one list is the way to guarantee it. This is the only part of 0006 the RK3588 shares,
+and its behaviour there is unchanged.
+
+**0003 takes the power domain's resets with `dev_err_probe()`** rather than
+`dev_err()`, so a reset controller that has not probed yet produces a `-EPROBE_DEFER`
+retry instead of a logged failure. It stays verbatim.
 
 **0002 is rebased over `rk3576-fixes`.** That series and this one both extend
 `drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
@@ -70,14 +91,25 @@ the RK3576 power-domain table) -- one adds a `.need_regulator` argument, the oth
 `.delay_us` argument. Because the resolver always orders `rk3576-fixes` first (it is
 a SoC-wide kernel series) and `rk3576-npu` second (a board-opt-in device series), the
 merged macro/table carry both arguments (GPU `regulator = true`, the NPU domains
-`delay = 15`). Re-derive it the same way on a future RFC re-sync.
+`delay = 15`). Upstream reaches the same table a different way -- it adds a second
+macro spelling, `DOMAIN_RK3576_R`, because the regulator is not an argument there --
+so that spelling is not needed here and `RK3576_PD_NPU` passes its argument directly.
+The macro rename to `DOMAIN_M_O_R_G_W` is carried, which makes the merged macro
+signature-identical to upstream's. Re-derive it the same way on a future re-sync.
 
-**0007 carries four local changes.** The first three are all on `rknn_core_1` and all invisible in any
-booting configuration, because the RFC ships both cores `disabled` and neither its board
-patch nor the H96 MAX M9's enables core 1 (see
-[What a board `.dts` must do](#what-a-board-dts-must-do-and-why)). They stay because a
-dtsi describes the part whether or not a board opts in, and an inaccurate node is a trap
-for whoever enables it next.
+**`RK3576_PD_NPU` now carries `need_regulator`.** A board that describes the NPU rail
+with `domain-supply` on the `pd_npu` node -- 0007 labels it -- has that rail enabled
+before the domain powers and disabled after it drops. A board that does not describe
+it takes the dummy regulator and is unchanged. `npu-supply` on the core node has no
+consumer anywhere in the tree; the binding requires it, and that is the only reason
+it is set.
+
+**0007 carries one local change: the five register banks.** Each core node lists `pc`,
+`cna`, `core`, `dpu` and `dpu_rdma` rather than the upstream three, for the reason 0033
+gives. Everything else that used to be local here -- `rknn_core_1` at `0x27708000`, the
+two CBUF clocks on core 1, both NPU power domains on both core nodes -- is upstream as
+of v8 and is no longer a divergence. 0007 also emits the
+`rockchip,rk3576-npu-iommu` compatible that 0032 describes.
 
 **Core 1 sits at `0x27708000`.** The two cores are the two halves of one 64 KB `RKNN TOP`
 window: the RK3576 TRM v1.2 address map has `RKNN TOP` at `0x27700000` (64 KB) and the
@@ -85,8 +117,7 @@ unrelated `RKNN_NSP` at `0x27710000` (64 KB), and the vendor DT covers the NPU a
 `reg = <0x27700000 0x8000>, <0x27708000 0x8000>` with `npu0_irq`/`npu1_irq`. The stride
 is `0x8000`, not the RK3588's `0x10000`. Each core's five banks sit at the same offsets
 within its half -- pc `+0x0000`, cna `+0x1000`, core `+0x3000`, dpu `+0x4000`, dpu_rdma
-`+0x5000` -- with its IOMMU at `+0x2000`, which is why `rknn_mmu_1` at `0x2770a000` was
-already right while the core banks were not. Measured with core 1's clocks forced on
+`+0x5000` -- with its IOMMU at `+0x2000`. Measured with core 1's clocks forced on
 [HW sweep], `0x27708000` reads the same version word as core 0 (`0x46495245` /
 `0x00010002`, the `VERSION + (VERSION_NUM & 0xffff)` the driver prints as 1179210311),
 and `0x27709000`/`0x2770b000` match `0x27701000`/`0x27703000`. `0x27710000` holds
@@ -95,8 +126,8 @@ times out on every job while writing PC registers into the NPU MCU subsystem.
 
 **Core 1 needs the CBUF clocks.** `rocket` asks every core for all six RK3576 clocks --
 `rocket_soc_data.num_clks` is 6 and `rocket_core_init()` takes them with
-`devm_clk_bulk_get()`, which is a hard get, decided per SoC and not per node. The RFC
-lists only four on core 1, so that core cannot probe:
+`devm_clk_bulk_get()`, which is a hard get, decided per SoC and not per node. A core 1
+node listing only four cannot probe:
 
 ```
 rocket 27708000.npu: error -ENOENT: Failed to get clk 'aclk_cbuf'
@@ -105,25 +136,29 @@ rocket 27708000.npu: probe with driver rocket failed with error -2
 
 `ACLK_RKNN_CBUF` and `HCLK_RKNN_CBUF` are single clocks in the CRU, not per-core --
 there is no `..._CBUF1` -- and core 1's own `rknn_mmu_1` and `power-domain@RK3576_PD_NPU1`
-already list both, as does `rknn_core_0`. Adding them to the core node makes it
-consistent with the three, and the clock framework reference-counts the sharing.
+already list both, as does `rknn_core_0`. The clock framework reference-counts the
+sharing.
 
 **Both core nodes list both power domains.** See
 [What a board `.dts` must do](#what-a-board-dts-must-do-and-why) for why a single entry
 fails, and why this belongs to the SoC and not to each board.
 
-**The MMU nodes name their clocks.** `rockchip,iommu` lists `clock-names` under
-`required:`, so a node carrying `clocks` and no names does not validate at all -- and
-0031 widens the pair to the five the RK3576 NPU MMUs take, which is the other half of
-the same failure. The driver reaches them either way, since 0004 switched `rk_iommu`
-to `devm_clk_bulk_get_all()`, which resolves by index; the names are what makes the
-node describable.
+**The MMU nodes take a compatible of their own.** `rockchip,rk3576-npu-iommu`, with
+`rockchip,rk3568-iommu` as the fallback the driver actually matches on, so nothing in
+`drivers/iommu` has to learn the name. 0032 pins both clock sets with an `allOf`: an
+`rk3568-iommu` carrying five clocks and an NPU MMU carrying two are each rejected,
+where widening the shared list alone left both spellings valid. `rockchip,iommu` also
+lists `clock-names` under `required:`, so a node carrying `clocks` and no names does
+not validate at all. The driver reaches the clocks either way, since 0004 switched
+`rk_iommu` to `devm_clk_bulk_get_all()`, which resolves by index; the names are what
+makes the node describable.
 
-## What 0026 to 0029 fix: four defects in the driver's own bookkeeping
+## What 0026 to 0030 fix: five defects in the driver's own bookkeeping
 
 None of these is a property of the RK3576. They are places where the driver's
-accounting of its own state is wrong, three of them in code this series added and one
-of them in code the RK3588 shares (`rocket/090` is 0027 for that SoC).
+accounting of its own state is wrong, three of them in code this series added and two
+of them in code the RK3588 shares (`rocket/090` is 0027 for that SoC, and
+`rocket/091` is 0028).
 
 **0026 -- resetting a line that was never acquired.** `rocket_core_init()` takes the
 reset bulk with `soc->num_resets`, which is 1 here and 2 on the RK3588, while
@@ -144,7 +179,23 @@ through the poll work queued from the hrtimer, and the shared interrupt thread s
 handles the DMA-error bits -- so either can be inside `hw_submit()` while the other is
 between its two writes. Both writes are now inside the existing `scoped_guard`.
 
-**0028 -- an idle poll writing to a gated core.** The two writes above are an
+**0028 -- a reset that does not wait for the handler it is racing.** `rocket_reset()`
+calls `drm_sched_stop()`, which stops the scheduler and returns. It does not wait for
+a threaded handler that is already running, so the comment that followed it --
+"Remaining interrupts have been handled" -- stated an assumption rather than something
+the code arranged. A handler mid-flight when the reset starts keeps running against a
+core `rocket_core_reset()` is about to put through a reset, and against an
+`in_flight_job` the reset has already dropped. `synchronize_irq(core->irq)` goes
+between the stop and the `job_lock` guard and not inside it: after 0027 the handler
+holds that lock for its whole body, so waiting for it while holding the lock it wants
+would deadlock rather than fence anything, and both callers -- `rocket_job_timedout()`
+and `rocket_reset_work()` -- run in process context, where sleeping is allowed. The
+poll work is already fenced above by the `hrtimer_cancel()`/`cancel_work_sync()` pair,
+so what this closes is the shared interrupt thread, which this SoC still takes for the
+DMA-error bits. It does not close the window where a handler has already read
+`in_flight_job` -- that is 0027's -- and the two are complementary.
+
+**0029 -- an idle poll writing to a gated core.** The two writes above are an
 *acknowledgement* for an interrupt and nothing at all for the poll, which sampled a
 status register and has no hardware condition to end. When the submit the work was
 queued for has already been retired -- by the DMA-error thread, or by a reset -- and
@@ -158,7 +209,7 @@ them, so the poll now returns early when the core is idle. The interrupt path is
 unchanged -- its condition is level-triggered and `INTERRUPT_CLEAR` is what ends it,
 so it clears whatever is in flight, including nothing.
 
-**0029 -- a cancel that does not hold.** `rocket_job_fini()` cancelled the poll timer
+**0030 -- a cancel that does not hold.** `rocket_job_fini()` cancelled the poll timer
 and its work and *then* called `drm_sched_fini()`. In that order the cancel does not
 stick: a job still in flight retires through the poll, `rocket_job_handle_irq()`
 re-arms the next task, and `rocket_job_hw_submit()` starts the timer again behind the
@@ -300,8 +351,9 @@ Whole-entry cost, NPU milliseconds [HW sweep]:
 
 The RK3588 takes a completion interrupt and does not poll, so none of this reaches it.
 
-Patch 8 of the RFC (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`) is **not**
-carried: the board enable is board-specific. See below for what a board owes.
+The upstream series' board patch (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`)
+is **not** carried: the board enable is board-specific. See below for what a board
+owes.
 
 ## What 0013 and 0014 fix: two crashes reachable from group `render`
 
@@ -879,14 +931,25 @@ shifted and re-packed relative to the RK3588, so a register program written for 
 RK3588 geometry does not run here; a userspace needs its own RK3576 encoder. With
 that in hand the kernel side runs: an int8 convolution encoded for this part is
 bit-exact against a CPU model on real silicon (H96 MAX M9), and multi-task
-row-windowed programs are bit-exact submitted back to back with no gap. Re-sync from
-a later RFC revision by re-splitting the series into this directory and updating
-`series/rk3576-npu.toml`.
+row-windowed programs are bit-exact submitted back to back with no gap. Carried from
+the upstream series at **v8**; re-sync from a later revision by re-splitting it into
+this directory and updating `series/rk3576-npu.toml`.
 
-**0026 to 0031 have not been on hardware.** They are reasoned from the source and
+**0026 to 0033 have not been on hardware.** They are reasoned from the source and
 build clean, and none of them changes what a correct submit does: 0026 and 0027 are
-the same operations with a different count and a different lock scope, 0028 and 0029
-are paths a passing run does not take, and 0030 and 0031 are `Documentation/`. Every
+the same operations with a different count and a different lock scope, 0028 adds a
+wait on a path that is only entered when a job has already timed out, 0029 and 0030
+are paths a passing run does not take, and 0031 to 0033 are `Documentation/`. Every
 measurement above stands, but the H96 has not been through a run with them applied --
 the checks that would close that are a submit sweep unchanged, an unbind and rebind
 with a job in flight, and `dtbs_check` clean on `rk3576.dtsi`.
+
+**The v8 re-sync has not been on hardware either.** What moved is 0001, 0002, 0003,
+0006, 0007, 0031 and 0032, and two of those changes are behavioural rather than
+editorial: `RK3576_PD_NPU` now carries `need_regulator`, and the MMU nodes carry a new
+compatible string. Neither has been booted here. The MMU change is inert for the
+driver, which matches the `rockchip,rk3568-iommu` fallback; the regulator flag takes
+the dummy regulator on a board with no `domain-supply` on `pd_npu`, which is every
+board in this tree today. The checks that would close it are a boot with the NPU
+enabled, `dtbs_check` clean on `rk3576.dtsi`, and `bash tools/gates-rk3576.sh` in
+`rocket-userspace`.

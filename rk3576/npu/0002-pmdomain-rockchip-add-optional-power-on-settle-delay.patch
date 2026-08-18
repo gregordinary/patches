@@ -1,35 +1,54 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jiaxing Hu <gahing@gahingwoo.com>
-Date: Sat, 18 Jul 2026 15:11:40 +1200
+Date: Mon, 17 Aug 2026 23:35:58 +1200
 Subject: [PATCH] pmdomain/rockchip: add optional per-domain power-on settle
  delay
 
-The RK3576 NPU domains need a short settle time after the idle
-request is released before the QoS registers behind the domain are
-written: restoring QoS immediately after de-idle can raise an SError
-on the register access while the NoC is still settling (observed on
-ROCK 4D as a panic inside rockchip_pd_power() during NPU runtime-PM
-cycling).
+The RK3576 NPU domains need a short settle time after the idle request
+is released before the registers behind the domain answer.  Without it
+the QoS writes that rockchip_pmu_restore_qos() issues land while the
+domain is still coming up.
 
-The vendor kernel handles this with a per-domain delay_us field
-applied between the de-idle request and the QoS restore, carrying
-15us for the RK3576 NPUTOP domain.  Mirror that: add delay_us to
-rockchip_domain_info, honor it in rockchip_pd_power() right before
-rockchip_pmu_restore_qos(), and set 15us for NPUTOP, NPU0 and NPU1
-(the two core domains power-cycle constantly under runtime PM and
-showed the same symptom during bring-up).  All other domains keep 0,
-so nothing changes for them.
+Give rockchip_domain_info an optional delay_us and wait for it between
+releasing idle and restoring QoS.  Rename DOMAIN_M_O_R_G to
+DOMAIN_M_O_R_G_W, since the suffixes name the fields the macro sets and
+this one now also carries a wakeup delay; RK3576 is its only user, so
+the old spelling is not kept around.
+
+The delay itself was arrived at on a ROCK 4D and carries no mechanism
+beyond that: the vendor kernel applies the same 15us to the RK3576
+NPUTOP domain, and the two core domains take it too because they
+power-cycle constantly under runtime PM.  Every other domain passes 0
+and is unchanged.
+
+RK3576_PD_NPU also gains need_regulator, so that a board describing the
+NPU rail with domain-supply on that node has it enabled before the
+domain is powered and disabled after.  Without the flag
+rockchip_pd_regulator_enable() returns before it looks at the property,
+so the wiring on its own does nothing.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
+[carried over patches/rk3576/kernel/100, which gives DOMAIN_M_O_R_G its
+ regulator argument for the GPU; the merged macro takes both arguments,
+ so the DOMAIN_RK3576_R spelling the upstream patch adds is not needed
+ here and RK3576_PD_NPU passes its regulator argument directly]
 ---
- drivers/pmdomain/rockchip/pm-domains.c | 51 ++++++++++++++------------
- 1 file changed, 28 insertions(+), 23 deletions(-)
+ drivers/pmdomain/rockchip/pm-domains.c | 52 +++++++++++++++-----------
+ 1 file changed, 30 insertions(+), 22 deletions(-)
 
 diff --git a/drivers/pmdomain/rockchip/pm-domains.c b/drivers/pmdomain/rockchip/pm-domains.c
-index 1ad2c7946..85b033d98 100644
+index 1ad2c7946..ae20c10ea 100644
 --- a/drivers/pmdomain/rockchip/pm-domains.c
 +++ b/drivers/pmdomain/rockchip/pm-domains.c
-@@ -59,6 +59,7 @@ struct rockchip_domain_info {
+@@ -18,6 +18,7 @@
+ #include <linux/of_address.h>
+ #include <linux/of_clk.h>
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/mfd/syscon.h>
+@@ -59,6 +60,7 @@ struct rockchip_domain_info {
  	u32 pwr_offset;
  	u32 mem_offset;
  	u32 req_offset;
@@ -37,16 +56,16 @@ index 1ad2c7946..85b033d98 100644
  };
  
  struct rockchip_pmu_info {
-@@ -185,7 +186,7 @@ struct rockchip_pmu {
+@@ -185,7 +187,7 @@ struct rockchip_pmu {
  	.need_regulator = regulator,			\
  }
  
 -#define DOMAIN_M_O_R_G(_name, p_offset, pwr, status, m_offset, m_status, r_status, r_offset, req, idle, ack, g_mask, wakeup, regulator)	\
-+#define DOMAIN_M_O_R_G(_name, p_offset, pwr, status, m_offset, m_status, r_status, r_offset, req, idle, ack, g_mask, delay, wakeup, regulator)	\
++#define DOMAIN_M_O_R_G_W(_name, p_offset, pwr, status, m_offset, m_status, r_status, r_offset, req, idle, ack, g_mask, delay, wakeup, regulator)	\
  {							\
  	.name = _name,					\
  	.pwr_offset = p_offset,				\
-@@ -200,6 +201,7 @@ struct rockchip_pmu {
+@@ -200,6 +202,7 @@ struct rockchip_pmu {
  	.req_mask = (req),				\
  	.idle_mask = (idle),				\
  	.clk_ungate_mask = (g_mask),			\
@@ -54,36 +73,29 @@ index 1ad2c7946..85b033d98 100644
  	.ack_mask = (ack),				\
  	.active_wakeup = wakeup,			\
  	.need_regulator = regulator,			\
-@@ -245,8 +247,8 @@ struct rockchip_pmu {
+@@ -245,8 +248,8 @@ struct rockchip_pmu {
  #define DOMAIN_RK3568(name, pwr, req, wakeup)		\
  	DOMAIN_M(name, pwr, pwr, req, req, req, wakeup)
  
 -#define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, wakeup, regulator)	\
 -	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, wakeup, regulator)
 +#define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, delay, wakeup, regulator)	\
-+	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, delay, wakeup, regulator)
++	DOMAIN_M_O_R_G_W(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, delay, wakeup, regulator)
  
  /*
   * Dynamic Memory Controller may need to coordinate with us -- see
-@@ -613,7 +615,6 @@ static int rockchip_do_pmu_set_power_domain(struct rockchip_pm_domain *pd,
- 			return ret;
- 	}
- 
--
- 	ret = readx_poll_timeout_atomic(rockchip_pmu_domain_is_on, pd, is_on,
- 					is_on == on, 0, 10000);
- 	if (ret) {
-@@ -668,6 +669,9 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
+@@ -668,6 +671,10 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
  		if (ret < 0)
  			goto out;
  
++		/* Some domains need to settle before the QoS registers answer. */
 +		if (pd->info->delay_us)
 +			udelay(pd->info->delay_us);
 +
  		rockchip_pmu_restore_qos(pd);
  	}
  
-@@ -1287,25 +1291,26 @@ static const struct rockchip_domain_info rk3568_pm_domains[] = {
+@@ -1287,25 +1294,26 @@ static const struct rockchip_domain_info rk3568_pm_domains[] = {
  };
  
  static const struct rockchip_domain_info rk3576_pm_domains[] = {
@@ -107,7 +119,7 @@ index 1ad2c7946..85b033d98 100644
 -	[RK3576_PD_NPU1]	= DOMAIN_RK3576("npu1",   0x4, BIT(8),  0,      BIT(24), 0x0, BIT(2),  BIT(2),  0x1c,    false, false),
 -	[RK3576_PD_GPU]		= DOMAIN_RK3576("gpu",    0x4, BIT(9),  0,      BIT(25), 0x0, BIT(0),  BIT(0),  BIT(0),  false, true),
 +	/*                                               name    p_offset pwr      status  r_status r_offset req      idle     g_mask   delay wakeup regulator */
-+	[RK3576_PD_NPU]		= DOMAIN_RK3576("npu",    0x0, BIT(0),  BIT(0), 0,       0x0, 0,       0,       0,       0,    false, false),
++	[RK3576_PD_NPU]		= DOMAIN_RK3576("npu",    0x0, BIT(0),  BIT(0), 0,       0x0, 0,       0,       0,       0,    false, true),
 +	[RK3576_PD_NVM]		= DOMAIN_RK3576("nvm",    0x0, BIT(6),  0,      BIT(6),  0x4, BIT(2),  BIT(18), BIT(2),  0,    false, false),
 +	[RK3576_PD_SDGMAC]	= DOMAIN_RK3576("sdgmac", 0x0, BIT(7),  0,      BIT(7),  0x4, BIT(1),  BIT(17), 0x6,     0,    false, false),
 +	[RK3576_PD_AUDIO]	= DOMAIN_RK3576("audio",  0x0, BIT(8),  0,      BIT(8),  0x4, BIT(0),  BIT(16), BIT(0),  0,    false, false),
