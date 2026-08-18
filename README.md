@@ -16,6 +16,7 @@ top of mainline.
 |-----|-------|
 | [`rocket/`](rocket/) | Rockchip NPU — patches, UAPI header, and notes for the mainline `rocket` DRM accel driver (RK3588). |
 | [`media-accel/`](media-accel/) | Rockchip HW video transcode (RK35xx/RK3588) — kernel decode/encode/RGA, ffmpeg-rockchip, and MPP/RGA userspace patches. |
+| [`crypto/`](crypto/) | Rockchip second-generation crypto offloader (RK356x/RK3588) — AES and hash offload over an LLI DMA engine, plus the defconfig hunk that builds it. |
 | [`rk3288/`](rk3288/) | RK3288 kernel fixes, written to upstream standards and meant to retire into stable. |
 | [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
 | [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
@@ -61,6 +62,10 @@ modifies.
 - **`media-accel/` scope** — each patch inherits the license of its upstream tree (the
   Linux kernel, ffmpeg-rockchip, or the Rockchip MPP/RGA userspace); the patch's provenance
   header (`From:` / `Source:`) names that upstream. Kernel patches are GPL-2.0-only.
+- **`crypto/` scope** — kernel-derivative work, **GPL-2.0-only**. Patches 100-103 are
+  carried verbatim from the linux-rockchip posting and keep their authors' `From:`,
+  `Co-developed-by`, `Signed-off-by` and `Tested-by` lines; 104 is repository-original
+  and is GPL-2.0-only with the tree it modifies.
 
 Per-file `SPDX-License-Identifier` tags and individual patch headers are authoritative where
 present.

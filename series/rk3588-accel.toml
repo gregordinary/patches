@@ -3,13 +3,13 @@
 #
 # RK3588 hardware acceleration: the ordered patch series that turns a mainline
 # 7.1 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
-# (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU).
+# (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
 # A series is owned by a kernel definition, not a device: this series applies to
 # mainline 7.1 and is referenced by kernels/rk3588-mainline-7.1. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
-# tree's list may span scopes (the kernel tree interleaves the media-accel and
-# rocket scopes). Paths are relative to this repo's root.
+# tree's list may span scopes (the kernel tree interleaves the media-accel,
+# rocket and crypto scopes). Paths are relative to this repo's root.
 
 # Declared intent; the builder's verify-applies gate is the enforcement.
 #
@@ -104,6 +104,38 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # context so sleeping there is allowed. It does not close the window where a handler
 # has already read in_flight_job -- that is 090's -- and the two are complementary.
 # rk3576/npu 0028 is the same change for that SoC.
+#
+# 100-104 are the crypto scope and are the RK356x/RK3588 second-generation crypto
+# offloader: AES (ECB/CBC/XTS) and SHA-1/256/384/512, MD5 and SM3 over an LLI-based
+# DMA engine. 100-103 are Dawid Olesinski's and Corentin Labbe's, carried verbatim
+# from the linux-rockchip series "crypto: rockchip: Add RK356x/RK3588 cryptographic
+# offloader" at its v3 posting, which is NOT merged. 104 is ours and is the reason
+# the rest is worth applying here at all: CRYPTO_DEV_ROCKCHIP2 is a tristate with no
+# default, no kconfig fragment in this collection sets it, and the upstream series
+# carries no defconfig hunk -- so without 104 the DT nodes 102 and 103 add describe a
+# device that nothing binds to. This is the same trap 050's trailing defconfig hunk
+# covers for the AV1 decoder's IOMMU, and it fails the same silent way.
+#
+# The RK3588 binds through the rockchip,rk3568-crypto fallback compatible, which is
+# why the driver's match table carries only the one entry; the SCMI clock and reset
+# ids the node uses (SCMI_CRYPTO_CORE, SCMI_ACLK/HCLK_SECURE_NS, SCMI_SRST_CRYPTO_CORE)
+# are all in the mainline dt-bindings headers, and rk3588-base.dtsi already reaches
+# scmi_reset the same way its rng node does. 102 touches rk356x-base.dtsi, which no
+# board here builds against; it is carried because the series is developed and tested
+# as a unit and dropping a patch from the middle makes the next re-sync harder, not
+# because we need it.
+#
+# Two things to know before trusting it. The nodes carry no `status`, so the block is
+# enabled by default on every RK356x and RK3588 board built from these dtsi files --
+# the clocks are the non-secure instance (SECURE_NS), but whether a given board's
+# firmware also drives that block is not something this series establishes. And v3 is
+# under review: the reset-names schema admits three names where both in-tree users
+# list exactly one, the per-SG IV update in rk2_cipher_run() indexes the destination
+# with a length taken from the source (safe only because rk2_cipher_need_fallback()
+# rejects a source/destination chunk mismatch, which nothing at the use site says),
+# and dma_free_coherent()/kfree() in .remove run before devres frees the IRQ. None of
+# those is a reason to hold the series out of a build, and all of them are a reason to
+# expect a v4 and to re-sync rather than to carry these files forever.
 kernel = [
     "media-accel/kernel/040-vdpu381-multicore-v1-curated.patch",
     "media-accel/kernel/050-av1-iommu-v14-curated.patch",
@@ -122,6 +154,11 @@ kernel = [
     "rocket/089-rocket-drv-clocks-by-name.patch",
     "rocket/090-rocket-drv-irq-under-job-lock.patch",
     "rocket/091-rocket-drv-irq-sync-before-reset.patch",
+    "crypto/kernel/100-dt-bindings-crypto-rockchip-rk356x-rk3588-engine.patch",
+    "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",
+    "crypto/kernel/102-arm64-dts-rockchip-rk356x-crypto-node.patch",
+    "crypto/kernel/103-arm64-dts-rockchip-rk3588-crypto-node.patch",
+    "crypto/kernel/104-arm64-defconfig-enable-rockchip2-crypto.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft

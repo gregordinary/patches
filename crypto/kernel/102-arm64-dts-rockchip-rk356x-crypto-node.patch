@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dawid Olesinski <dawidro@gmail.com>
+Date: Sun, 16 Aug 2026 21:41:11 +0200
+Subject: [PATCH] arm64: dts: rockchip: Add crypto node to rk356x-base
+
+Add the device tree node for the V2 cryptographic hardware accelerator
+on RK356x SoCs (RK3566, RK3568).
+
+The IP block sits in the non-secure peripheral domain. Its three clocks
+(core, aclk, hclk) and reset line are accessible directly through the
+main non-secure CRU, so no firmware intermediary is required.
+
+The node is disabled by default; board files that wish to use hardware
+crypto offload must enable it.
+
+Co-developed-by: Corentin Labbe <clabbe@baylibre.com>
+Signed-off-by: Corentin Labbe <clabbe@baylibre.com>
+Signed-off-by: Dawid Olesinski <dawidro@gmail.com>
+Tested-by: Diederik de Haas <diederik@cknow-tech.com>  # Quartz64-B,
+NanoPi R5S, NanoPC-T6 LTS
+---
+ arch/arm64/boot/dts/rockchip/rk356x-base.dtsi | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk356x-base.dtsi b/arch/arm64/boot/dts/rockchip/rk356x-base.dtsi
+index 64bdd8b7754b..8b88d6de18c2 100644
+--- a/arch/arm64/boot/dts/rockchip/rk356x-base.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk356x-base.dtsi
+@@ -1111,6 +1111,17 @@ sdhci: mmc@fe310000 {
+ 		status = "disabled";
+ 	};
+ 
++	crypto: crypto@fe380000 {
++		compatible = "rockchip,rk3568-crypto";
++		reg = <0x0 0xfe380000 0x0 0x2000>;
++		interrupts = <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&cru CLK_CRYPTO_NS_CORE>, <&cru ACLK_CRYPTO_NS>,
++			 <&cru HCLK_CRYPTO_NS>;
++		clock-names = "core", "aclk", "hclk";
++		resets = <&cru SRST_CRYPTO_NS_CORE>;
++		reset-names = "core";
++	};
++
+ 	/*
+ 	 * Testing showed that the HWRNG found in RK3566 produces unacceptably
+ 	 * low quality of random data, so the HWRNG isn't enabled for all RK356x
+-- 
+2.43.0

@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dawid Olesinski <dawidro@gmail.com>
+Date: Sun, 16 Aug 2026 21:41:12 +0200
+Subject: [PATCH] arm64: dts: rockchip: Add crypto node to rk3588-base
+
+Add the device tree node for the V2 cryptographic hardware accelerator
+on RK3588.
+
+On RK3588 the crypto IP sits inside the secure domain controlled by
+SECURECRU, a register bank that is exclusively accessible to the
+TrustZone firmware (TF-A). Linux must therefore obtain its clocks and
+reset line through the ARM SCMI interface provided by the firmware
+rather than mapping the CRU registers directly. Attempting direct MMIO
+access to SECURECRU from the non-secure world triggers an asynchronous
+bus fault.
+
+The interrupt uses the four-cell GICv3 format as required by the RK3588
+GIC node definition (the fourth cell is the CPU affinity/partition
+specifier; 0 means no affinity constraint).
+
+The node is disabled by default; board files that wish to use hardware
+crypto offload must enable it.
+
+Co-developed-by: Corentin Labbe <clabbe@baylibre.com>
+Signed-off-by: Corentin Labbe <clabbe@baylibre.com>
+Signed-off-by: Dawid Olesinski <dawidro@gmail.com>
+Tested-by: Diederik de Haas <diederik@cknow-tech.com>  # Quartz64-B,
+NanoPi R5S, NanoPC-T6 LTS
+---
+ arch/arm64/boot/dts/rockchip/rk3588-base.dtsi | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+index 4fb8888c281c..980c345a5de0 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+@@ -2249,6 +2249,17 @@ sdhci: mmc@fe2e0000 {
+ 		status = "disabled";
+ 	};
+ 
++	crypto: crypto@fe370000 {
++		compatible = "rockchip,rk3588-crypto", "rockchip,rk3568-crypto";
++		reg = <0x0 0xfe370000 0x0 0x2000>;
++		interrupts = <GIC_SPI 209 IRQ_TYPE_LEVEL_HIGH 0>;
++		clocks = <&scmi_clk SCMI_CRYPTO_CORE>, <&scmi_clk SCMI_ACLK_SECURE_NS>,
++			 <&scmi_clk SCMI_HCLK_SECURE_NS>;
++		clock-names = "core", "aclk", "hclk";
++		resets = <&scmi_reset SCMI_SRST_CRYPTO_CORE>;
++		reset-names = "core";
++	};
++
+ 	rng@fe378000 {
+ 		compatible = "rockchip,rk3588-rng";
+ 		reg = <0x0 0xfe378000 0x0 0x200>;
+-- 
+2.43.0
