@@ -4,9 +4,20 @@ Date: Sat, 25 Jul 2026 12:00:00 +0000
 Subject: [PATCH] accel/rocket: program PC_TASK_CON with the per-SoC
  TASK_NUMBER width
 
-PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits
-directly above it: TASK_PP_EN, then TASK_COUNT_CLEAR, then a bit the TRM
-marks reserved.  The field accessors in rocket_registers.h describe the
+PC_TASK_CON packs TASK_NUMBER in the low bits with three controls
+directly above it: TASK_PP_EN, TASK_COUNT_CLEAR, then
+TASK_LAST_LAYER_CLEAR, which the RK3588 register description marks
+reserved.  Chaoyi Chen of Rockchip gave the RK3576 assignment on the
+linux-rockchip list:
+
+  RK3588  BIT[11:0] task_number, BIT(12) pp_en, BIT(13) count_clear,
+          BIT(14) reserved
+  RK3576  BIT[15:0] task_number, BIT(16) pp_en, BIT(17) count_clear,
+          BIT(18) task_last_layer_clear
+
+  https://lore.kernel.org/all/4f300b78-d96d-4d98-8819-dc292b0c9b97@rock-chips.com/
+
+The field accessors in rocket_registers.h describe the
 RK3588 layout, where TASK_NUMBER is 12 bits wide, and the driver builds
 the submit word from them unconditionally:
 
@@ -91,15 +102,15 @@ index b4866d090..135ffb2ed 100644
  #define RK3576_POLL_INTERVAL_NS  1000000LL  /* 1 ms */
  
 +/*
-+ * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
-+ * above it: TASK_PP_EN, then TASK_COUNT_CLEAR, then a bit the TRM marks
-+ * reserved.  rocket_registers.h describes the RK3588 layout, where TASK_NUMBER
-+ * is 12 bits wide; on RK3576 it is 16, which moves all three control bits up by
-+ * four.  Build the word from the per-SoC width rather than from the fixed
-+ * accessors, which would otherwise land the control bits inside TASK_NUMBER and
-+ * ask the PC for a task count of 28673 instead of 1.
++ * PC_TASK_CON packs TASK_NUMBER in the low bits with three controls directly
++ * above it: TASK_PP_EN, TASK_COUNT_CLEAR, then TASK_LAST_LAYER_CLEAR (which the
++ * RK3588 description marks reserved).  rocket_registers.h describes the RK3588
++ * layout, where TASK_NUMBER is 12 bits wide; on RK3576 it is 16, which moves all
++ * three up by four.  Build the word from the per-SoC width rather than from the
++ * fixed accessors, which would otherwise land the controls inside TASK_NUMBER
++ * and ask the PC for a task count of 28673 instead of 1.
 + */
-+#define PC_TASK_CON_CTRL  0x7u  /* PP_EN | COUNT_CLEAR | RESERVED_0, relative */
++#define PC_TASK_CON_CTRL  0x7u  /* PP_EN | COUNT_CLEAR | LAST_LAYER_CLEAR */
 +
 +static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
 +{

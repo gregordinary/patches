@@ -80,7 +80,7 @@ index 135ffb2ed..99ceec54c 100644
 +}
  
  /*
-  * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
+  * PC_TASK_CON packs TASK_NUMBER in the low bits with three controls directly
 @@ -191,7 +205,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  
  	if (core->soc->poll_completion) {

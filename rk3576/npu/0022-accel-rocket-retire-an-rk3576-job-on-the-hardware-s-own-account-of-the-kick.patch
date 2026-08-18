@@ -239,8 +239,8 @@ index 3139f09a3..dbb5de586 100644
 +}
 +
  /*
-  * PC_TASK_CON packs TASK_NUMBER in the low bits with the control bits directly
-  * above it: TASK_PP_EN, then TASK_COUNT_CLEAR, then a bit the TRM marks
+  * PC_TASK_CON packs TASK_NUMBER in the low bits with three controls directly
+  * above it: TASK_PP_EN, TASK_COUNT_CLEAR, then TASK_LAST_LAYER_CLEAR (which the
 @@ -306,10 +357,12 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  	rocket_pc_writel(core, OPERATION_ENABLE, PC_OPERATION_ENABLE_OP_EN(1));
  
