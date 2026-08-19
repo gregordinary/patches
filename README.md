@@ -37,9 +37,9 @@ that range, and a series pinned to a single upstream generation declares neither
 — the builder's `git am` pass is the enforcement either way.
 
 [`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline-7.1 media
-+ NPU series: kernel `030`–`090`, ffmpeg `0001`–`0013`, userspace `001`. A series'
-`kernel` list spans scopes in one `git am` order (`media-accel/kernel/*` then
-`rocket/*`).
++ NPU + crypto series: kernel `030`–`104`, ffmpeg `0001`–`0013`, userspace `001`. A
+series' `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*`, then
+`rocket/*`, then `crypto/kernel/*`).
 
 ## Consuming patches
 
