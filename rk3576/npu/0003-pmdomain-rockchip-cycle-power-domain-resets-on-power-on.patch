@@ -67,7 +67,7 @@ index ae20c10ea..e5ec891e6 100644
  	pd->num_qos = of_count_phandle_with_args(node, "pm_qos",
  						 NULL);
  
-@@ -914,6 +931,7 @@ err_unprepare_clocks:
+@@ -914,6 +931,7 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
  	clk_bulk_unprepare(pd->num_clks, pd->clks);
  err_put_clocks:
  	clk_bulk_put(pd->num_clks, pd->clks);

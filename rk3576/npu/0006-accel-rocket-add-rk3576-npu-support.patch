@@ -482,7 +482,7 @@ index ac51bff39..b4866d090 100644
  	spin_lock_init(&core->fence_lock);
  	mutex_init(&core->job_lock);
  
-@@ -487,6 +594,10 @@ err_sched:
+@@ -487,6 +594,10 @@ int rocket_job_init(struct rocket_core *core)
  
  void rocket_job_fini(struct rocket_core *core)
  {

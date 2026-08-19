@@ -34,7 +34,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  1 file changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 728442e66..5ce897aa9 100644
+index 37fa9caac..fb1540f6d 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -641,7 +641,7 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
@@ -84,7 +84,7 @@ index 728442e66..5ce897aa9 100644
  		/*
  		 * Stopping the block belongs under the lock.  rocket_job_hw_submit()
  		 * writes OPERATION_ENABLE from inside it, so this zero landing after
-@@ -859,7 +877,7 @@ static irqreturn_t rocket_job_irq_handler_thread(int irq, void *data)
+@@ -870,7 +888,7 @@ static irqreturn_t rocket_job_irq_handler_thread(int irq, void *data)
  {
  	struct rocket_core *core = data;
  

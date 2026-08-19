@@ -52,7 +52,7 @@ index 4779aa3a7..535e0dce4 100644
  	struct drm_gpu_scheduler sched;
  	u64 fence_context;
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 5ce897aa9..e892c882e 100644
+index fb1540f6d..d31ce26cd 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -714,6 +714,10 @@ static void rocket_poll_work_fn(struct work_struct *work)
@@ -66,7 +66,7 @@ index 5ce897aa9..e892c882e 100644
  	/*
  	 * The submit this work was queued for has already been retired -- by the
  	 * DMA-error interrupt thread, or by a reset.  Whatever is in flight now
-@@ -929,6 +933,13 @@ int rocket_job_init(struct rocket_core *core)
+@@ -940,6 +944,13 @@ int rocket_job_init(struct rocket_core *core)
  	hrtimer_setup(&core->poll_timer, rocket_poll_timer_fn, CLOCK_MONOTONIC,
  		      HRTIMER_MODE_REL);
  	atomic_set(&core->poll_active, 0);
@@ -80,7 +80,7 @@ index 5ce897aa9..e892c882e 100644
  	spin_lock_init(&core->fence_lock);
  	mutex_init(&core->job_lock);
  
-@@ -970,12 +981,25 @@ int rocket_job_init(struct rocket_core *core)
+@@ -981,12 +992,25 @@ int rocket_job_init(struct rocket_core *core)
  
  void rocket_job_fini(struct rocket_core *core)
  {

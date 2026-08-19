@@ -48,10 +48,10 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  2 files changed, 26 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.h b/drivers/accel/rocket/rocket_drv.h
-index e294ea982..8ef3ca10b 100644
+index 83f062499..a08a91c57 100644
 --- a/drivers/accel/rocket/rocket_drv.h
 +++ b/drivers/accel/rocket/rocket_drv.h
-@@ -37,6 +37,13 @@ struct rocket_file_priv {
+@@ -39,6 +39,13 @@ struct rocket_file_priv {
  	struct rocket_iommu_domain *domain;
  
  	struct drm_sched_entity sched_entity;
@@ -66,7 +66,7 @@ index e294ea982..8ef3ca10b 100644
  
  struct rocket_iommu_domain *rocket_iommu_domain_get(struct rocket_file_priv *rocket_priv);
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index ae34177ef..c4ad600d0 100644
+index b1971c891..5b215321e 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -849,11 +849,14 @@ void rocket_job_fini(struct rocket_core *core)

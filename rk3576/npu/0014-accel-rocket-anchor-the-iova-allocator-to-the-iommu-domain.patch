@@ -237,7 +237,7 @@ index a5fffa51f..5026a2816 100644
  	if (ret)
  		goto err;
  
-@@ -122,9 +125,9 @@ err_unmap:
+@@ -122,9 +125,9 @@ int rocket_ioctl_create_bo(struct drm_device *dev, void *data, struct drm_file *
  		    rkt_obj->mm.start, rkt_obj->size);
  
  err_remove_node:
