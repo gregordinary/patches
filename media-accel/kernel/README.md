@@ -20,6 +20,8 @@ series fits together.
 10. `071-rga-multicore-7.1-fixups.patch`
 11. `072-rk3588-rga-dts.patch`
 12. `073-rkvdec-hevc-bound-tile-counts.patch`
+13. `074-rkvdec-av1-bound-tile-counts.patch`
+14. `075-hantro-fix-run-fail-cleanup.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -58,6 +60,20 @@ The patches here come from different places, and they age differently:
   vendor code, so unlike everything above it is offerable to mainline as-is; it retires
   when an equivalent bound lands there. See the patch header for the reachability
   argument.
+- **`074` — the AV1 half of `073`.** The same missing bound in the Hantro/VPU981 stateless
+  AV1 decoder: unchecked u8 tile counts index fixed-size arrays, divide
+  `context_update_tile_id`, and overflow a 128-record scratch buffer, none of it caught by
+  the V4L2 core. Same offer-to-mainline status as `073`, and it maps onto patches 6-7 of
+  upstream's "bound stateless HEVC/AV1 tile counts" series. One bound differs in kind from
+  `073`: the per-tile-count caps are the AV1 maxima and refuse nothing conforming, but the
+  total-tile cap is this hardware's scratch size (128), below the uAPI's 512, so a
+  conforming >128-tile frame this core cannot decode is refused. See the patch header.
+- **`075` — upstream core fix, carried for `074`.** Sascha Hauer's fix for the hantro
+  `->run()` error paths (patch 1/7 of the unmerged rk3588-jpegdec series). The base
+  kernel double-finishes a failed decode and mis-arms the watchdog, which `074`'s rejection
+  path rides; `075` gives `hantro_end_prepare_run()` an error argument so the rejection is
+  clean. Carried unmodified and retires when it merges. The JPEG decoder the rest of that
+  series adds is not carried — nothing in our userspace can drive a hardware JPEG decoder.
 
 Anything NPU-shaped lives in the sibling [`../../rocket/`](../../rocket/) scope, which
 has its own dependency notes.

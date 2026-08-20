@@ -86,6 +86,49 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # conforming stream is refused. Not RK3588-specific: it fixes all three rkvdec HEVC
 # backends, so the RK3576 wants it too (see the sibling series' TODO).
 #
+# 074 is the AV1 half of the same class, in the Hantro/VPU981 stateless decoder
+# (/dev/video3 on the RK1). tile_cols and tile_rows arrive from userspace in the AV1
+# frame control as u8 and reach fixed-size arrays with no range check anywhere:
+# validate_av1_frame() in the V4L2 core checks quantization, segmentation, loop filter,
+# cdef, loop restoration, the frame flags and superres_denom, but never the tile counts.
+# rockchip_vpu981_av1_dec_set_tile_info() then divides context_update_tile_id by
+# tile_cols (a zero count is a divide error), indexes width_in_sbs_minus_1[64] /
+# height_in_sbs_minus_1[64] by the counts, writes tile_cols * tile_rows records into a
+# 128-record scratch buffer, and indexes the 512-entry tile-group control by
+# tile1 * tile_cols + tile0 -- so a count of 255 overflows the scratch, reads two arrays
+# and the tile-group control out of bounds, and can divide by zero, all before the
+# hardware is touched. Same threat model as 073. The fix rejects in prepare_run, so the
+# buffer is failed with VB2_BUF_STATE_ERROR instead of the decode corrupting memory.
+# Unlike 073, the two bounds differ in kind: the per-dimension caps are the uAPI array
+# sizes, which are also the AV1 maxima, so they refuse nothing conforming; the product
+# cap is AV1_MAX_TILES (128), the size of the tile_info scratch this core fills, which
+# is below the uAPI's 512-tile ceiling -- so a conforming frame with more than 128 tiles
+# is refused, because this hardware cannot decode it regardless. Not RK3588-specific:
+# the VPU981 file is shared, so any SoC that binds HANTRO_AV1_DECODER gets the fix.
+# The divide-by-zero and the scratch overflow are also the two defects upstream's
+# "[PATCH v3 0/9] media: bound stateless HEVC/AV1 tile counts" 6-7 guard; if that series
+# merges, drop 074 rather than carry it, the same silent-absorption trap 050 has.
+# Note 074 rejects through rockchip_vpu981_av1_dec_run()'s prepare_error path, which is
+# buggy in the base kernel -- that is what 075 fixes; see below.
+#
+# 075 is Sascha Hauer's "media: verisilicon: Fix the cleanup when a codec ->run() fails",
+# patch 1/7 of the unmerged rk3588-jpegdec series (Pengutronix, 2026-08-19), carried
+# unmodified. The base kernel's ->run() error path is broken: rockchip_vpu981_av1_dec_run()
+# calls hantro_irq_done() and returns the error to device_run(), which finishes the job a
+# second time (a WARN_ON(!src) splat), and hantro_end_prepare_run() arms a watchdog for a
+# job that never starts, so it fires two seconds later and aborts an unrelated decode. 074
+# does not introduce this -- the -ENOMEM and vb2_src paths already hit it -- but it makes
+# it reliably reachable from a crafted tile count, so on a multi-stream box (an NVR, a
+# multi-client Jellyfin) a rejection can disrupt a concurrent decode. 075 gives
+# hantro_end_prepare_run() an error argument so a failed ->run() completes the media
+# request without the double finish or the watchdog mis-arm, which makes 074's rejection
+# fully clean. It is a codec-agnostic core change touching every hantro codec's ->run()
+# caller and hantro_end_prepare_run()'s signature, so it is carried as its own patch rather
+# than folded into 074, and it is dropped when it lands upstream -- the same silent
+# retirement 050 and 073 have. The rest of that series (the VPU720 JPEG decoder, patches
+# 4-7) is deliberately NOT carried: no ffmpeg path drives a Rockchip hardware JPEG decoder,
+# so the driver would have no consumer here (see TODO.md section 4).
+#
 # 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
 # it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
 # frees it again on the way out of the ioctl. Both reaching failures are ordinary
@@ -201,6 +244,8 @@ kernel = [
     "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
     "media-accel/kernel/072-rk3588-rga-dts.patch",
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
+    "media-accel/kernel/074-rkvdec-av1-bound-tile-counts.patch",
+    "media-accel/kernel/075-hantro-fix-run-fail-cleanup.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",

@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 12:00:00 -0400
+Subject: [PATCH] media: rockchip: vpu981: bound the AV1 tile counts before
+ they index arrays
+
+tile_cols and tile_rows arrive from userspace in the AV1 frame control as u8
+and reach fixed-size arrays and a fixed scratch buffer without ever being
+range-checked.
+
+rockchip_vpu981_av1_dec_set_tile_info() divides context_update_tile_id by
+tile_cols, so a zero count is a divide error. It then indexes
+tile_info->width_in_sbs_minus_1[] and height_in_sbs_minus_1[] -- each
+V4L2_AV1_MAX_TILE_COLS / V4L2_AV1_MAX_TILE_ROWS (64) entries -- by the column
+and row counts, writes tile_cols * tile_rows sixteen-byte records into the
+tile_info scratch buffer (sized for AV1_MAX_TILES records), and indexes the
+tile_group_entry control (V4L2_AV1_MAX_TILE_COUNT entries) by
+tile1 * tile_cols + tile0. rockchip_vpu981_av1_dec_tiles_reallocate() sizes its
+per-column DMA buffers as a multiple of tile_cols. A count of 255 in either
+dimension therefore overflows the scratch buffer, reads the sbs arrays and the
+tile-group control out of bounds, and can divide by zero, all before the
+hardware is programmed.
+
+The V4L2 core does not catch this: validate_av1_frame() checks quantization,
+segmentation, loop filter, cdef, loop restoration, the frame flags and
+superres_denom, but never the tile counts.
+
+Reject an out-of-range count in prepare_run, so the buffer is failed with
+VB2_BUF_STATE_ERROR instead of the decoder corrupting memory. The per-dimension
+bounds are the uAPI array sizes, which are also the AV1 maxima, so no conforming
+stream is refused by them. The product is capped at AV1_MAX_TILES, the size of
+the tile_info scratch this core fills; a frame with more tiles cannot be decoded
+by this hardware regardless.
+
+/dev/videoN is group video, so this is reachable by any local user in that
+group, and by anything that feeds the decoder controls parsed from an untrusted
+bitstream.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../verisilicon/rockchip_vpu981_hw_av1_dec.c  | 38 +++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c b/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c
+index e4e21ad37..74601ac09 100644
+--- a/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c
++++ b/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c
+@@ -427,6 +427,41 @@ int rockchip_vpu981_av1_dec_init(struct hantro_ctx *ctx)
+ 	return 0;
+ }
+ 
++/*
++ * tile_cols and tile_rows arrive from userspace in the AV1 frame control as u8
++ * and reach fixed-size arrays and a fixed scratch buffer with no range check:
++ * validate_av1_frame() in the V4L2 core never looks at them.
++ *
++ * set_tile_info() divides by tile_cols (a zero count is a divide error), indexes
++ * tile_info->width_in_sbs_minus_1[] / height_in_sbs_minus_1[] -- each
++ * V4L2_AV1_MAX_TILE_COLS / _ROWS entries -- by the column and row counts, writes
++ * tile_cols * tile_rows sixteen-byte records into tile_info.cpu (AV1_MAX_TILES
++ * records), and indexes the tile_group_entry control (V4L2_AV1_MAX_TILE_COUNT
++ * entries) by tile1 * tile_cols + tile0. tiles_reallocate() sizes its per-column
++ * buffers as a multiple of tile_cols. All of that runs before the hardware is
++ * touched, so an out-of-range count corrupts memory rather than failing a decode.
++ *
++ * Bound every count here. The per-dimension limits are the uAPI array sizes,
++ * which are also the AV1 maxima, so no conforming stream is refused by them. The
++ * product is capped at AV1_MAX_TILES: that is the size of the tile_info scratch
++ * this core fills, so a frame with more tiles cannot be decoded by this hardware
++ * regardless -- refuse it cleanly instead of overflowing the buffer.
++ */
++static int rockchip_vpu981_av1_dec_validate_tile_info(struct hantro_ctx *ctx)
++{
++	const struct v4l2_av1_tile_info *tile_info =
++		&ctx->av1_dec.ctrls.frame->tile_info;
++
++	if (tile_info->tile_cols < 1 ||
++	    tile_info->tile_cols > V4L2_AV1_MAX_TILE_COLS ||
++	    tile_info->tile_rows < 1 ||
++	    tile_info->tile_rows > V4L2_AV1_MAX_TILE_ROWS ||
++	    tile_info->tile_cols * tile_info->tile_rows > AV1_MAX_TILES)
++		return -EINVAL;
++
++	return 0;
++}
++
+ static int rockchip_vpu981_av1_dec_prepare_run(struct hantro_ctx *ctx)
+ {
+ 	struct hantro_av1_dec_hw_ctx *av1_dec = &ctx->av1_dec;
+@@ -448,6 +483,9 @@ static int rockchip_vpu981_av1_dec_prepare_run(struct hantro_ctx *ctx)
+ 	ctrls->film_grain =
+ 	    hantro_get_ctrl(ctx, V4L2_CID_STATELESS_AV1_FILM_GRAIN);
+ 
++	if (rockchip_vpu981_av1_dec_validate_tile_info(ctx))
++		return -EINVAL;
++
+ 	return rockchip_vpu981_av1_dec_tiles_reallocate(ctx);
+ }
+ 
