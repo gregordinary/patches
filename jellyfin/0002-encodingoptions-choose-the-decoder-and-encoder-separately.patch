@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 06:24:58 -0400
+Subject: [PATCH] EncodingOptions: allow the decoder and the encoder to be
+ chosen separately
+
+Add HardwareDecodingType and HardwareEncodingType. Both are nullable and both
+default to null, which follows HardwareAccelerationType -- so an untouched
+configuration produces the command line it produced before, and there is
+nothing to migrate.
+
+Setting one of them describes a platform whose two halves come from different
+stacks, which is not expressible today:
+
+  - Rockchip RK3588 on a mainline kernel decodes with rkvdec through the V4L2
+    request API and encodes on VEPU580 through MPP. There is no mainline
+    H.264/HEVC encoder driver for it at all.
+  - Rockchip RK3576 will want V4L2 request for decode and v4l2m2m for encode
+    if the VEPU510 driver merges -- two types Jellyfin already has, with no
+    way to combine them.
+  - cedrus and friends on Allwinner, Amlogic, NXP and Raspberry Pi are request
+    API decoders with no matching encoder in the same family.
+  - An Intel iGPU for QSV decode beside a discrete AMD card for AMF encode is
+    expressible on the ffmpeg command line and not here.
+
+The filter chain follows the decoder, since the surface it has to accept is
+the decoder's. Where the encoder is on another stack the chain has to end in a
+download, which GetSwVidFilterChain already does and is already the fallback
+whenever the preferred hardware chain is unavailable.
+
+Trickplay's "disable hardware acceleration" path clears both new fields
+alongside the base type, so it still disables everything it names.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../MediaEncoding/EncodingHelper.cs           |  4 +-
+ .../Encoder/MediaEncoder.cs                   |  2 +
+ .../Configuration/EncodingOptions.cs          | 19 ++++
+ .../MediaEncoding/EncodingHelperTests.cs      | 86 ++++++++++++++++++-
+ 4 files changed, 108 insertions(+), 3 deletions(-)
+
+diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+index 69a596781..56cb78545 100644
+--- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
++++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+@@ -210,7 +210,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         /// <param name="options">Encoding options.</param>
+         /// <returns>The hardware acceleration type to decode with.</returns>
+         public static HardwareAccelerationType GetDecodeType(EncodingOptions options)
+-            => options.HardwareAccelerationType;
++            => options.HardwareDecodingType ?? options.HardwareAccelerationType;
+ 
+         /// <summary>
+         /// Gets the hardware acceleration type that selects the encoder.
+@@ -218,7 +218,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         /// <param name="options">Encoding options.</param>
+         /// <returns>The hardware acceleration type to encode with.</returns>
+         public static HardwareAccelerationType GetEncodeType(EncodingOptions options)
+-            => options.HardwareAccelerationType;
++            => options.HardwareEncodingType ?? options.HardwareAccelerationType;
+ 
+         public string GetH264Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
+             => GetH26xOrAv1Encoder("libx264", "h264", state, encodingOptions);
+diff --git a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
+index 509e242f3..b8fb41b06 100644
+--- a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
++++ b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
+@@ -874,6 +874,8 @@ namespace MediaBrowser.MediaEncoding.Encoder
+             {
+                 options.EnableHardwareEncoding = false;
+                 options.HardwareAccelerationType = HardwareAccelerationType.none;
++                options.HardwareDecodingType = null;
++                options.HardwareEncodingType = null;
+                 options.EnableTonemapping = false;
+             }
+ 
+diff --git a/MediaBrowser.Model/Configuration/EncodingOptions.cs b/MediaBrowser.Model/Configuration/EncodingOptions.cs
+index 4d052d801..bfe7b5f3d 100644
+--- a/MediaBrowser.Model/Configuration/EncodingOptions.cs
++++ b/MediaBrowser.Model/Configuration/EncodingOptions.cs
+@@ -130,6 +130,25 @@ public class EncodingOptions
+     /// </summary>
+     public HardwareAccelerationType HardwareAccelerationType { get; set; }
+ 
++    /// <summary>
++    /// Gets or sets the hardware acceleration type to decode with.
++    /// </summary>
++    /// <remarks>
++    /// Null, the default, follows <see cref="HardwareAccelerationType"/>. Set it only to
++    /// pair a decoder with an encoder from a different stack, which is what
++    /// <see cref="HardwareEncodingType"/> is for.
++    /// </remarks>
++    public HardwareAccelerationType? HardwareDecodingType { get; set; }
++
++    /// <summary>
++    /// Gets or sets the hardware acceleration type to encode with.
++    /// </summary>
++    /// <remarks>
++    /// Null, the default, follows <see cref="HardwareAccelerationType"/>. See
++    /// <see cref="HardwareDecodingType"/>.
++    /// </remarks>
++    public HardwareAccelerationType? HardwareEncodingType { get; set; }
++
+     /// <summary>
+     /// Gets or sets the FFmpeg path as set by the user via the UI.
+     /// </summary>
+diff --git a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
+index 2b009b467..2abaa3f3a 100644
+--- a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
++++ b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
+@@ -261,6 +261,89 @@ public class EncodingHelperTests
+         Assert.Contains("-ar 48000", args, StringComparison.Ordinal);
+     }
+ 
++    [Theory]
++    [InlineData(HardwareAccelerationType.none)]
++    [InlineData(HardwareAccelerationType.amf)]
++    [InlineData(HardwareAccelerationType.qsv)]
++    [InlineData(HardwareAccelerationType.nvenc)]
++    [InlineData(HardwareAccelerationType.v4l2m2m)]
++    [InlineData(HardwareAccelerationType.vaapi)]
++    [InlineData(HardwareAccelerationType.videotoolbox)]
++    [InlineData(HardwareAccelerationType.rkmpp)]
++    public void GetDecodeAndEncodeType_UnsplitOptions_BothFollowHardwareAccelerationType(HardwareAccelerationType type)
++    {
++        // An untouched configuration must resolve to exactly what it did before the split,
++        // on both halves. This is what makes the two new fields safe to add.
++        var options = new EncodingOptions { HardwareAccelerationType = type };
++
++        Assert.Equal(type, EncodingHelper.GetDecodeType(options));
++        Assert.Equal(type, EncodingHelper.GetEncodeType(options));
++    }
++
++    [Fact]
++    public void GetDecodeAndEncodeType_SetToTheSameValue_MatchesSettingTheBaseType()
++    {
++        var split = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.none,
++            HardwareDecodingType = HardwareAccelerationType.vaapi,
++            HardwareEncodingType = HardwareAccelerationType.vaapi
++        };
++        var unsplit = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.vaapi };
++
++        Assert.Equal(EncodingHelper.GetDecodeType(unsplit), EncodingHelper.GetDecodeType(split));
++        Assert.Equal(EncodingHelper.GetEncodeType(unsplit), EncodingHelper.GetEncodeType(split));
++    }
++
++    [Fact]
++    public void GetDecodeAndEncodeType_SplitAcrossStacks_ResolveIndependently()
++    {
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.none,
++            HardwareDecodingType = HardwareAccelerationType.v4l2m2m,
++            HardwareEncodingType = HardwareAccelerationType.rkmpp
++        };
++
++        Assert.Equal(HardwareAccelerationType.v4l2m2m, EncodingHelper.GetDecodeType(options));
++        Assert.Equal(HardwareAccelerationType.rkmpp, EncodingHelper.GetEncodeType(options));
++    }
++
++    [Fact]
++    public void GetDecodeAndEncodeType_OneHalfOverridden_TheOtherKeepsTheBaseType()
++    {
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.vaapi,
++            HardwareDecodingType = HardwareAccelerationType.qsv
++        };
++
++        Assert.Equal(HardwareAccelerationType.qsv, EncodingHelper.GetDecodeType(options));
++        Assert.Equal(HardwareAccelerationType.vaapi, EncodingHelper.GetEncodeType(options));
++    }
++
++    [Fact]
++    public void GetVideoEncoder_EncodeTypeSplitFromDecodeType_PicksTheEncodeTypesEncoder()
++    {
++        // The decoder is on another stack entirely; the encoder must still be chosen
++        // from HardwareEncodingType rather than from the base type.
++        var state = BuildState(subtitle: null, deliveryMethod: null);
++        state.OutputVideoCodec = "hevc";
++        state.VideoType = VideoType.VideoFile;
++
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.none,
++            HardwareDecodingType = HardwareAccelerationType.v4l2m2m,
++            HardwareEncodingType = HardwareAccelerationType.rkmpp,
++            EnableHardwareEncoding = true
++        };
++
++        var helper = CreateHelper(encoder => encoder.Setup(e => e.SupportsEncoder("hevc_rkmpp")).Returns(true));
++
++        Assert.Equal("hevc_rkmpp", helper.GetVideoEncoder(state, options));
++    }
++
+     private static EncodingJobInfo BuildAudioState(string audioCodec, int requestedSampleRate, string? outputContainer = null)
+     {
+         var audio = new MediaStream { Index = 0, Type = MediaStreamType.Audio, Codec = "flac", SampleRate = 96000 };
+@@ -322,10 +405,11 @@ public class EncodingHelperTests
+         };
+     }
+ 
+-    private static EncodingHelper CreateHelper()
++    private static EncodingHelper CreateHelper(Action<Mock<IMediaEncoder>>? configureEncoder = null)
+     {
+         var appPaths = Mock.Of<IApplicationPaths>();
+         var mediaEncoder = new Mock<IMediaEncoder>();
++        configureEncoder?.Invoke(mediaEncoder);
+         var subtitleEncoder = new Mock<ISubtitleEncoder>();
+         var config = new Mock<IConfiguration>();
+         var configurationManager = new Mock<IConfigurationManager>();
+-- 
+2.43.0
+

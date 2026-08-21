@@ -1,0 +1,237 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 06:30:44 -0400
+Subject: [PATCH] Add a v4l2request hardware acceleration type
+
+Mainline kernels drive a growing number of video decoders through the V4L2
+stateless request API: rkvdec on Rockchip, cedrus on Allwinner, and the
+Amlogic, NXP and Raspberry Pi decoders. FFmpeg reaches them with
+-hwaccel v4l2request. Jellyfin has no way to ask for it.
+
+Add the type, with a decoder path that emits the hwaccel argument. Three
+things it deliberately does not do:
+
+It never asks for a hardware surface. FFmpeg has no V4L2 filter to consume
+one, so the filter chain is the software chain and every frame is downloaded.
+
+It declines anything but 8-bit. hwcontext_v4l2request offers no transfer
+format for 10-bit frames -- the hardware writes a packed layout with no
+system-memory equivalent -- so a 10-bit frame could never be read back out of
+the chain the previous paragraph describes. Those decode in software, which is
+what happens today.
+
+It is decode only, and the enum says so. The request API describes no encoder,
+so it appears in neither codec map; selecting it to encode with falls back to
+the software encoder. That is what HardwareEncodingType is for, and pairing it
+with an encoder from another stack is the case that made the split worth
+having: on a mainline-kernel RK3588 the decoder is rkvdec through the request
+API and the only hardware H.264/HEVC encoder is VEPU580 through MPP. Measured
+there on kernel 7.1.7, 1080p HEVC to 720p, 900 frames: the transcode costs
+17.0 CPU-seconds against 50.2 for software decode.
+
+Which codecs a given board decodes stays the operator's to declare in
+HardwareDecodingCodecs, which GetHwaccelType already checks.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../MediaEncoding/EncodingHelper.cs           | 57 +++++++++++++++
+ .../Entities/HardwareAccelerationType.cs      | 11 ++-
+ .../MediaEncoding/EncodingHelperTests.cs      | 69 ++++++++++++++++++-
+ 3 files changed, 135 insertions(+), 2 deletions(-)
+
+diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+index 428461d3e..316bdf508 100644
+--- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
++++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+@@ -6569,6 +6569,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+                     HardwareAccelerationType.nvenc => GetNvdecVidDecoder(state, options, videoStream, bitDepth),
+                     HardwareAccelerationType.videotoolbox => GetVideotoolboxVidDecoder(state, options, videoStream, bitDepth),
+                     HardwareAccelerationType.rkmpp => GetRkmppVidDecoder(state, options, videoStream, bitDepth),
++                    HardwareAccelerationType.v4l2request => GetV4l2RequestVidDecoder(state, options, videoStream, bitDepth),
+                     _ => string.Empty
+                 };
+ 
+@@ -6660,6 +6661,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             var isQsvSupported = (isLinux || isWindows) && _mediaEncoder.SupportsHwaccel("qsv");
+             var isVideotoolboxSupported = isMacOS && _mediaEncoder.SupportsHwaccel("videotoolbox");
+             var isRkmppSupported = isLinux && IsRkmppFullSupported();
++            var isV4l2RequestSupported = isLinux && _mediaEncoder.SupportsHwaccel("v4l2request");
+             var isCodecAvailable = options.HardwareDecodingCodecs.Contains(videoCodec, StringComparison.OrdinalIgnoreCase);
+             var hardwareAccelerationType = GetDecodeType(options);
+ 
+@@ -6799,6 +6801,14 @@ namespace MediaBrowser.Controller.MediaEncoding
+                 return " -hwaccel rkmpp" + (outputHwSurface ? " -hwaccel_output_format drm_prime -noautorotate" + stripRotationDataArgs : string.Empty);
+             }
+ 
++            // V4L2 request API
++            if (hardwareAccelerationType == HardwareAccelerationType.v4l2request
++                && isV4l2RequestSupported
++                && isCodecAvailable)
++            {
++                return " -hwaccel v4l2request" + (outputHwSurface ? " -hwaccel_output_format drm_prime -noautorotate" + stripRotationDataArgs : string.Empty);
++            }
++
+             return null;
+         }
+ 
+@@ -7249,6 +7259,53 @@ namespace MediaBrowser.Controller.MediaEncoding
+             return null;
+         }
+ 
++        /// <summary>
++        /// Gets the V4L2 request API video decoder.
++        /// </summary>
++        /// <param name="state">Encoding state.</param>
++        /// <param name="options">Encoding options.</param>
++        /// <param name="videoStream">Video stream.</param>
++        /// <param name="bitDepth">Video color bit depth.</param>
++        /// <returns>The decoder arguments, or null to decode in software.</returns>
++        public string GetV4l2RequestVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
++        {
++            if (!OperatingSystem.IsLinux()
++                || GetDecodeType(options) != HardwareAccelerationType.v4l2request)
++            {
++                return null;
++            }
++
++            // The request API produces hardware frames and FFmpeg has no V4L2 filter to consume
++            // them, so the chain is the software one and every frame is downloaded. Ten-bit
++            // frames cannot be: hwcontext_v4l2request offers no transfer format for them,
++            // because the hardware writes a packed 10-bit layout with no system-memory
++            // equivalent. Decline and let those decode in software.
++            if (bitDepth != 8)
++            {
++                return null;
++            }
++
++            var is8bitSwFormat = string.Equals("yuv420p", videoStream.PixelFormat, StringComparison.OrdinalIgnoreCase)
++                                 || string.Equals("yuvj420p", videoStream.PixelFormat, StringComparison.OrdinalIgnoreCase);
++            if (!is8bitSwFormat)
++            {
++                return null;
++            }
++
++            // Which of these a board actually decodes is the operator's to declare, in
++            // HardwareDecodingCodecs -- GetHwaccelType checks it before returning anything.
++            return videoStream.Codec?.ToLowerInvariant() switch
++            {
++                "avc" or "h264" => GetHwaccelType(state, options, "h264", bitDepth, false),
++                "hevc" or "h265" => GetHwaccelType(state, options, "hevc", bitDepth, false),
++                "vp8" => GetHwaccelType(state, options, "vp8", bitDepth, false),
++                "vp9" => GetHwaccelType(state, options, "vp9", bitDepth, false),
++                "av1" => GetHwaccelType(state, options, "av1", bitDepth, false),
++                "mpeg2video" => GetHwaccelType(state, options, "mpeg2video", bitDepth, false),
++                _ => null,
++            };
++        }
++
+         /// <summary>
+         /// Gets the number of threads.
+         /// </summary>
+diff --git a/MediaBrowser.Model/Entities/HardwareAccelerationType.cs b/MediaBrowser.Model/Entities/HardwareAccelerationType.cs
+index ece18ec3e..a5aa4da57 100644
+--- a/MediaBrowser.Model/Entities/HardwareAccelerationType.cs
++++ b/MediaBrowser.Model/Entities/HardwareAccelerationType.cs
+@@ -45,5 +45,14 @@ public enum HardwareAccelerationType
+     /// <summary>
+     /// Rockchip Media Process Platform (RKMPP).
+     /// </summary>
+-    rkmpp = 7
++    rkmpp = 7,
++
++    /// <summary>
++    /// Video4Linux2 stateless decoding through the request API.
++    /// </summary>
++    /// <remarks>
++    /// Decode only. The request API describes no encoder, so selecting this to encode with
++    /// falls back to the software encoder. Pair it with an encoding type that can encode.
++    /// </remarks>
++    v4l2request = 8
+ }
+diff --git a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
+index ae6d3d15f..12e2e867b 100644
+--- a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
++++ b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
+@@ -392,11 +392,78 @@ public class EncodingHelperTests
+         Assert.Equal(1, args.Split("-init_hw_device rkmpp=", StringSplitOptions.None).Length - 1);
+     }
+ 
+-    private static EncodingJobInfo BuildVideoEncodeState()
++    [Fact]
++    public void GetInputVideoHwaccelArgs_V4l2RequestDecodeWithRkmppEncode_EmitsBothHalves()
++    {
++        Assert.SkipUnless(OperatingSystem.IsLinux(), "Linux-only test");
++
++        // A mainline-kernel RK3588: the decoder is rkvdec through the request API and the
++        // encoder is VEPU580 through MPP. Neither type can name the other half.
++        var state = BuildVideoEncodeState(sourceCodec: "hevc", pixelFormat: "yuv420p");
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.none,
++            HardwareDecodingType = HardwareAccelerationType.v4l2request,
++            HardwareEncodingType = HardwareAccelerationType.rkmpp,
++            HardwareDecodingCodecs = ["hevc"],
++            EnableHardwareEncoding = true
++        };
++
++        var helper = CreateHelper(encoder =>
++        {
++            encoder.Setup(e => e.SupportsHwaccel("v4l2request")).Returns(true);
++            encoder.Setup(e => e.SupportsHwaccel("rkmpp")).Returns(true);
++            encoder.Setup(e => e.SupportsEncoder("hevc_rkmpp")).Returns(true);
++        });
++
++        Assert.Contains("-hwaccel v4l2request", helper.GetInputVideoHwaccelArgs(state, options), StringComparison.Ordinal);
++        Assert.Equal("hevc_rkmpp", helper.GetVideoEncoder(state, options));
++    }
++
++    [Fact]
++    public void GetInputVideoHwaccelArgs_V4l2Request10Bit_DecodesInSoftware()
++    {
++        Assert.SkipUnless(OperatingSystem.IsLinux(), "Linux-only test");
++
++        // hwcontext_v4l2request offers no transfer format for 10-bit, and the chain is the
++        // software one, so a 10-bit frame could never be read back. Decline rather than
++        // build a chain that cannot run.
++        var state = BuildVideoEncodeState(sourceCodec: "hevc", pixelFormat: "yuv420p10le");
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.none,
++            HardwareDecodingType = HardwareAccelerationType.v4l2request,
++            HardwareEncodingType = HardwareAccelerationType.rkmpp,
++            HardwareDecodingCodecs = ["hevc"],
++            EnableHardwareEncoding = true
++        };
++
++        var helper = CreateHelper(encoder =>
++        {
++            encoder.Setup(e => e.SupportsHwaccel("v4l2request")).Returns(true);
++            encoder.Setup(e => e.SupportsHwaccel("rkmpp")).Returns(true);
++            encoder.Setup(e => e.SupportsEncoder("hevc_rkmpp")).Returns(true);
++        });
++
++        Assert.DoesNotContain("-hwaccel", helper.GetInputVideoHwaccelArgs(state, options), StringComparison.Ordinal);
++    }
++
++    private static EncodingJobInfo BuildVideoEncodeState(string? sourceCodec = null, string? pixelFormat = null)
+     {
+         var state = BuildState(subtitle: null, deliveryMethod: null);
+         state.OutputVideoCodec = "hevc";
+         state.VideoType = VideoType.VideoFile;
++
++        if (sourceCodec is not null)
++        {
++            state.VideoStream.Codec = sourceCodec;
++        }
++
++        if (pixelFormat is not null)
++        {
++            state.VideoStream.PixelFormat = pixelFormat;
++        }
++
+         return state;
+     }
+ 
+-- 
+2.43.0
+

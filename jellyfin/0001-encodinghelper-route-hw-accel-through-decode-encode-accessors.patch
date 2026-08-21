@@ -1,0 +1,316 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 06:22:38 -0400
+Subject: [PATCH] EncodingHelper: route hardware accel selection through
+ decode/encode accessors
+
+HardwareAccelerationType decides both which decoder and which encoder a
+transcode uses, and EncodingHelper reads it in places that want different
+answers. A platform whose best decoder and best encoder come from different
+stacks cannot be described: it has to pick one and lose the other, or smuggle
+the pairing inside a type whose name only names one half.
+
+Introduce GetDecodeType() and GetEncodeType() and route every read through
+whichever one that site means. Both return HardwareAccelerationType, so this
+commit changes no behaviour whatsoever -- it is the classification, separated
+out so it can be reviewed on its own before anything depends on it.
+
+The classification, for review:
+
+  encode  GetH26xOrAv1Encoder, GetMjpegEncoder -- codecMap and _mjpegCodecMap
+          pick the encoder binary; GetVideoQualityParam -- every branch appends
+          to the encoder parameter string (-low_power, -async_depth).
+
+  decode  GetHwaccelType and GetHardwareVideoDecoder with the bit-depth and
+          profile gates in front of them; the six Get*VidDecoder guards;
+          GetHwDecoderName; GetInputVideoHwaccelArgs; and GetInputModifier's
+          input demuxer hint, which is an input-side decision.
+
+  decode  the filter chain: GetVideoProcessingFilterParam's dispatch and the
+          six Get*VidFilterChain guards that mirror it, plus
+          IsIntelVppTonemapAvailable. The chain has to accept the surface the
+          decoder produced, so it follows the decoder.
+
+MediaEncoder's keyframe-only extraction check and the VideoToolbox
+low-priority decode flag are decode. Its VA-API device probe is neither: it
+inspects the device that either half would use, so it now asks about both.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../MediaEncoding/EncodingHelper.cs           | 66 ++++++++++++-------
+ .../Encoder/MediaEncoder.cs                   |  7 +-
+ 2 files changed, 47 insertions(+), 26 deletions(-)
+
+diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+index 9a6888935..69a596781 100644
+--- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
++++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+@@ -200,6 +200,26 @@ namespace MediaBrowser.Controller.MediaEncoding
+         [GeneratedRegex(@"\s+")]
+         private static partial Regex WhiteSpaceRegex();
+ 
++        /// <summary>
++        /// Gets the hardware acceleration type that selects the decoder.
++        /// </summary>
++        /// <remarks>
++        /// The filter chain follows the decoder, because the surface it has to accept is the
++        /// one the decoder produced, so filter selection resolves through here as well.
++        /// </remarks>
++        /// <param name="options">Encoding options.</param>
++        /// <returns>The hardware acceleration type to decode with.</returns>
++        public static HardwareAccelerationType GetDecodeType(EncodingOptions options)
++            => options.HardwareAccelerationType;
++
++        /// <summary>
++        /// Gets the hardware acceleration type that selects the encoder.
++        /// </summary>
++        /// <param name="options">Encoding options.</param>
++        /// <returns>The hardware acceleration type to encode with.</returns>
++        public static HardwareAccelerationType GetEncodeType(EncodingOptions options)
++            => options.HardwareAccelerationType;
++
+         public string GetH264Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
+             => GetH26xOrAv1Encoder("libx264", "h264", state, encodingOptions);
+ 
+@@ -216,7 +236,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             // Since transcoding of folder rips is experimental anyway, it's not worth adding additional variables such as this.
+             if (state.VideoType == VideoType.VideoFile)
+             {
+-                var hwType = encodingOptions.HardwareAccelerationType;
++                var hwType = GetEncodeType(encodingOptions);
+ 
+                 var codecMap = new Dictionary<HardwareAccelerationType, string>()
+                 {
+@@ -245,7 +265,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         {
+             if (state.VideoType == VideoType.VideoFile)
+             {
+-                var hwType = encodingOptions.HardwareAccelerationType;
++                var hwType = GetEncodeType(encodingOptions);
+ 
+                 // Only enable VA-API MJPEG encoder on Intel iHD driver.
+                 // Legacy platforms supported ONLY by i965 do not support MJPEG encoder.
+@@ -415,7 +435,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             // prefer 'tonemap_vaapi' over 'vpp_qsv' on Linux for supporting Gen9/KBLx.
+             // 'vpp_qsv' requires VPL, which is only supported on Gen12/TGLx and newer.
+             if (OperatingSystem.IsWindows()
+-                && options.HardwareAccelerationType == HardwareAccelerationType.qsv
++                && GetDecodeType(options) == HardwareAccelerationType.qsv
+                 && _mediaEncoder.EncoderVersion < _minFFmpegQsvVppTonemapOption)
+             {
+                 return false;
+@@ -1025,7 +1045,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             var isWindows = OperatingSystem.IsWindows();
+             var isLinux = OperatingSystem.IsLinux();
+             var isMacOS = OperatingSystem.IsMacOS();
+-            var optHwaccelType = options.HardwareAccelerationType;
++            var optHwaccelType = GetDecodeType(options);
+             var vidDecoder = GetHardwareVideoDecoder(state, options) ?? string.Empty;
+             var isHwTonemapAvailable = IsHwTonemapAvailable(state, options);
+ 
+@@ -2101,7 +2121,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             // https://github.com/intel/media-driver/issues/1456
+             var enableWaFori915Hang = false;
+ 
+-            var hardwareAccelerationType = encodingOptions.HardwareAccelerationType;
++            var hardwareAccelerationType = GetEncodeType(encodingOptions);
+ 
+             if (hardwareAccelerationType == HardwareAccelerationType.vaapi)
+             {
+@@ -3977,7 +3997,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             EncodingOptions options,
+             string vidEncoder)
+         {
+-            if (options.HardwareAccelerationType != HardwareAccelerationType.nvenc)
++            if (GetDecodeType(options) != HardwareAccelerationType.nvenc)
+             {
+                 return (null, null, null);
+             }
+@@ -4185,7 +4205,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             EncodingOptions options,
+             string vidEncoder)
+         {
+-            if (options.HardwareAccelerationType != HardwareAccelerationType.amf)
++            if (GetDecodeType(options) != HardwareAccelerationType.amf)
+             {
+                 return (null, null, null);
+             }
+@@ -4411,7 +4431,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             EncodingOptions options,
+             string vidEncoder)
+         {
+-            if (options.HardwareAccelerationType != HardwareAccelerationType.qsv)
++            if (GetDecodeType(options) != HardwareAccelerationType.qsv)
+             {
+                 return (null, null, null);
+             }
+@@ -5019,7 +5039,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             EncodingOptions options,
+             string vidEncoder)
+         {
+-            if (options.HardwareAccelerationType != HardwareAccelerationType.vaapi)
++            if (GetDecodeType(options) != HardwareAccelerationType.vaapi)
+             {
+                 return (null, null, null);
+             }
+@@ -5758,7 +5778,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             EncodingOptions options,
+             string vidEncoder)
+         {
+-            if (options.HardwareAccelerationType != HardwareAccelerationType.videotoolbox)
++            if (GetDecodeType(options) != HardwareAccelerationType.videotoolbox)
+             {
+                 return (null, null, null);
+             }
+@@ -5948,7 +5968,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             EncodingOptions options,
+             string vidEncoder)
+         {
+-            if (options.HardwareAccelerationType != HardwareAccelerationType.rkmpp)
++            if (GetDecodeType(options) != HardwareAccelerationType.rkmpp)
+             {
+                 return (null, null, null);
+             }
+@@ -6247,7 +6267,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             List<string> subFilters;
+             List<string> overlayFilters;
+ 
+-            (mainFilters, subFilters, overlayFilters) = options.HardwareAccelerationType switch
++            (mainFilters, subFilters, overlayFilters) = GetDecodeType(options) switch
+             {
+                 HardwareAccelerationType.vaapi => GetVaapiVidFilterChain(state, options, outputVideoCodec),
+                 HardwareAccelerationType.amf => GetAmdVidFilterChain(state, options, outputVideoCodec),
+@@ -6449,7 +6469,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+                 return null;
+             }
+ 
+-            var hardwareAccelerationType = options.HardwareAccelerationType;
++            var hardwareAccelerationType = GetDecodeType(options);
+ 
+             if (!string.IsNullOrEmpty(videoStream.Codec) && hardwareAccelerationType != HardwareAccelerationType.none)
+             {
+@@ -6540,7 +6560,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             // VideoToolbox decoders have built-in SW fallback
+             if (bitDepth == 10
+                 && isCodecAvailable
+-                && (options.HardwareAccelerationType != HardwareAccelerationType.videotoolbox))
++                && (GetDecodeType(options) != HardwareAccelerationType.videotoolbox))
+             {
+                 if (string.Equals(videoCodec, "hevc", StringComparison.OrdinalIgnoreCase)
+                     && options.HardwareDecodingCodecs.Contains("hevc", StringComparison.OrdinalIgnoreCase)
+@@ -6596,7 +6616,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             var isVideotoolboxSupported = isMacOS && _mediaEncoder.SupportsHwaccel("videotoolbox");
+             var isRkmppSupported = isLinux && IsRkmppFullSupported();
+             var isCodecAvailable = options.HardwareDecodingCodecs.Contains(videoCodec, StringComparison.OrdinalIgnoreCase);
+-            var hardwareAccelerationType = options.HardwareAccelerationType;
++            var hardwareAccelerationType = GetDecodeType(options);
+ 
+             var ffmpegVersion = _mediaEncoder.EncoderVersion;
+ 
+@@ -6618,7 +6638,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+ 
+             // VideoToolbox decoders have built-in SW fallback
+             if (isCodecAvailable
+-                && (options.HardwareAccelerationType != HardwareAccelerationType.videotoolbox))
++                && (GetDecodeType(options) != HardwareAccelerationType.videotoolbox))
+             {
+                 if (string.Equals(videoCodec, "hevc", StringComparison.OrdinalIgnoreCase)
+                     && options.HardwareDecodingCodecs.Contains("hevc", StringComparison.OrdinalIgnoreCase))
+@@ -6743,7 +6763,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             var isLinux = OperatingSystem.IsLinux();
+ 
+             if ((!isWindows && !isLinux)
+-                || options.HardwareAccelerationType != HardwareAccelerationType.qsv)
++                || GetDecodeType(options) != HardwareAccelerationType.qsv)
+             {
+                 return null;
+             }
+@@ -6823,7 +6843,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         public string GetNvdecVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
+         {
+             if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+-                || options.HardwareAccelerationType != HardwareAccelerationType.nvenc)
++                || GetDecodeType(options) != HardwareAccelerationType.nvenc)
+             {
+                 return null;
+             }
+@@ -6896,7 +6916,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         public string GetAmfVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
+         {
+             if (!OperatingSystem.IsWindows()
+-                || options.HardwareAccelerationType != HardwareAccelerationType.amf)
++                || GetDecodeType(options) != HardwareAccelerationType.amf)
+             {
+                 return null;
+             }
+@@ -6952,7 +6972,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         public string GetVaapiVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
+         {
+             if (!OperatingSystem.IsLinux()
+-                || options.HardwareAccelerationType != HardwareAccelerationType.vaapi)
++                || GetDecodeType(options) != HardwareAccelerationType.vaapi)
+             {
+                 return null;
+             }
+@@ -7025,7 +7045,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+         public string GetVideotoolboxVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
+         {
+             if (!OperatingSystem.IsMacOS()
+-                || options.HardwareAccelerationType != HardwareAccelerationType.videotoolbox)
++                || GetDecodeType(options) != HardwareAccelerationType.videotoolbox)
+             {
+                 return null;
+             }
+@@ -7092,7 +7112,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+             var isLinux = OperatingSystem.IsLinux();
+ 
+             if (!isLinux
+-                || options.HardwareAccelerationType != HardwareAccelerationType.rkmpp)
++                || GetDecodeType(options) != HardwareAccelerationType.rkmpp)
+             {
+                 return null;
+             }
+@@ -7401,7 +7421,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+ 
+             if (state.IsVideoRequest)
+             {
+-                if (!string.IsNullOrEmpty(state.InputContainer) && state.VideoType == VideoType.VideoFile && encodingOptions.HardwareAccelerationType != HardwareAccelerationType.none)
++                if (!string.IsNullOrEmpty(state.InputContainer) && state.VideoType == VideoType.VideoFile && GetDecodeType(encodingOptions) != HardwareAccelerationType.none)
+                 {
+                     var inputFormat = GetInputFormat(state.InputContainer);
+                     if (!string.IsNullOrEmpty(inputFormat))
+diff --git a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
+index 0ddd37835..509e242f3 100644
+--- a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
++++ b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
+@@ -241,7 +241,8 @@ namespace MediaBrowser.MediaEncoding.Encoder
+                 if (OperatingSystem.IsLinux()
+                     && SupportsHwaccel("vaapi")
+                     && !string.IsNullOrEmpty(options.VaapiDevice)
+-                    && options.HardwareAccelerationType == HardwareAccelerationType.vaapi)
++                    && (EncodingHelper.GetDecodeType(options) == HardwareAccelerationType.vaapi
++                        || EncodingHelper.GetEncodeType(options) == HardwareAccelerationType.vaapi))
+                 {
+                     _isVaapiDeviceAmd = validator.CheckVaapiDeviceByDriverName("Mesa Gallium driver", options.VaapiDevice);
+                     _isVaapiDeviceInteliHD = validator.CheckVaapiDeviceByDriverName("Intel iHD driver", options.VaapiDevice);
+@@ -852,7 +853,7 @@ namespace MediaBrowser.MediaEncoding.Encoder
+ 
+             if (allowHwAccel && enableKeyFrameOnlyExtraction)
+             {
+-                var hardwareAccelerationType = options.HardwareAccelerationType;
++                var hardwareAccelerationType = EncodingHelper.GetDecodeType(options);
+                 var supportsKeyFrameOnly = (hardwareAccelerationType == HardwareAccelerationType.nvenc && options.EnableEnhancedNvdecDecoder)
+                                            || (hardwareAccelerationType == HardwareAccelerationType.amf && OperatingSystem.IsWindows())
+                                            || (hardwareAccelerationType == HardwareAccelerationType.qsv && options.PreferSystemNativeHwDecoder)
+@@ -916,7 +917,7 @@ namespace MediaBrowser.MediaEncoding.Encoder
+                 inputArg = "-threads " + threads + " " + inputArg; // HW accel args set a different input thread count, only set if disabled
+             }
+ 
+-            if (options.HardwareAccelerationType == HardwareAccelerationType.videotoolbox && _isLowPriorityHwDecodeSupported)
++            if (EncodingHelper.GetDecodeType(options) == HardwareAccelerationType.videotoolbox && _isLowPriorityHwDecodeSupported)
+             {
+                 // VideoToolbox supports low priority decoding, which is useful for trickplay
+                 inputArg = "-hwaccel_flags +low_priority " + inputArg;
+-- 
+2.43.0
+

@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 06:27:12 -0400
+Subject: [PATCH] EncodingHelper: initialise the encoder's device when it is on
+ its own stack
+
+GetInputVideoHwaccelArgs walks one branch per hardware stack and selects the
+branch on the decode type. Each branch then emits its device if either the
+decoder or the encoder belongs to it, which covers every unsplit
+configuration: the two halves are the same stack, so one branch serves both.
+
+A split pairing breaks that. With decode on one stack and encode on another,
+the encoder's branch is never reached and it is handed no -init_hw_device at
+all, so an encoder that needs one fails to open.
+
+Emit it separately when the two types differ, guarded on the resolved encoder
+actually naming that stack, which is what each branch already checks. The
+filter chain follows the decoder and therefore downloads to system memory
+before this encoder, so it wants a device and no -filter_hw_device.
+
+When both halves are the same stack -- every configuration that exists today
+-- the new code does not run, so the emitted command line is unchanged.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../MediaEncoding/EncodingHelper.cs           | 45 +++++++++++++++
+ .../MediaEncoding/EncodingHelperTests.cs      | 56 +++++++++++++++++++
+ 2 files changed, 101 insertions(+)
+
+diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+index 56cb78545..428461d3e 100644
+--- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
++++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+@@ -1247,6 +1247,16 @@ namespace MediaBrowser.Controller.MediaEncoding
+                 args.Append(filterDevArgs);
+             }
+ 
++            // The branches above select on the decode type, so a pairing whose encoder is on
++            // another stack never reached the encoder's own branch and its device was never
++            // initialised. Add it here. The filter chain follows the decoder and therefore
++            // downloads before this encoder, so the encoder wants a device and no filter device.
++            var encodeType = GetEncodeType(options);
++            if (encodeType != optHwaccelType)
++            {
++                args.Append(GetEncoderHwDeviceArgs(encodeType, vidEncoder, options));
++            }
++
+             if (!string.IsNullOrEmpty(vidDecoder))
+             {
+                 args.Append(vidDecoder);
+@@ -1255,6 +1265,41 @@ namespace MediaBrowser.Controller.MediaEncoding
+             return args.ToString().Trim();
+         }
+ 
++        /// <summary>
++        /// Gets the device initialisation arguments an encoder needs when it is the only thing
++        /// on its stack, because the decoder was chosen from a different one.
++        /// </summary>
++        /// <param name="encodeType">The hardware acceleration type to encode with.</param>
++        /// <param name="vidEncoder">The resolved video encoder.</param>
++        /// <param name="options">Encoding options.</param>
++        /// <returns>Device arguments, or an empty string if the encoder is not on that stack.</returns>
++        private string GetEncoderHwDeviceArgs(HardwareAccelerationType encodeType, string vidEncoder, EncodingOptions options)
++        {
++            if (string.IsNullOrEmpty(vidEncoder))
++            {
++                return string.Empty;
++            }
++
++            bool EncoderIs(string suffix) => vidEncoder.Contains(suffix, StringComparison.OrdinalIgnoreCase);
++
++            return encodeType switch
++            {
++                HardwareAccelerationType.vaapi when EncoderIs("vaapi") && OperatingSystem.IsLinux() && _mediaEncoder.SupportsHwaccel("vaapi")
++                    => GetVaapiDeviceArgs(options.VaapiDevice, null, null, null, null, VaapiAlias),
++                HardwareAccelerationType.qsv when EncoderIs("qsv") && _mediaEncoder.SupportsHwaccel("qsv")
++                    => GetQsvDeviceArgs(options.QsvDevice, QsvAlias),
++                HardwareAccelerationType.nvenc when EncoderIs("nvenc") && IsCudaFullSupported()
++                    => GetCudaDeviceArgs(0, CudaAlias),
++                HardwareAccelerationType.amf when EncoderIs("amf") && OperatingSystem.IsWindows() && _mediaEncoder.SupportsHwaccel("d3d11va")
++                    => GetD3d11vaDeviceArgs(0, "0x1002", D3d11vaAlias),
++                HardwareAccelerationType.videotoolbox when EncoderIs("videotoolbox") && OperatingSystem.IsMacOS() && _mediaEncoder.SupportsHwaccel("videotoolbox")
++                    => GetVideoToolboxDeviceArgs(VideotoolboxAlias),
++                HardwareAccelerationType.rkmpp when EncoderIs("rkmpp") && OperatingSystem.IsLinux() && _mediaEncoder.SupportsHwaccel("rkmpp")
++                    => GetRkmppDeviceArgs(RkmppAlias),
++                _ => string.Empty,
++            };
++        }
++
+         /// <summary>
+         /// Gets the input argument.
+         /// </summary>
+diff --git a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
+index 2abaa3f3a..ae6d3d15f 100644
+--- a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
++++ b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
+@@ -344,6 +344,62 @@ public class EncodingHelperTests
+         Assert.Equal("hevc_rkmpp", helper.GetVideoEncoder(state, options));
+     }
+ 
++    [Fact]
++    public void GetInputVideoHwaccelArgs_SplitPairing_InitializesTheEncodersDevice()
++    {
++        Assert.SkipUnless(OperatingSystem.IsLinux(), "Linux-only test");
++
++        // The decoder is on a stack of its own, so the branch chain never reaches rkmpp
++        // and the encoder would otherwise be handed no device to encode on.
++        var state = BuildVideoEncodeState();
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.none,
++            HardwareDecodingType = HardwareAccelerationType.v4l2m2m,
++            HardwareEncodingType = HardwareAccelerationType.rkmpp,
++            EnableHardwareEncoding = true
++        };
++
++        var args = CreateHelper(encoder =>
++        {
++            encoder.Setup(e => e.SupportsEncoder("hevc_rkmpp")).Returns(true);
++            encoder.Setup(e => e.SupportsHwaccel("rkmpp")).Returns(true);
++        }).GetInputVideoHwaccelArgs(state, options);
++
++        Assert.Contains("-init_hw_device rkmpp=rk", args, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void GetInputVideoHwaccelArgs_UnsplitOptions_InitializesTheDeviceExactlyOnce()
++    {
++        Assert.SkipUnless(OperatingSystem.IsLinux(), "Linux-only test");
++
++        // When both halves are the same stack the branch chain has already emitted the
++        // device, and the split path must not emit it a second time.
++        var state = BuildVideoEncodeState();
++        var options = new EncodingOptions
++        {
++            HardwareAccelerationType = HardwareAccelerationType.rkmpp,
++            EnableHardwareEncoding = true
++        };
++
++        var args = CreateHelper(encoder =>
++        {
++            encoder.Setup(e => e.SupportsEncoder("hevc_rkmpp")).Returns(true);
++            encoder.Setup(e => e.SupportsHwaccel("rkmpp")).Returns(true);
++        }).GetInputVideoHwaccelArgs(state, options);
++
++        Assert.Equal(1, args.Split("-init_hw_device rkmpp=", StringSplitOptions.None).Length - 1);
++    }
++
++    private static EncodingJobInfo BuildVideoEncodeState()
++    {
++        var state = BuildState(subtitle: null, deliveryMethod: null);
++        state.OutputVideoCodec = "hevc";
++        state.VideoType = VideoType.VideoFile;
++        return state;
++    }
++
+     private static EncodingJobInfo BuildAudioState(string audioCodec, int requestedSampleRate, string? outputContainer = null)
+     {
+         var audio = new MediaStream { Index = 0, Type = MediaStreamType.Audio, Codec = "flac", SampleRate = 96000 };
+-- 
+2.43.0
+
