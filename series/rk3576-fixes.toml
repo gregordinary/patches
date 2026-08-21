@@ -46,12 +46,31 @@ applies_to_kernel = ">=7.1, <7.2"
 # h96-max-m9/forky image gets it too, not just media-accel. Upstream-destined
 # like the rest -- offered to the mainline maintainers, not merged, so unlike
 # 100-102 there is no landed commit to retire it against yet.
+#
+# 073 bounds the HEVC tile counts, and is shared verbatim with the RK3588 series
+# (series/rk3588-accel), where its full rationale lives. num_tile_columns_minus1
+# and num_tile_rows_minus1 arrive from userspace as u8 and index fixed-size
+# arrays -- the backends' own stack scratch and the control's own
+# column_width_minus1[20] / row_height_minus1[22] -- with no range check in the
+# driver or the V4L2 core, so a hostile count writes past a 40-byte stack array.
+# The fix rejects out-of-range counts in try_ctrl for all three rkvdec HEVC
+# backends, and the VDPU383 is one of them: this SoC's decoder parses the same
+# controls and overflows the same stack, and it is the SoC layer's decoder, so
+# the base image is exposed, not just media-accel. The bound is the uAPI array
+# size, which is also the HEVC maximum (20 columns, 22 rows), so no conforming
+# stream is refused. It sits after 104 because both patches touch
+# rkvdec-vdpu383-hevc.c -- 104 in the run path, 073 in try_ctrl -- and 073
+# applies strictly (no 3-way) on top; a re-curation of the shared file for
+# either series has to keep applying in the other, which the builder's
+# verify-applies gate enforces. Retires when a kernel arrives carrying an
+# upstream equivalent, from both series at once.
 kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
     "rk3576/kernel/102-arm64-dts-rk3576-cpu-caches.patch",
     "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
     "rk3576/kernel/104-media-rkvdec-vdpu383-read-cache.patch",
+    "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
 ]
 
 ffmpeg    = []

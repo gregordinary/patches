@@ -84,7 +84,8 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # `try_ctrl` rather than clamping, so a bad stream fails cleanly instead of decoding
 # wrong, and the bound is the uAPI array size, which is also the HEVC maximum -- no
 # conforming stream is refused. Not RK3588-specific: it fixes all three rkvdec HEVC
-# backends, so the RK3576 wants it too (see the sibling series' TODO).
+# backends, so series/rk3576-fixes carries this same file, after its own 104 -- the
+# same sharing 070/071 have with series/rk3576-rga.
 #
 # 074 is the AV1 half of the same class, in the Hantro/VPU981 stateless decoder
 # (/dev/video3 on the RK1). tile_cols and tile_rows arrive from userspace in the AV1
