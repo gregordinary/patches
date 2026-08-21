@@ -27,13 +27,18 @@
 # that one patch: a per-patch range *skips* a patch outside it, which here would ship
 # an RGA driver with no DT nodes to bind -- silence where a refusal belongs. 7.1.4 is
 # untested and may well work; the bound names what is verified.
-applies_to_kernel = ">=7.1.5, <7.2"
+#
+# The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
+# against. 7.2 carries an in-tree V4L2 RGA3 driver, but that is RK3588-only silicon
+# support and it touches nothing this SoC's RGA2 nodes describe, so all three patches
+# read the same on both generations.
+applies_to_kernel = ">=7.1.5, <7.3"
 
-# Kernel tree: the shared vendor driver, its 7.1 forward-port fixups, then this
-# SoC's DT nodes.
+# Kernel tree: the shared vendor driver, its mainline fixups, then this SoC's DT
+# nodes.
 kernel = [
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
-    "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
+    "media-accel/kernel/071-rga-multicore-fixups.patch",
     "rk3576/kernel/110-arm64-dts-rk3576-rga2-nodes.patch",
 ]
 

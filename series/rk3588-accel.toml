@@ -2,11 +2,13 @@
 # series/rk3588-accel.toml
 #
 # RK3588 hardware acceleration: the ordered patch series that turns a mainline
-# 7.1 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
+# 7.1 or 7.2 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
 # (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
-# A series is owned by a kernel definition, not a device: this series applies to
-# mainline 7.1 and is referenced by kernels/rk3588-mainline-7.1. Each list is the
+# A series is owned by a kernel definition, not a device. It spans the 7.1 and 7.2
+# generations from one file, because 28 of its 30 kernel patches are identical
+# across them: only 050 and 072 turn on the kernel version, and each carries its
+# own `kernels` range below. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
 # tree's list may span scopes (the kernel tree interleaves the media-accel,
 # rocket and crypto scopes). Paths are relative to this repo's root.
@@ -20,7 +22,10 @@
 # order, which puts the whole series at 7.1.5 -- a kernel that keeps 060 out keeps
 # VEPU580 encode out, so filtering it per-patch would silently ship a different image
 # rather than fail.
-applies_to_kernel = ">=7.1.5, <7.2"
+#
+# The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
+# against, not because 7.3 is known to break it.
+applies_to_kernel = ">=7.1.5, <7.3"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
 # in ascending numeric order satisfies the series' dependencies: npu-volt needs
@@ -70,6 +75,24 @@ applies_to_kernel = ">=7.1.5, <7.2"
 #
 # The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
+#
+# 072 is the one patch that differs between the two kernel generations, and the
+# reason is that 7.2 describes this hardware where 7.1 did not. 7.1's dtsi has a
+# single `rga` node for the RGA2 core, so 072-7.1 replaces it and adds the two RGA3
+# cores and their IOMMUs. 7.2 carries Sven Puschel's V4L2 RGA3 support, so all three
+# cores and both RGA3 IOMMUs are already described -- for the in-tree driver -- and
+# 072-7.2 only retargets them: the compatible strings pick the vendor driver and tell
+# the two RGA3 cores apart, and each core's register window grows to the 4 KiB the
+# driver needs to reach its IOMMU block at +0xf00. Both land on the same DT.
+#
+# Which driver binds is a kconfig decision the consumer makes, and the two are
+# mutually exclusive in practice: a build that takes this series wants
+# CONFIG_ROCKCHIP_MULTI_RGA and leaves CONFIG_VIDEO_ROCKCHIP_RGA unset. The in-tree
+# 7.2 driver is a genuine alternative for a consumer that wants no out-of-tree code,
+# at the cost of the /dev/rga ABI librga speaks: it exposes one core per V4L2 video
+# node (multi-core scheduling is explicitly deferred upstream), implements scaling
+# and colour conversion only, and has no 10-bit YUV -- so NV15, which is what a
+# 10-bit HEVC decode on this SoC produces, has no path through it.
 #
 # 073 bounds the HEVC tile counts. `num_tile_columns_minus1` and
 # `num_tile_rows_minus1` arrive from userspace as u8 and index fixed-size arrays --
@@ -169,14 +192,19 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # carries the same four lines for its own SoC; when a kernel arrives with 089 upstream,
 # both copies have to go.
 #
-# 050 ends in a defconfig hunk (`CONFIG_VSI_IOMMU=m`), and that hunk is load bearing:
-# a consumer whose `base_defconfig` is the in-tree arm64 `defconfig` gets the AV1
-# decoder's IOMMU from here and from nowhere else, since no kconfig fragment sets it.
-# Upstream is re-sending the same line as part of "arm64: defconfig: enable Rockchip
-# Multimedia drivers" (Sebastian Reichel), the first attempt having been this series'
-# own 5/5. When a kernel arrives carrying it, 050's last hunk is a duplicate line
-# rather than a rejection -- the same silent-absorption trap 0004 has in the rk3576
-# series -- so re-curate 050 at that bump instead of trusting `git am --3way`.
+# 050 is the AV1 decoder's IOMMU and applies to 7.1 only. Four of its five patches --
+# the binding, the driver, the RK3588 DT node and the MAINTAINERS entry -- are in 7.2
+# as `iommu: Add verisilicon IOMMU driver` and its two follow-up cleanups, and the
+# tree's copy is the newer one, so on 7.2 the patch is not rebased but dropped.
+#
+# Its fifth hunk did not land, and it is load bearing: `CONFIG_VSI_IOMMU` is a
+# tristate with no default, so on 7.2 a consumer whose `base_defconfig` is the
+# in-tree arm64 `defconfig` builds no AV1 IOMMU at all and AV1 decode fails at
+# probe. Set the symbol from a kconfig fragment -- the series cannot, since a
+# defconfig hunk is all a patch has, and adding one back would only re-open the
+# conflict. This is the silent-absorption trap in its exact shape: the part that
+# breaks a build is the part upstream did not take, and `git am --3way` reports
+# nothing either way.
 #
 # 090 takes rocket_job_handle_irq()'s OPERATION_ENABLE and INTERRUPT_CLEAR writes under
 # job_lock. rocket_job_hw_submit() writes OPERATION_ENABLE from inside that lock, so a
@@ -201,16 +229,21 @@ applies_to_kernel = ">=7.1.5, <7.2"
 # has already read in_flight_job -- that is 090's -- and the two are complementary.
 # rk3576/npu 0028 is the same change for that SoC.
 #
-# 100-104 are the crypto scope and are the RK356x/RK3588 second-generation crypto
+# 100-103 are the crypto scope and are the RK356x/RK3588 second-generation crypto
 # offloader: AES (ECB/CBC/XTS) and SHA-1/256/384/512, MD5 and SM3 over an LLI-based
-# DMA engine. 100-103 are Dawid Olesinski's and Corentin Labbe's, carried verbatim
-# from the linux-rockchip series "crypto: rockchip: Add RK356x/RK3588 cryptographic
-# offloader" at its v3 posting, which is NOT merged. 104 is ours and is the reason
-# the rest is worth applying here at all: CRYPTO_DEV_ROCKCHIP2 is a tristate with no
-# default, no kconfig fragment in this collection sets it, and the upstream series
-# carries no defconfig hunk -- so without 104 the DT nodes 102 and 103 add describe a
-# device that nothing binds to. This is the same trap 050's trailing defconfig hunk
-# covers for the AV1 decoder's IOMMU, and it fails the same silent way.
+# DMA engine. They are Dawid Olesinski's and Corentin Labbe's, carried verbatim from
+# the linux-rockchip series "crypto: rockchip: Add RK356x/RK3588 cryptographic
+# offloader" at its v3 posting, which is NOT merged.
+#
+# CRYPTO_DEV_ROCKCHIP2 is a tristate with no default, so without a kconfig fragment
+# setting it the DT nodes 102 and 103 add describe a device that nothing binds to --
+# no build error, no boot message. That symbol is the consumer's to set, as
+# CONFIG_VSI_IOMMU is above: this collection carries no defconfig hunk for either, and
+# no kconfig at all. The arm64 defconfig moves every release -- 7.2 dropped
+# CRYPTO_DEV_XILINX_TRNG from the very lines such a hunk anchors on -- so a patch
+# against it is the least durable way to carry a build decision, and it fails by
+# needing a rebase at exactly the moment a kernel bump has the least attention to
+# spare.
 #
 # The RK3588 binds through the rockchip,rk3568-crypto fallback compatible, which is
 # why the driver's match table carries only the one entry; the SCMI clock and reset
@@ -239,11 +272,12 @@ kernel = [
     "media-accel/kernel/043-v4l2-export-max-parallel-jobs.patch",
     "media-accel/kernel/044-rkvdec-split-core-and-master.patch",
     "media-accel/kernel/045-rkvdec-multicore.patch",
-    "media-accel/kernel/050-av1-iommu-v14-curated.patch",
+    { path = "media-accel/kernel/050-av1-iommu-v14-curated.patch", kernels = "<7.2" },
     "media-accel/kernel/060-vepu580-rcawston-v3.patch",
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
-    "media-accel/kernel/071-rga-multicore-7.1-fixups.patch",
-    "media-accel/kernel/072-rk3588-rga-dts.patch",
+    "media-accel/kernel/071-rga-multicore-fixups.patch",
+    { path = "media-accel/kernel/072-rk3588-rga-dts-7.1.patch", kernels = "<7.2" },
+    { path = "media-accel/kernel/072-rk3588-rga-dts-7.2.patch", kernels = ">=7.2" },
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
     "media-accel/kernel/074-rkvdec-av1-bound-tile-counts.patch",
     "media-accel/kernel/075-hantro-fix-run-fail-cleanup.patch",
@@ -262,7 +296,6 @@ kernel = [
     "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",
     "crypto/kernel/102-arm64-dts-rockchip-rk356x-crypto-node.patch",
     "crypto/kernel/103-arm64-dts-rockchip-rk3588-crypto-node.patch",
-    "crypto/kernel/104-arm64-defconfig-enable-rockchip2-crypto.patch",
 ]
 
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft

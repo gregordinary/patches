@@ -286,8 +286,12 @@
 # The list is the authoritative apply order for the kernel tree, applied with
 # `git am --3way`; paths are relative to this repo's root.
 
-# Declared intent; the builder's verify-applies gate is the enforcement.
-applies_to_kernel = ">=7.1, <7.2"
+# Declared intent; the builder's verify-applies gate is the enforcement. Every patch
+# here reads the same on 7.1 and 7.2 -- 7.2 moves nothing under the NPU, the Rockchip
+# IOMMU driver or the power-domain driver that these touch, and 0004 is still not
+# upstream, so nothing is silently absorbed. The ceiling is 7.3 because 7.2 is the
+# newest generation the series has been dry-run against.
+applies_to_kernel = ">=7.1, <7.3"
 
 kernel = [
     "rk3576/npu/0001-dt-bindings-npu-rockchip-add-rk3576-rknn-core.patch",

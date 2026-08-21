@@ -16,7 +16,7 @@ top of mainline.
 |-----|-------|
 | [`rocket/`](rocket/) | Rockchip NPU — patches, UAPI header, and notes for the mainline `rocket` DRM accel driver (RK3588). |
 | [`media-accel/`](media-accel/) | Rockchip HW video transcode (RK35xx/RK3588) — kernel decode/encode/RGA, ffmpeg-rockchip, and MPP/RGA userspace patches. |
-| [`crypto/`](crypto/) | Rockchip second-generation crypto offloader (RK356x/RK3588) — AES and hash offload over an LLI DMA engine, plus the defconfig hunk that builds it. |
+| [`crypto/`](crypto/) | Rockchip second-generation crypto offloader (RK356x/RK3588) — AES and hash offload over an LLI DMA engine. |
 | [`rk3288/`](rk3288/) | RK3288 kernel fixes, written to upstream standards and meant to retire into stable. |
 | [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
 | [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
@@ -36,10 +36,17 @@ u-boot is its own axis. A series that patches only one of the two declares only
 that range, and a series pinned to a single upstream generation declares neither
 — the builder's `git am` pass is the enforcement either way.
 
-[`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline-7.1 media
-+ NPU + crypto series: kernel `030`–`104`, ffmpeg `0001`–`0013`, userspace `001`. A
+[`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline media
++ NPU + crypto series: kernel `030`–`103`, ffmpeg `0001`–`0013`, userspace `001`. A
 series' `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*`, then
 `rocket/*`, then `crypto/kernel/*`).
+
+A series spans every kernel generation it can, rather than being forked per version.
+Where one patch has to differ, or drops out because upstream took it, that patch — not
+the series — carries a `kernels` range, and the file name says which generation it is
+for: `rk3588-accel` covers 7.1 and 7.2 from one manifest, with `050` applying below 7.2
+only and `072` supplied as a `-7.1` / `-7.2` pair. Both generations therefore build from
+the same commit of this repo, which is what lets one pin serve consumers on either.
 
 ## Consuming patches
 
@@ -66,8 +73,7 @@ modifies.
   header (`From:` / `Source:`) names that upstream. Kernel patches are GPL-2.0-only.
 - **`crypto/` scope** — kernel-derivative work, **GPL-2.0-only**. Patches 100-103 are
   carried verbatim from the linux-rockchip posting and keep their authors' `From:`,
-  `Co-developed-by`, `Signed-off-by` and `Tested-by` lines; 104 is repository-original
-  and is GPL-2.0-only with the tree it modifies.
+  `Co-developed-by`, `Signed-off-by` and `Tested-by` lines.
 
 Per-file `SPDX-License-Identifier` tags and individual patch headers are authoritative where
 present.

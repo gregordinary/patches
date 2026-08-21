@@ -15,19 +15,16 @@ the series carries a device-tree node for each.
 | `kernel/101-crypto-rockchip-rk356x-rk3588-offloader` | The driver (`drivers/crypto/rockchip/rk2_*`), built on the crypto engine framework with a software fallback for every algorithm. |
 | `kernel/102-arm64-dts-rockchip-rk356x-crypto-node` | The RK356x node. No board here builds against it; carried so the series stays whole. |
 | `kernel/103-arm64-dts-rockchip-rk3588-crypto-node` | The RK3588 node, on the SCMI clocks and reset. |
-| `kernel/104-arm64-defconfig-enable-rockchip2-crypto` | **Ours.** `CONFIG_CRYPTO_DEV_ROCKCHIP2=m`. |
 
-## 104 is why the rest does anything
+## The consumer sets the symbol
 
-`CRYPTO_DEV_ROCKCHIP2` is a tristate with no `default`, no kconfig fragment in
-this collection sets it, and the upstream series carries no defconfig hunk. A
-kernel whose config comes from the in-tree arm64 `defconfig` therefore builds
-none of the driver, and 102/103 describe a device nothing binds to — with no
-build error and no boot message to say so. 104 sets it `=m`, positioned where
-`savedefconfig` orders it, between `CRYPTO_DEV_QCOM_RNG` and
-`CRYPTO_DEV_TEGRA`.
-
-If a consumer supplies its own fragment for the same symbol, drop 104.
+`CRYPTO_DEV_ROCKCHIP2` is a tristate with no `default`, and this collection sets
+no kconfig anywhere — a series of patches is not the right owner for a build
+decision, and the in-tree arm64 `defconfig` is a file that moves every release,
+so a one-line hunk in it is the least durable way to carry one. **Set the symbol
+from your own kconfig fragment.** Without it the driver is not built and 102/103
+describe a device nothing binds to, with no build error and no boot message to
+say so.
 
 ## Origin, and what to expect of it
 

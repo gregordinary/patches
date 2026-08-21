@@ -14,11 +14,11 @@ series fits together.
 4. `043-v4l2-export-max-parallel-jobs.patch`
 5. `044-rkvdec-split-core-and-master.patch`
 6. `045-rkvdec-multicore.patch`
-7. `050-av1-iommu-v14-curated.patch`
+7. `050-av1-iommu-v14-curated.patch` (kernels `<7.2`)
 8. `060-vepu580-rcawston-v3.patch`
 9. `070-rga-multicore-vendor-oot.patch`
-10. `071-rga-multicore-7.1-fixups.patch`
-11. `072-rk3588-rga-dts.patch`
+10. `071-rga-multicore-fixups.patch`
+11. `072-rk3588-rga-dts-7.1.patch` (kernels `<7.2`) / `072-rk3588-rga-dts-7.2.patch` (kernels `>=7.2`)
 12. `073-rkvdec-hevc-bound-tile-counts.patch`
 13. `074-rkvdec-av1-bound-tile-counts.patch`
 14. `075-hantro-fix-run-fail-cleanup.patch`
@@ -41,19 +41,29 @@ The patches here come from different places, and they age differently:
   `030` is the one with reach beyond this driver: it rewrites five functions in
   `v4l2-mem2mem.c` for every m2m driver in the image, defaulting them to the
   one-job-at-a-time behaviour they have today.
-- **`050` — mainline-track, curated.** The AV1 helper library, taken from an upstream
-  posting series and curated to apply as one. It is the patch most likely to be absorbed
-  by mainline, which retires it: a patch that stops applying because the code is already
-  there is an upper bound on its range, not a break.
+- **`050` — absorbed by mainline at 7.2.** The AV1 helper library and the Verisilicon
+  IOMMU, taken from an upstream posting series and curated to apply as one. 7.2 carries
+  the binding, the driver, the RK3588 DT node and the MAINTAINERS entry, so the patch is
+  ranged `<7.2` and simply drops out above that — a patch that stops applying because
+  the code is already there is an upper bound on its range, not a break. What did *not*
+  land is its trailing `CONFIG_VSI_IOMMU=m` defconfig line, so a 7.2 consumer sets that
+  symbol from a kconfig fragment or gets no AV1 IOMMU at all.
 - **`060` — out-of-tree by its author's intent.** The VEPU580 encoder is an OOT driver on
   the MPP framework, explicitly not offered for upstream, so it does not retire on its
   own — it stays until something replaces it.
-- **`070` / `071` — vendor code, forward-ported.** The multicore RGA driver is vendor OOT,
-  and `071` is the forward-port that keeps it building on a newer kernel. This pair is
-  where a kernel bump most often lands: `070` is the driver, `071` is the delta that
-  tracks the kernel, so a rework normally touches `071` alone.
-- **`072` — our own devicetree wiring.** The RGA driver in `070` is SoC-neutral, so each
-  SoC points its own nodes at it; this is the RK3588's.
+- **`070` / `071` — vendor code, built against mainline.** The multicore RGA driver is
+  vendor OOT, and `071` is the delta that keeps it compiling as kernel APIs move. This
+  pair is where a kernel bump most often lands: `070` is the driver, `071` tracks the
+  kernel, so a rework normally touches `071` alone. 7.2 removing `strncpy()` outright is
+  the shape that takes — one call site, one line in `071`.
+- **`072` — our own devicetree wiring, one file per kernel generation.** The RGA driver
+  in `070` is SoC-neutral, so each SoC points its own nodes at it; this is the RK3588's,
+  and it is the one patch here that reads differently on 7.1 and 7.2. 7.1 describes only
+  the RGA2 core, so `-7.1` replaces that node and adds the two RGA3 cores and their
+  IOMMUs. 7.2 describes all three for its own in-tree V4L2 RGA3 driver, so `-7.2` leaves
+  the nodes where they are and changes two properties each: the compatible, which selects
+  this driver and distinguishes the two RGA3 cores, and the register window, which has to
+  span the 4 KiB the driver needs to reach the core's IOMMU block at `+0xf00`.
 - **`073` — our own defect fix, upstream-shaped.** A missing bound on the HEVC tile
   counts, which index fixed-size arrays in all three rkvdec HEVC backends and are not
   range-checked by the V4L2 core. It is not Rockchip-configuration work and carries no

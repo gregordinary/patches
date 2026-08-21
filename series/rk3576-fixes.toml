@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # series/rk3576-fixes.toml
 #
-# RK3576 kernel-fix series: fixes a mainline 7.1 kernel needs on RK3576 boards,
-# each written to upstream standards and meant to leave this repo. Referenced by
-# kernels/rk3576-mainline-7.1. The list is the authoritative apply order for the
-# kernel tree, applied with `git am --3way`; paths are relative to this repo's root.
+# RK3576 kernel-fix series: fixes a mainline 7.1 or 7.2 kernel needs on RK3576
+# boards, each written to upstream standards and meant to leave this repo.
+# Referenced by kernels/rk3576-mainline-7.2. The list is the authoritative apply
+# order for the kernel tree, applied with `git am --3way`; paths are relative to
+# this repo's root.
 
-# Declared intent; the builder's verify-applies gate is the enforcement.
-applies_to_kernel = ">=7.1, <7.2"
+# Declared intent; the builder's verify-applies gate is the enforcement. Every patch
+# here reads the same on both generations -- 7.2 moves nothing under them -- so the
+# list carries no per-patch range. The ceiling is 7.3 because 7.2 is the newest
+# generation the series has been dry-run against, not because 7.3 is known to break it.
+applies_to_kernel = ">=7.1, <7.3"
 
 # Kernel tree: the RK3576 GPU power domain is supplied by an external regulator
 # (vdd_gpu_s0 on the RK806), but -- unlike the RK3588 GPU domain -- it was never
