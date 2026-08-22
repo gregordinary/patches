@@ -1,6 +1,6 @@
 # rocket — RK3588 NPU kernel patches
 
-Eleven patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+Twelve patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
@@ -8,8 +8,8 @@ and job hooks, so the NPU power domain is always powered first: a register acces
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
 **Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
-only configuration the userspace projects' published figures describe. Eight of the eleven are
-required: four of them fix bugs that can crash the kernel, and one is the one that
+only configuration the userspace projects' published figures describe. Nine of the twelve are
+required: five of them fix bugs that can crash the kernel, and one is the one that
 makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume.
 Exactly one — the voltage patch — costs you nothing to omit at today's operating point. The
 tiers below say what you give up by leaving a patch out; they are not an invitation to
@@ -25,6 +25,7 @@ cherry-pick.
 | **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
 | **Required** | `090-rocket-drv-irq-under-job-lock.patch` | Takes the completion's `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` under `job_lock`. `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside that lock, so the completion's zero can land after a submit's one and stop a task that has only just started. The second writer is `rocket_reset()`, which a client reaches through the same unvalidated `regcmd` IOVA as `088`. |
 | **Required** | `091-rocket-drv-irq-sync-before-reset.patch` | `090`'s other half. `rocket_reset()` calls `drm_sched_stop()`, which stops the scheduler and returns without waiting for a threaded handler that is already running — so the comment that followed it, "Remaining interrupts have been handled", stated an assumption rather than something the code arranged. A `synchronize_irq()` between the stop and the `job_lock` guard makes it true. Igor Paunovic's, from the v8 posting of the RK3576 series. |
+| **Required** | `092-rocket-drv-fix-job-push-null-and-overflow.patch` | Checks the `bos` allocation in `rocket_job_push()`. `kvmalloc_array()` can fail at entirely ordinary BO counts, and the `memcpy()` on the next line then writes through **NULL** — an ordinary submit oopses a kernel that is merely short of memory. Also sums the two BO counts with `check_add_overflow()`, which `u32` arithmetic could otherwise wrap to a shorter allocation than the copies use. Upstream `a85402bff218`, in no released kernel — **drop it once you build 7.3**. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
@@ -62,6 +63,13 @@ know — but it does not create the bug.
 running handler whatever else is applied. What `090` changes is only *where* it may go:
 once the handler holds `job_lock` for its whole body, the wait can no longer be moved
 inside the guard, and the comment in `091` says so.
+
+`092` is the exception this section is worded to exclude: a **diff-context** dependency
+rather than a real one. The fix itself stands alone — nothing in it needs another patch —
+but its first hunk adds `#include <linux/overflow.h>` to a block whose trailing context
+`083` (`linux/kref.h`) and `086` (`linux/moduleparam.h`) grow. So it applies under strict
+`git am` only from `086` onward, and needs `patch -p1` fuzz on a pristine tree or on any
+subset below that. Ascending numeric order satisfies it; a cherry-pick may not.
 
 ## The uAPI header is part of the kernel you build
 
@@ -650,6 +658,43 @@ so nothing else changes. `rk3576/npu` 0027 is the same change for that SoC, wher
 completion poll and the interrupt thread are separate contexts and make the two writers
 concurrent outright.
 
+## The `bos` allocation in `rocket_job_push()` (`092-rocket-drv-fix-job-push-null-and-overflow.patch`)
+
+`rocket_job_push()` builds a temporary array of every input and output GEM object:
+
+```c
+bos = kvmalloc_array(job->in_bo_count + job->out_bo_count, sizeof(void *),
+		     GFP_KERNEL);
+memcpy(bos, job->in_bos, job->in_bo_count * sizeof(void *));
+```
+
+Two things are wrong with it, and they are not equally reachable.
+
+**The missing NULL check is the one that matters.** `kvmalloc_array()` can fail under
+memory pressure at entirely ordinary BO counts, and the `memcpy()` on the next line then
+writes through NULL. An ordinary submit from either frontend oopses the kernel on a
+machine that is merely short of memory — no malformed input required, which is what
+separates this from the other reachability arguments on this page.
+
+**The unchecked sum is hardening.** `in_bo_count` and `out_bo_count` are both `u32` taken
+verbatim from the ioctl's `in_bo_handle_count` / `out_bo_handle_count` with no validation
+in between, so their sum is computed in `u32` and can wrap to a smaller allocation than
+the copies and `drm_gem_lock_reservations()` go on to use. Reaching that needs the two
+counts to sum past 2^32 while each survives its own `drm_gem_objects_lookup()`, which
+allocates `count` pointers and resolves every handle first — so the preceding allocations
+gate it in practice. `check_add_overflow()` fixes it anyway: the gate is incidental, not a
+guarantee.
+
+This is upstream `a85402bff218` ("accel/rocket: fix NULL dereference and integer overflow
+in rocket_job_push()", Muhammad Bilal, applied by Tomeu Vizoso, Cc: stable), carried here
+because it is in **no released kernel** — `drivers/accel/rocket` is byte-identical in v7.1
+and v7.2, and the fix sits in drm-next for v7.3. **Drop this patch when the kernel you
+build reaches 7.3**, where `git am --3way` would otherwise absorb it silently rather than
+reject it — the same trap `089` and `rk3576/npu` 0006 carry.
+
+Not represented in the compatibility matrix above: it is a correctness fix on an
+allocation-failure path, and no row on this page was measured with it applied.
+
 ## NPU IRQ affinity (runtime knob, no patch)
 
 A companion runtime lever — no driver change, but in the same dispatch-floor family as the
@@ -703,6 +748,8 @@ git am --3way $P/087-rocket-drv-fix-task-array-double-free.patch  # required (do
 git am --3way $P/088-rocket-drv-reset-before-iommu-detach.patch    # required (IOMMU stall/WARN); needs 083
 git am --3way $P/089-rocket-drv-clocks-by-name.patch           # required (driver holds the wrong clocks)
 git am --3way $P/090-rocket-drv-irq-under-job-lock.patch       # required (completion vs submit race)
+git am --3way $P/091-rocket-drv-irq-sync-before-reset.patch     # required (090's other half)
+git am --3way $P/092-rocket-drv-fix-job-push-null-and-overflow.patch  # required (NULL deref); drop at 7.3
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 
@@ -743,9 +790,12 @@ The two board-dependent pieces both degrade gracefully:
 - **IRQ affinity** uses GIC interrupt numbers that are kernel/SoC-specific — read
   `/proc/interrupts` for the three `.npu` nodes rather than assuming.
 
-A different mainline version may have moved the `rocket` driver and require rebasing; each patch
-is small and self-contained, so a rebase is mechanical — but re-verify on that kernel, since the
-bit-exact and dispatch-floor figures here were measured on v7.1 at 600 MHz.
+Across the 7.1 and 7.2 generations no rebase is needed: `drivers/accel/rocket/rocket_job.c` is
+the same blob (`ac51bff39833`) in v7.1.1, v7.1.3, v7.1.5, v7.1.6, v7.1.7 and v7.2, and all twelve
+patches here apply to v7.2 under **strict** `git am` — no `--3way`, no fuzz. That is an apply
+result, not a run result: the measured figures on this page are still v7.1 at 600 MHz and have
+not been re-taken on 7.2. A later mainline may move the driver and require rebasing; each patch
+is small and self-contained, so a rebase is mechanical — but re-verify on that kernel.
 
 ## License
 

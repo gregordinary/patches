@@ -6,7 +6,7 @@
 # (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
 # A series is owned by a kernel definition, not a device. It spans the 7.1 and 7.2
-# generations from one file, because 28 of its 30 kernel patches are identical
+# generations from one file, because 28 of its 31 kernel-list entries are identical
 # across them: only 050 and 072 turn on the kernel version, and each carries its
 # own `kernels` range below. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
@@ -229,6 +229,24 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # has already read in_flight_job -- that is 090's -- and the two are complementary.
 # rk3576/npu 0028 is the same change for that SoC.
 #
+# 092 checks the bos array allocation in rocket_job_push() and computes its element
+# count with check_add_overflow(). The two halves are not equally reachable. The missing
+# NULL check is the one that matters: kvmalloc_array() can fail under ordinary memory
+# pressure at entirely ordinary BO counts, and the memcpy() on the next line then writes
+# through NULL, so a submit from either frontend oopses a kernel that is merely short of
+# memory. The unchecked sum is hardening -- in_bo_count and out_bo_count are u32 taken
+# verbatim from the ioctl and summed in u32, so the sum can wrap to a shorter allocation
+# than the copies and drm_gem_lock_reservations() go on to use, but reaching it needs the
+# two counts to sum past 2^32 while each survives its own drm_gem_objects_lookup(), which
+# allocates count pointers first. That gate is incidental, not a guarantee.
+#
+# It is upstream a85402bff218, in no released kernel: drivers/accel/rocket is
+# byte-identical in 7.1 and 7.2 and the fix sits in drm-next for 7.3. Drop this file when
+# the ceiling above moves past 7.2. Its first hunk adds linux/overflow.h to an include
+# block that 083 (kref.h) and 086 (moduleparam.h) grow, so it applies under strict git am
+# only from 086 onward; ascending numeric order satisfies that, and the fix itself
+# depends on nothing.
+#
 # 100-103 are the crypto scope and are the RK356x/RK3588 second-generation crypto
 # offloader: AES (ECB/CBC/XTS) and SHA-1/256/384/512, MD5 and SM3 over an LLI-based
 # DMA engine. They are Dawid Olesinski's and Corentin Labbe's, carried verbatim from
@@ -292,6 +310,7 @@ kernel = [
     "rocket/089-rocket-drv-clocks-by-name.patch",
     "rocket/090-rocket-drv-irq-under-job-lock.patch",
     "rocket/091-rocket-drv-irq-sync-before-reset.patch",
+    "rocket/092-rocket-drv-fix-job-push-null-and-overflow.patch",
     "crypto/kernel/100-dt-bindings-crypto-rockchip-rk356x-rk3588-engine.patch",
     "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",
     "crypto/kernel/102-arm64-dts-rockchip-rk356x-crypto-node.patch",
