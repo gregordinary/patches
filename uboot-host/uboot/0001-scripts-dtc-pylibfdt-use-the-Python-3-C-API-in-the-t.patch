@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 14:03:00 -0400
+Subject: [PATCH] scripts/dtc: pylibfdt: use the Python 3 C API in the typemaps
+
+Two typemaps in libfdt.i call PyString_FromString() and PyInt_AsLong().
+Neither exists in Python 3; the build only ever worked because SWIG's
+pyhead.swg defined them as macros onto the PyUnicode_/PyLong_ spellings
+when targeting Python 3. SWIG 4.4 dropped that Python 2 compatibility
+layer, so from SWIG 4.4 on the generated libfdt_wrap.c fails to compile:
+
+  libfdt_wrap.c: In function '_wrap_fdt_next_node':
+  libfdt_wrap.c:5618:20: error: implicit declaration of function
+    'PyInt_AsLong'; did you mean 'PyLong_AsLong'?
+  libfdt_wrap.c: In function '_wrap_fdt_get_property_by_offset':
+  libfdt_wrap.c:6679:19: error: implicit declaration of function
+    'PyString_FromString'; did you mean 'PyLong_FromString'?
+
+along with the -Wint-conversion errors that follow from the implicit int
+return type. That takes out scripts_dtc, so the build stops before it
+reaches any board.
+
+Call the Python 3 names directly. pylibfdt is Python 3 only - setup.py
+is #!/usr/bin/env python3 and the Makefile invokes $(PYTHON3) - so no
+version guard is needed, unlike the neighbouring typemaps that still
+carry PY_VERSION_HEX tests for a Python 2 that cannot be reached here.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ scripts/dtc/pylibfdt/libfdt.i_shipped | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/dtc/pylibfdt/libfdt.i_shipped b/scripts/dtc/pylibfdt/libfdt.i_shipped
+index e4659489..c738d805 100644
+--- a/scripts/dtc/pylibfdt/libfdt.i_shipped
++++ b/scripts/dtc/pylibfdt/libfdt.i_shipped
+@@ -1033,7 +1033,7 @@ typedef uint32_t fdt32_t;
+ 	PyObject *buff;
+ 
+ 	if ($1) {
+-		resultobj = PyString_FromString(
++		resultobj = PyUnicode_FromString(
+ 			fdt_string(fdt1, fdt32_to_cpu($1->nameoff)));
+ 		buff = PyByteArray_FromStringAndSize(
+ 			(const char *)($1 + 1), fdt32_to_cpu($1->len));
+@@ -1070,7 +1070,7 @@ typedef uint32_t fdt32_t;
+ 
+ /* typemaps used for fdt_next_node() */
+ %typemap(in, numinputs=1) int *depth (int depth) {
+-   depth = (int) PyInt_AsLong($input);
++   depth = (int) PyLong_AsLong($input);
+    $1 = &depth;
+ }
+ 
+-- 
+2.43.0
+

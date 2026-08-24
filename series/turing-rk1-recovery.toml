@@ -44,6 +44,12 @@ userspace = []
 #         default-y `setexpr` the board defconfig had turned off (a
 #         hand-driven write needs it to turn ${filesize} into the block
 #         count `nvme write` takes).
+#
+# Ahead of all of them, from the `uboot-host` scope: pylibfdt's SWIG typemaps
+# use the Python 3 C API, so `scripts/dtc` builds against SWIG 4.4 and newer
+# (forky ships 4.5). SoC-independent, and first in the list because a host
+# tool that will not compile stops the build before it reaches a board.
 uboot = [
+    "uboot-host/uboot/0001-scripts-dtc-pylibfdt-use-the-Python-3-C-API-in-the-t.patch",
     "rk3588/uboot/boards/turing-rk1/0001-export-block-devices-over-usb-with-ums.patch",
 ]

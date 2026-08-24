@@ -84,7 +84,13 @@ userspace = []
 #              oscillator, so kernel timestamps and every time-derived
 #              window (USB reset/timeout, I2C, delays) stay correct.
 #   0024       the util command set: bootmenu, clk, memtest, md5sum, sha1sum.
+#
+# Ahead of all of them, from the `uboot-host` scope: pylibfdt's SWIG typemaps
+# use the Python 3 C API, so `scripts/dtc` builds against SWIG 4.4 and newer
+# (forky ships 4.5). SoC-independent, and first in the list because a host
+# tool that will not compile stops the build before it reaches a board.
 uboot = [
+    "uboot-host/uboot/0001-scripts-dtc-pylibfdt-use-the-Python-3-C-API-in-the-t.patch",
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",

@@ -20,6 +20,7 @@ top of mainline.
 | [`rk3288/`](rk3288/) | RK3288 kernel fixes, written to upstream standards and meant to retire into stable. |
 | [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
 | [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
+| [`uboot-host/`](uboot-host/) | u-boot host-build fixes — the tooling that runs on the build machine rather than the board. SoC-independent, so every u-boot series carries them ahead of its own patches. |
 | [`jellyfin/`](jellyfin/) | Jellyfin **server** patches for Rockchip boards on a mainline kernel. Not part of any series — no builder here compiles Jellyfin; apply them to a Jellyfin checkout and build with Jellyfin's own toolchain. |
 
 Each scope is **self-contained** and need not share a common internal layout —
@@ -71,6 +72,8 @@ modifies.
 - **`media-accel/` scope** — each patch inherits the license of its upstream tree (the
   Linux kernel, ffmpeg-rockchip, or the Rockchip MPP/RGA userspace); the patch's provenance
   header (`From:` / `Source:`) names that upstream. Kernel patches are GPL-2.0-only.
+- **`uboot-host/` scope** — u-boot-derivative work, **GPL-2.0-or-later**, the license
+  of the tree it patches.
 - **`crypto/` scope** — kernel-derivative work, **GPL-2.0-only**. Patches 100-103 are
   carried verbatim from the linux-rockchip posting and keep their authors' `From:`,
   `Co-developed-by`, `Signed-off-by` and `Tested-by` lines.
