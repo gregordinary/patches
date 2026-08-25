@@ -1,6 +1,6 @@
 # rocket — RK3588 NPU kernel patches
 
-Twelve patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+Thirteen patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
 developed against v7.1. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
@@ -8,10 +8,11 @@ and job hooks, so the NPU power domain is always powered first: a register acces
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
 **Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
-only configuration the userspace projects' published figures describe. Nine of the twelve are
-required: five of them fix bugs that can crash the kernel, and one is the one that
-makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume.
-Exactly one — the voltage patch — costs you nothing to omit at today's operating point. The
+only configuration the userspace projects' published figures describe. Nine of the thirteen
+are required: five of them fix bugs that can crash the kernel, and one is the one that
+makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume,
+and a third stops a pooling job waiting out the scheduler's timeout. Exactly one — the
+voltage patch — costs you nothing to omit at today's operating point. The
 tiers below say what you give up by leaving a patch out; they are not an invitation to
 cherry-pick.
 
@@ -28,6 +29,7 @@ cherry-pick.
 | **Required** | `092-rocket-drv-fix-job-push-null-and-overflow.patch` | Checks the `bos` allocation in `rocket_job_push()`. `kvmalloc_array()` can fail at entirely ordinary BO counts, and the `memcpy()` on the next line then writes through **NULL** — an ordinary submit oopses a kernel that is merely short of memory. Also sums the two BO counts with `check_add_overflow()`, which `u32` arithmetic could otherwise wrap to a shorter allocation than the copies use. Upstream `a85402bff218`, in no released kernel — **drop it once you build 7.3**. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
+| Recommended | `093-rocket-drv-ppu-completion.patch` | Arms the interrupt a **pooling** job can actually raise. A pool enables PPU/PPU_RDMA and has no DPU stage, so the DPU pair the driver arms unconditionally masks off its only completion: no interrupt arrives and the job retires at the scheduler's timeout through a core reset — **~507 ms per pool submit**, with the right answer already in the output BO. Adds the `DRM_ROCKET_JOB_PPU_DONE` uAPI flag and the 1.3 version. Kernel half only; needs `086`. |
 | Situational | `082-rocket-drv-npu-volt.patch` | Couples the `vdd_npu_s0` rail voltage to the clock. A **literal no-op at ≤600 MHz** — insurance for going above it. The one patch you can skip and lose nothing today. |
 
 Every patch is **correct on its own**: none of them ships a bug that a later patch fixes.
@@ -37,7 +39,7 @@ bisect lands on a real answer.
 
 ## Dependencies
 
-Four, and all of them are real (not just diff context):
+Five, and all of them are real (not just diff context):
 
 - **`082` requires `081`** — it scales the voltage the clock patch's rate needs.
 - **`086` requires `083`** — batched submit builds on the keep-attached domain
@@ -49,6 +51,9 @@ Four, and all of them are real (not just diff context):
 - **`088` requires `083`** — the detach it reorders is `core->attached_domain`, which
   `083` introduces. On a tree without `083` there is a per-job detach instead, and the
   reordering has nothing to move.
+- **`093` requires `086`** — the flag it reads is `drm_rocket_job.flags`, which `086`
+  appends to the descriptor. On a tree without `086` there is no field to carry
+  `DRM_ROCKET_JOB_PPU_DONE` and the patch does not apply at all.
 
 `081`, `083`, `084`, `085`, `087`, `089`, `090` and `091` each apply to a pristine tree on their
 own, in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
@@ -582,7 +587,7 @@ unchanged and one that sets a flag this kernel does not know is refused with `-E
 rather than silently downgraded. Unknown flag bits are rejected with `-EINVAL`.
 
 The driver advertises interface version **1.1**, which is the capability check userspace
-needs (see below). Install the matching uAPI header
+needs (see below) — `093` moves it to **1.3**. Install the matching uAPI header
 ([`uapi/rocket_accel.h`](uapi/rocket_accel.h)) where the kernel that uses it is built.
 
 **This is the kernel half only.** It requires the userspace regcmd-chaining pass that lays a
@@ -695,6 +700,72 @@ reject it — the same trap `089` and `rk3576/npu` 0006 carry.
 Not represented in the compatibility matrix above: it is a correctness fix on an
 allocation-failure path, and no row on this page was measured with it applied.
 
+## Pooling completion (`093-rocket-drv-ppu-completion.patch`)
+
+`rocket_job_hw_submit()` arms `INTERRUPT_MASK` with the DPU pair and
+`rocket_job_irq_handler()` returns `IRQ_NONE` for anything else. That is the right
+completion for a convolution or a matmul, and there is one class of program for which it
+can never arrive: a **pool**.
+
+`PC_OPERATION_ENABLE` is a per-block bitmap, and the two classes are disjoint — a
+convolution enables CNA/CORE/DPU/DPU_RDMA with `0x1d`, a pool enables PPU and PPU_RDMA
+with `0x60`. A pooling program has no DPU stage at all, so `DPU_0`/`DPU_1` never set for
+it, the only completion it can raise is masked off, no interrupt arrives, and `drm_sched`
+retires the job at `JOB_TIMEOUT_MS` through a core reset.
+
+**The answer is correct throughout** — the hardware finishes in microseconds and the
+output BO holds the right surface — so nothing but the wall clock shows it. Measured on a
+Turing RK1 at 600 MHz through both of `librocketnpu`'s pool entries, C=8 over a 7×7 plane
+with a 7×7 average window, six calls each:
+
+```
+rocket_pool_fp16()           530.6 533.3 506.7 506.6 506.7 506.5 ms
+rocket_global_avgpool_fp16() 506.8 506.6 506.8 533.2 506.8 506.5 ms
+```
+
+Twelve submits and twelve `NPU job timed out` lines, the floor being the 500 ms deadline
+plus the scheduler's tick. There is no shape or size dependence, because nothing about the
+program is being waited on. Whole gates: the library's `pool_fp16` suite is 5.87 s over 11
+submits and its `reduce_mean` suite 22.0 s over 33, against 0.027 s for the same binary and
+the same reductions on a driver that is told which block finishes the job.
+
+The PPU raises its own completion in the same register, two bits over. `093` arms that
+instead when the job's last program is a PPU program, latching the mask into the core at
+submit so the hard IRQ handler still needs no job pointer and no lock.
+
+**The flag has to be right, not merely optimistic.** Which class a job is in is invisible
+to the driver and entirely visible to userspace, which wrote `PC_OPERATION_ENABLE` — so it
+is a per-job flag rather than something the driver can infer:
+
+- Setting `DRM_ROCKET_JOB_PPU_DONE` on a job whose last program is a convolution costs
+  that job the same timeout. It is a hint, not an optimisation.
+- A job that **mixes** DPU and PPU programs in one chained stream must not set it: an
+  interior program's PPU bit would retire the job while a later DPU write was still
+  draining. The flag names the **last** program's class.
+
+**This is the kernel half only.** The flag is opt-in, an unflagged job arms the DPU pair
+exactly as before, and a kernel carrying `093` with a userspace that does not set the flag
+behaves byte-for-byte like one without it. It buys nothing until `rocket-userspace` sets
+the flag on its pool submits, and it costs nothing before that.
+
+### The version skips 1.2, and that is a bit allocation rather than a ladder
+
+The interface version goes **1.1 → 1.3**. Bit 1 and version 1.2 stay claimed by
+`rk3576/npu` 0017's `DRM_ROCKET_JOB_NO_DPU_DONE`, so one uAPI header describes both parts
+and no bit means two things.
+
+Read the skip as an allocation, not as a capability ladder. 1.2's flag names a completion
+class for a driver that *polls* for it and has no meaning for one that takes an interrupt,
+so this driver's 1.3 means `{BATCHED, PPU_DONE}` where the RK3576 driver's 1.3 means those
+plus `NO_DPU_DONE`. **Userspace that gates `NO_DPU_DONE` on `minor >= 2` alone would have
+every submit refused here with `-EINVAL`**, because this ioctl rejects an unknown flag word
+rather than ignoring it. A shared userspace must gate that flag on the SoC, not on the
+version. `PPU_DONE` itself is safe to gate on `>= 1.3` on either part.
+
+**Not run on hardware.** It applies under strict `git am`, builds warning-clean at `W=1`,
+and the defect it fixes was measured on silicon — the fix path itself has not been
+executed. Not represented in the compatibility matrix above for the same reason.
+
 ## NPU IRQ affinity (runtime knob, no patch)
 
 A companion runtime lever — no driver change, but in the same dispatch-floor family as the
@@ -750,6 +821,7 @@ git am --3way $P/089-rocket-drv-clocks-by-name.patch           # required (drive
 git am --3way $P/090-rocket-drv-irq-under-job-lock.patch       # required (completion vs submit race)
 git am --3way $P/091-rocket-drv-irq-sync-before-reset.patch     # required (090's other half)
 git am --3way $P/092-rocket-drv-fix-job-push-null-and-overflow.patch  # required (NULL deref); drop at 7.3
+git am --3way $P/093-rocket-drv-ppu-completion.patch            # recommended (pooling completion); needs 086
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
 
@@ -791,7 +863,7 @@ The two board-dependent pieces both degrade gracefully:
   `/proc/interrupts` for the three `.npu` nodes rather than assuming.
 
 Across the 7.1 and 7.2 generations no rebase is needed: `drivers/accel/rocket/rocket_job.c` is
-the same blob (`ac51bff39833`) in v7.1.1, v7.1.3, v7.1.5, v7.1.6, v7.1.7 and v7.2, and all twelve
+the same blob (`ac51bff39833`) in v7.1.1, v7.1.3, v7.1.5, v7.1.6, v7.1.7 and v7.2, and all thirteen
 patches here apply to v7.2 under **strict** `git am` — no `--3way`, no fuzz. That is an apply
 result, not a run result: the measured figures on this page are still v7.1 at 600 MHz and have
 not been re-taken on 7.2. A later mainline may move the driver and require rebasing; each patch

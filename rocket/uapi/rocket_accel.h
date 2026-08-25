@@ -37,6 +37,29 @@ extern "C" {
  */
 #define DRM_ROCKET_JOB_BATCHED		(1 << 0)
 
+/*
+ * DRM_ROCKET_JOB_PPU_DONE: this job's last program is a PPU program (pooling),
+ * whose completion is the PPU's own bit in INTERRUPT_RAW_STATUS and not the
+ * DPU's.  A PPU program enables no DPU stage at all -- PC_OPERATION_ENABLE is
+ * a per-block bitmap and a pool sets 0x60 against a convolution's 0x1d -- so
+ * without this the driver arms DPU_0/DPU_1, the only completion the job can
+ * raise is masked off, no interrupt arrives, and drm_sched retires the job at
+ * its timeout through a core reset.  Measured at ~507ms per pool submit.
+ *
+ * Userspace knows the class because it wrote PC_OPERATION_ENABLE.  Setting it
+ * on a job whose last program is a convolution costs that job the same timeout,
+ * so it is a hint that has to be right rather than an optimisation.
+ *
+ * A job that ends in a PPU program but also contains DPU programs earlier in a
+ * chained stream must NOT set this: the PPU bit an interior program raised
+ * would retire the job while a later DPU write was still draining.
+ *
+ * Only honored by a driver advertising interface version >= 1.3 (bit 1 and
+ * version 1.2 are claimed by the RK3576 series' DRM_ROCKET_JOB_NO_DPU_DONE,
+ * which has no meaning for a driver that takes an interrupt).
+ */
+#define DRM_ROCKET_JOB_PPU_DONE		(1 << 2)
+
 /**
  * struct drm_rocket_create_bo - ioctl argument for creating Rocket BOs.
  *

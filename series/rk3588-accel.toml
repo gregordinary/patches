@@ -247,6 +247,42 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # only from 086 onward; ascending numeric order satisfies that, and the fix itself
 # depends on nothing.
 #
+# 093 arms the interrupt the in-flight job can actually raise. PC_OPERATION_ENABLE is a
+# per-block bitmap and the completion classes are disjoint: a convolution or a matmul
+# enables CNA/CORE/DPU/DPU_RDMA and raises DPU_0/DPU_1, a pool enables PPU and PPU_RDMA
+# and raises PPU_0/PPU_1. rocket_job_hw_submit() arms the DPU pair unconditionally, so a
+# pooling program's only completion is masked off, no interrupt arrives, and drm_sched
+# retires the job at JOB_TIMEOUT_MS through a core reset -- ~507 ms per pool submit with
+# the correct surface already sitting in the output BO, which is why nothing but the wall
+# clock shows it. Measured on RK1 silicon through both of librocketnpu's pool entries:
+# twelve submits, twelve "NPU job timed out" lines, no shape or size dependence.
+#
+# Which class a job is in is not visible to the driver and is entirely visible to
+# userspace, which wrote PC_OPERATION_ENABLE, so it is a per-job uAPI flag -- and that is
+# what separates 093 from every other patch in the rocket block. It is the KERNEL HALF
+# ONLY: DRM_ROCKET_JOB_PPU_DONE is opt-in, an unflagged job arms the DPU pair exactly as
+# before, and a kernel carrying 093 with a userspace that does not set the flag behaves
+# byte-for-byte like one without it. It buys nothing until rocket-userspace sets the flag
+# on its pool submits, and it costs nothing before that. It needs 086, which is what adds
+# drm_rocket_job.flags for it to ride in.
+#
+# The flag has to be RIGHT, not merely optimistic: setting it on a job whose last program
+# is a convolution costs that job the same timeout, and a job that MIXES DPU and PPU
+# programs must not set it at all, because an interior program's PPU bit would retire the
+# job while a later DPU write was still draining. The flag names the LAST program's class.
+#
+# The interface version goes 1.1 -> 1.3, skipping 1.2 so that bit 1 and version 1.2 stay
+# claimed by rk3576/npu 0017's DRM_ROCKET_JOB_NO_DPU_DONE and one uAPI header describes
+# both parts. Read the skip as a bit-allocation, not as a capability ladder: 1.2's flag
+# names a completion class for a driver that POLLS for it and has no meaning here, so this
+# driver's 1.3 means {BATCHED, PPU_DONE} where the RK3576 driver's 1.3 means those plus
+# NO_DPU_DONE. Userspace that gates NO_DPU_DONE on `minor >= 2` alone would have every
+# submit refused here with -EINVAL, since this ioctl rejects an unknown flag word rather
+# than ignoring it -- a shared userspace must gate that flag on the SoC, not the version.
+#
+# Not run on hardware. It applies under strict git am, builds warning-clean at W=1, and
+# the defect it fixes was measured on silicon; the fix path itself has not been executed.
+#
 # 100-103 are the crypto scope and are the RK356x/RK3588 second-generation crypto
 # offloader: AES (ECB/CBC/XTS) and SHA-1/256/384/512, MD5 and SM3 over an LLI-based
 # DMA engine. They are Dawid Olesinski's and Corentin Labbe's, carried verbatim from
@@ -311,6 +347,7 @@ kernel = [
     "rocket/090-rocket-drv-irq-under-job-lock.patch",
     "rocket/091-rocket-drv-irq-sync-before-reset.patch",
     "rocket/092-rocket-drv-fix-job-push-null-and-overflow.patch",
+    "rocket/093-rocket-drv-ppu-completion.patch",
     "crypto/kernel/100-dt-bindings-crypto-rockchip-rk356x-rk3588-engine.patch",
     "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",
     "crypto/kernel/102-arm64-dts-rockchip-rk356x-crypto-node.patch",

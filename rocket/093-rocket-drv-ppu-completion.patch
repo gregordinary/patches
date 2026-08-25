@@ -1,0 +1,266 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 12:00:00 +0000
+Subject: [PATCH] rocket: retire a pooling job on the PPU's completion
+
+rocket_job_hw_submit() arms INTERRUPT_MASK with the DPU pair and
+rocket_job_irq_handler() returns IRQ_NONE for anything else.  That is the
+right completion for a convolution or a matmul and there is one class of
+program for which it can never arrive: a POOL.
+
+PC_OPERATION_ENABLE is a per-block bitmap.  A convolution enables
+CNA/CORE/DPU/DPU_RDMA with 0x1d; a pool enables PPU and PPU_RDMA with
+0x60, and the two bit sets are disjoint.  A pooling program has no DPU
+stage at all, so DPU_0/DPU_1 never set for it, the only completion it can
+raise is masked off, and no interrupt arrives.  drm_sched then retires the
+job at JOB_TIMEOUT_MS and takes the core through a reset.
+
+The answer is correct throughout -- the hardware finishes in microseconds
+and the output BO holds the right surface -- so nothing but the wall shows
+it.  Measured on a Turing RK1 at 600 MHz through both of librocketnpu's
+pool entries, C=8 over a 7x7 plane with a 7x7 average window, six calls
+each:
+
+  rocket_pool_fp16()           530.6 533.3 506.7 506.6 506.7 506.5 ms
+  rocket_global_avgpool_fp16() 506.8 506.6 506.8 533.2 506.8 506.5 ms
+
+twelve submits and twelve "NPU job timed out" lines, the floor being the
+500 ms deadline plus the scheduler's tick.  There is no shape or size
+dependence because nothing about the program is being waited on.  Whole
+gates: the library's pool_fp16 suite is 5.87 s over 11 submits and its
+reduce_mean suite 22.0 s over 33, against 0.027 s for the same binary and
+the same reductions on a driver that is told which block finishes the job.
+
+The PPU raises its own completion in the same register, two bits over.
+Arm that instead when the job's last program is a PPU program.  Which
+class a job is in is not visible to the driver and is entirely visible to
+userspace, which wrote PC_OPERATION_ENABLE -- so it is a per-job flag.
+The mask is latched into the core at submit so the hard IRQ handler still
+needs no job pointer and no lock.
+
+Setting the flag on a job whose last program is a convolution costs that
+job the same timeout, so it is a hint that has to be right rather than an
+optimisation.  A job that MIXES DPU and PPU programs in one chained stream
+must not set it, because an interior program's PPU bit would retire the
+job while a later DPU write was still draining; the flag is documented as
+naming the LAST program's class.
+
+The interface version goes to 1.3 so userspace can tell a kernel that
+honors the flag from one that would reject it -- this ioctl rejects an
+unknown flag word rather than ignoring it, so "advisory" is a property of
+the flag's meaning and not of sending it to an older kernel.  1.2 and bit
+1 are left claimed by the RK3576 series' DRM_ROCKET_JOB_NO_DPU_DONE, which
+names a completion class for a driver that POLLS for it and has no meaning
+here; skipping them keeps one uAPI across both parts, which is what
+userspace already gates on.
+
+rk3576/npu 0021 is the same change against that series' poll path, and its
+reasoning that "RK3588 takes a completion interrupt and does not poll, so
+it is untouched" is what this patch corrects: the interrupt it takes is
+DPU-only.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/accel/rocket/rocket_core.h | 10 +++++++
+ drivers/accel/rocket/rocket_drv.c  |  7 ++++-
+ drivers/accel/rocket/rocket_job.c  | 48 ++++++++++++++++++++++++++----
+ drivers/accel/rocket/rocket_job.h  |  9 ++++++
+ include/uapi/drm/rocket_accel.h    | 23 ++++++++++++++
+ 5 files changed, 91 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_core.h b/drivers/accel/rocket/rocket_core.h
+index 0abfe2c39..b81df60cf 100644
+--- a/drivers/accel/rocket/rocket_core.h
++++ b/drivers/accel/rocket/rocket_core.h
+@@ -77,6 +77,16 @@ struct rocket_core {
+ 	struct mutex job_lock;
+ 	struct rocket_job *in_flight_job;
+ 
++	/*
++	 * Which INTERRUPT_RAW_STATUS bits are the in-flight job's completion: the
++	 * DPU's for a convolution or a matmul, the PPU's for a pooling program,
++	 * which has no DPU stage at all. Latched by rocket_job_hw_submit() so the
++	 * hard IRQ handler needs no job pointer and no lock -- it runs before the
++	 * thread that would take job_lock, and a job cannot be in flight on this
++	 * core while another is being submitted to it.
++	 */
++	u32 irq_done_mask;
++
+ 	spinlock_t fence_lock;
+ 
+ 	struct {
+diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
+index 3d978f32a..21edf03da 100644
+--- a/drivers/accel/rocket/rocket_drv.c
++++ b/drivers/accel/rocket/rocket_drv.c
+@@ -257,6 +257,11 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  *         the v1 layout upward, and a trailing field this kernel does not know
+  *         is refused with -E2BIG rather than silently ignored.
+  * - 1.1 - adds DRM_ROCKET_JOB_BATCHED (per-job chained submit).
++ * - 1.2 - RESERVED. DRM_ROCKET_JOB_NO_DPU_DONE names a completion class for a
++ *         driver that POLLS for it; this one takes an interrupt and has no such
++ *         path, so the bit and the version are left claimed rather than reused,
++ *         and one uAPI describes both parts.
++ * - 1.3 - adds DRM_ROCKET_JOB_PPU_DONE (retire on the PPU's completion).
+  *
+  * Userspace MUST NOT self-chain a job's regcmd layout unless the driver reports
+  * >= 1.1: an older kernel does not know the flag, would run that chained layout
+@@ -264,7 +269,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
+  */
+ static const struct drm_driver rocket_drm_driver = {
+ 	.major			= 1,
+-	.minor			= 1,
++	.minor			= 3,
+ 	.driver_features	= DRIVER_COMPUTE_ACCEL | DRIVER_GEM,
+ 	.open			= rocket_open,
+ 	.postclose		= rocket_postclose,
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 186d5999b..722e0b98e 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -165,6 +165,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ {
+ 	struct rocket_task *task;
+ 	unsigned int extra_bit;
++	u32 mask, clear;
+ 
+ 	/* Don't queue the job if a reset is in progress */
+ 	if (atomic_read(&core->reset.pending))
+@@ -202,8 +203,31 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+ 	rocket_pc_writel(core, REGISTER_AMOUNTS,
+ 			 PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT((task->regcmd_count + 1) / 2 - 1));
+ 
+-	rocket_pc_writel(core, INTERRUPT_MASK, PC_INTERRUPT_MASK_DPU_0 | PC_INTERRUPT_MASK_DPU_1);
+-	rocket_pc_writel(core, INTERRUPT_CLEAR, PC_INTERRUPT_CLEAR_DPU_0 | PC_INTERRUPT_CLEAR_DPU_1);
++	/*
++	 * Arm the block that finishes THIS job. PC_OPERATION_ENABLE is a per-block
++	 * bitmap and the two classes are disjoint: a convolution or a matmul
++	 * enables CNA/CORE/DPU/DPU_RDMA and raises DPU_0/DPU_1, a pool enables PPU
++	 * and PPU_RDMA and raises PPU_0/PPU_1. Arming the DPU pair for a pool masks
++	 * off the only completion it can raise, so the job takes no interrupt at
++	 * all and drm_sched retires it at JOB_TIMEOUT_MS through a reset -- half a
++	 * second per pool submit, with the right answer already in the output BO.
++	 * Which class a job is in is not visible here and is entirely visible to
++	 * userspace, which wrote PC_OPERATION_ENABLE.
++	 */
++	if (job->ppu_done) {
++		mask = PC_INTERRUPT_MASK_PPU_0 | PC_INTERRUPT_MASK_PPU_1;
++		clear = PC_INTERRUPT_CLEAR_PPU_0 | PC_INTERRUPT_CLEAR_PPU_1;
++	} else {
++		mask = PC_INTERRUPT_MASK_DPU_0 | PC_INTERRUPT_MASK_DPU_1;
++		clear = PC_INTERRUPT_CLEAR_DPU_0 | PC_INTERRUPT_CLEAR_DPU_1;
++	}
++	/*
++	 * The mask, clear and raw-status bits share their positions, so the handler
++	 * can test the raw word against the value armed here.
++	 */
++	WRITE_ONCE(core->irq_done_mask, mask);
++	rocket_pc_writel(core, INTERRUPT_MASK, mask);
++	rocket_pc_writel(core, INTERRUPT_CLEAR, clear);
+ 
+ 	rocket_pc_writel(core, TASK_CON, PC_TASK_CON_RESERVED_0(1) |
+ 					 PC_TASK_CON_TASK_COUNT_CLEAR(1) |
+@@ -568,8 +592,7 @@ static irqreturn_t rocket_job_irq_handler(int irq, void *data)
+ 	WARN_ON(raw_status & PC_INTERRUPT_RAW_STATUS_DMA_READ_ERROR);
+ 	WARN_ON(raw_status & PC_INTERRUPT_RAW_STATUS_DMA_WRITE_ERROR);
+ 
+-	if (!(raw_status & PC_INTERRUPT_RAW_STATUS_DPU_0 ||
+-	      raw_status & PC_INTERRUPT_RAW_STATUS_DPU_1))
++	if (!(raw_status & READ_ONCE(core->irq_done_mask)))
+ 		return IRQ_NONE;
+ 
+ 	rocket_pc_writel(core, INTERRUPT_MASK, 0x0);
+@@ -593,6 +616,14 @@ int rocket_job_init(struct rocket_core *core)
+ 	spin_lock_init(&core->fence_lock);
+ 	mutex_init(&core->job_lock);
+ 
++	/*
++	 * Until a job arms it, accept the class every program before this patch
++	 * raised -- so a stray interrupt on a core that has run nothing behaves
++	 * exactly as it did.
++	 */
++	core->irq_done_mask = PC_INTERRUPT_RAW_STATUS_DPU_0 |
++			      PC_INTERRUPT_RAW_STATUS_DPU_1;
++
+ 	core->irq = platform_get_irq(to_platform_device(core->dev), 0);
+ 	if (core->irq < 0)
+ 		return core->irq;
+@@ -687,7 +718,7 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 		return -EINVAL;
+ 
+ 	/* Reject unknown flag bits so a future flag cannot be silently ignored. */
+-	if (job->flags & ~DRM_ROCKET_JOB_BATCHED) {
++	if (job->flags & ~(DRM_ROCKET_JOB_BATCHED | DRM_ROCKET_JOB_PPU_DONE)) {
+ 		drm_dbg(dev, "Unknown bits set in drm_rocket_job.flags (0x%x).\n",
+ 			job->flags);
+ 		return -EINVAL;
+@@ -714,6 +745,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+ 	 */
+ 	rjob->want_batched = !!(job->flags & DRM_ROCKET_JOB_BATCHED);
+ 
++	/*
++	 * And which block's completion this job's last program raises. A pool is
++	 * PPU and PPU_RDMA writes with no DPU stage, so the DPU bits never set for
++	 * it and the default arming masks off the only completion it has.
++	 */
++	rjob->ppu_done = !!(job->flags & DRM_ROCKET_JOB_PPU_DONE);
++
+ 	ret = drm_sched_job_init(&rjob->base,
+ 				 &file_priv->sched_entity,
+ 				 1, NULL, file->client_id);
+diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
+index 43bee21ba..50ca38601 100644
+--- a/drivers/accel/rocket/rocket_job.h
++++ b/drivers/accel/rocket/rocket_job.h
+@@ -44,6 +44,15 @@ struct rocket_job {
+ 	bool want_batched;
+ 	bool batched;
+ 
++	/*
++	 * ppu_done: userspace set DRM_ROCKET_JOB_PPU_DONE -- this job's last
++	 * program is a PPU program (pooling), whose completion is the PPU's own
++	 * bit and not the DPU's. Selects which INTERRUPT_MASK bits are armed and
++	 * which RAW_STATUS bits the handler accepts. Captured at submit from
++	 * drm_rocket_job.flags.
++	 */
++	bool ppu_done;
++
+ 	/* Fence to be signaled by drm-sched once its done with the job */
+ 	struct dma_fence *inference_done_fence;
+ 
+diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
+index e75db56cc..2cea95faf 100644
+--- a/include/uapi/drm/rocket_accel.h
++++ b/include/uapi/drm/rocket_accel.h
+@@ -37,6 +37,29 @@ extern "C" {
+  */
+ #define DRM_ROCKET_JOB_BATCHED		(1 << 0)
+ 
++/*
++ * DRM_ROCKET_JOB_PPU_DONE: this job's last program is a PPU program (pooling),
++ * whose completion is the PPU's own bit in INTERRUPT_RAW_STATUS and not the
++ * DPU's.  A PPU program enables no DPU stage at all -- PC_OPERATION_ENABLE is
++ * a per-block bitmap and a pool sets 0x60 against a convolution's 0x1d -- so
++ * without this the driver arms DPU_0/DPU_1, the only completion the job can
++ * raise is masked off, no interrupt arrives, and drm_sched retires the job at
++ * its timeout through a core reset.  Measured at ~507ms per pool submit.
++ *
++ * Userspace knows the class because it wrote PC_OPERATION_ENABLE.  Setting it
++ * on a job whose last program is a convolution costs that job the same timeout,
++ * so it is a hint that has to be right rather than an optimisation.
++ *
++ * A job that ends in a PPU program but also contains DPU programs earlier in a
++ * chained stream must NOT set this: the PPU bit an interior program raised
++ * would retire the job while a later DPU write was still draining.
++ *
++ * Only honored by a driver advertising interface version >= 1.3 (bit 1 and
++ * version 1.2 are claimed by the RK3576 series' DRM_ROCKET_JOB_NO_DPU_DONE,
++ * which has no meaning for a driver that takes an interrupt).
++ */
++#define DRM_ROCKET_JOB_PPU_DONE		(1 << 2)
++
+ /**
+  * struct drm_rocket_create_bo - ioctl argument for creating Rocket BOs.
+  *
+-- 
+2.43.0
