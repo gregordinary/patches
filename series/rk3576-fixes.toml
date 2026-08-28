@@ -68,6 +68,51 @@ applies_to_kernel = ">=7.1, <7.3"
 # either series has to keep applying in the other, which the builder's
 # verify-applies gate enforces. Retires when a kernel arrives carrying an
 # upstream equivalent, from both series at once.
+#
+# 108 stops rkvdec_irq_handler() dereferencing a NULL context. It resolves the
+# current job with v4l2_m2m_get_curr_priv() and hands the result straight to a
+# variant handler that opens with ctx->dev, and that function returns NULL when
+# no job is current. Nothing in the decode path can reach it -- a job is always
+# current there -- but 109 submits work of its own with no context behind it, so
+# the guard is 109's prerequisite as well as a robustness fix in its own right.
+# It is written to stand alone, with no erratum context, so it can be offered
+# upstream separately.
+#
+# 109 fixes RK3576 hardware H.264 decode, which is otherwise wrong for a whole
+# power cycle at a time. The corrupt rows are an H.264 normal-filter deblock
+# applied to a horizontal edge the stream does not have, with the p side reading
+# zero; the threshold it clips against is latched when the power domain comes up,
+# and nothing the driver programs per run can move it. The fix decodes a canned
+# 2x2 H.264 IDR frame through the link-mode engine from runtime resume -- the one
+# point that precedes every decode of the power cycle -- which is also what the
+# vendor driver's own RK3576 workaround for this block does.
+#
+# What the block needs is to complete a decode, and the job carries only what that
+# takes: the decode mode, a core timeout, the stream and the frame to write it
+# into. That was established a piece at a time on the H96 MAX M9, each piece an
+# arm of 400 power-ups interleaved against a control drawn on the same rounds.
+# Enabling the link engine without submitting a job is worth nothing (129/400
+# against the control's 133/400, p = 0.82) and does not even shift the
+# distribution of latched states behind the rate. Dropping the core timeout leaves
+# a job that still completes and reports ready, but the block retires it without
+# decoding and the fix is gone (134/400, p = 0.22). Dropping the RCB row-cache
+# pointers, the error-processing word or the CABAC error masks each leaves the fix
+# intact at 0/400, so none of them is programmed. The job as it ships reads 0/400
+# against a control's 126/400, CMH stratified in blocks of 100 rounds p = 1e-33.
+#
+# The vendor-shaped job it grew out of carries the older evidence, which stands
+# for what it measured: 0/173 against the control's 40/173 over five campaigns at
+# 1080p and 4K, CMH by campaign p = 6e-11, then 0/200 on a soak of that patch.
+# HEVC is bit-exact in every arm of every campaign of both. The job as it stands
+# then soaked 200 further power-ups alternating 1080p and 4K on a kernel carrying
+# it unconditionally: none corrupt, no warm-up warning. What it has not had is the
+# 8.5 hour sleep test, which was run against the vendor-shaped job.
+#
+# 109 is silent when it works and warns on a warm-up timeout or a non-zero error
+# status, which is what a soak greps for -- and that warning is load-bearing: a
+# job the block never completes leaves it unable to decode either codec for the
+# rest of the power cycle. Both sit last because they touch the same files as 104
+# and 073 and must not disturb their hunks.
 kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
@@ -75,6 +120,8 @@ kernel = [
     "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
     "rk3576/kernel/104-media-rkvdec-vdpu383-read-cache.patch",
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
+    "rk3576/kernel/108-media-rkvdec-guard-null-context-in-irq-handler.patch",
+    "rk3576/kernel/109-media-rkvdec-vdpu383-powerup-warmup.patch",
 ]
 
 ffmpeg    = []

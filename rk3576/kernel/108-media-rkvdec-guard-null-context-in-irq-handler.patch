@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 22:01:36 -0400
+Subject: [PATCH] media: rkvdec: do not dereference a NULL context in the
+ interrupt handler
+
+rkvdec_irq_handler() resolves the current job's context with
+v4l2_m2m_get_curr_priv() and hands it to the variant handler without
+checking it. That function returns NULL when no job is current, and every
+variant handler opens with
+
+	struct rkvdec_dev *rkvdec = ctx->dev;
+
+so an interrupt taken with nothing in flight faults in the handler.
+
+Return IRQ_NONE instead. With no job current there is nothing to complete,
+which is what IRQ_NONE says, and it is the right answer whether the
+interrupt is spurious, shared, or raised by a device that has been left
+asserting after a job was already finished.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ drivers/media/platform/rockchip/rkvdec/rkvdec.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.c b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
+index 14501fb7d..5a4faf958 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
+@@ -1553,6 +1553,14 @@ static irqreturn_t rkvdec_irq_handler(int irq, void *priv)
+ 	struct rkvdec_ctx *ctx = v4l2_m2m_get_curr_priv(rkvdec->m2m_dev);
+ 	const struct rkvdec_variant *variant = rkvdec->variant;
+ 
++	/*
++	 * Every variant handler reaches the device through the context, so an
++	 * interrupt taken with no job current has nothing to complete and
++	 * nothing to dereference.
++	 */
++	if (!ctx)
++		return IRQ_NONE;
++
+ 	return variant->ops->irq_handler(ctx);
+ }
+ 
+-- 
+2.43.0
+
