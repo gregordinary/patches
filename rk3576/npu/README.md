@@ -6,10 +6,11 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 0008 to 0030 and 0033 are ours; 0001-0007, 0031 and 0032 come from the
+Patches 0008 to 0030 and 0033 are ours; 0001-0007, 0031, 0032 and 0034 come from the
 linux-rockchip series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
-(`gahing@gahingwoo.com`), tracked at its **v8** posting, with their upstream commit
-messages, `Signed-off-by` and `Reviewed-by` lines intact. They compose after
+(`gahing@gahingwoo.com`), tracked at its **v8** posting except 0034, which is v9's
+03/13, with their upstream commit messages, `Signed-off-by` and `Reviewed-by` lines
+intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
 
 | file | upstream subject |
@@ -47,9 +48,11 @@ messages, `Signed-off-by` and `Reviewed-by` lines intact. They compose after
 | 0031 | dt-bindings: power: rockchip: allow resets in a power domain node |
 | 0032 | dt-bindings: iommu: rockchip: describe the RK3576 NPU MMU |
 | 0033 | dt-bindings: npu: rockchip: describe the RK3576 DPU register banks (ours) |
+| 0034 | accel/rocket: let the core suspend after a reset |
 
-Three of the carried patches have local changes; the rest are verbatim. 0031 to 0033
-are last because `Documentation/` has no apply-order dependency on anything else here.
+Four of the carried patches have local changes; the rest are verbatim. 0031 to 0033
+sit near the end because `Documentation/` has no apply-order dependency on anything
+else here, and 0034 after them because it was taken later.
 
 **0001 describes the RK3576 node shape.** The upstream schema is written for the
 RK3588 and constrains every countable property to the RK3588's count, so the RK3576
@@ -110,6 +113,14 @@ gives. Everything else that used to be local here -- `rknn_core_1` at `0x2770800
 two CBUF clocks on core 1, both NPU power domains on both core nodes -- is upstream as
 of v8 and is no longer a divergence. 0007 also emits the
 `rockchip,rk3576-npu-iommu` compatible that 0032 describes.
+
+**0034 carries one local change: what it says about the other put.** Upstream's
+message notes that the remaining put in `rocket_job_run()` is a plain
+`pm_runtime_put()` left for its own patch. In this series 0010 already reached that
+path: the failed `pm_runtime_get_sync()` unwinds through `pm_runtime_put_noidle()`,
+which is right there and needs nothing, and the `iommu_attach_group()` failure below
+it already pairs `mark_last_busy()` with `put_autosuspend()`. The paragraph says that
+instead, so the patch describes the tree it is in.
 
 **Core 1 sits at `0x27708000`.** The two cores are the two halves of one 64 KB `RKNN TOP`
 window: the RK3576 TRM v1.2 address map has `RKNN TOP` at `0x27700000` (64 KB) and the
@@ -224,6 +235,32 @@ the dying flag from its previous teardown and never retire a job again;
 `rocket_job_init()` clears it. On a single-core RK3576 -- the supported configuration
 -- every unbind is the last one and the array is reallocated, which is why no test on
 this hardware reaches it.
+
+## What 0034 fixes: a core that never suspends after a reset
+
+The same failure 0010 describes -- a core pinned runtime-active for good -- has a
+third door, and it is the one on the reset path. `rocket_reset()` put the in-flight
+job's reference back with `pm_runtime_put_noidle()`. That decrements and requests
+nothing, so the core comes out of a timeout at usage_count 0, still runtime-active,
+with no idle request pending: it will not suspend until something else asks, and
+nothing else does. 0010 fixes `rocket_job_run()`'s two early returns; this fixes the
+timeout path. They are independent.
+
+**It matters more here than on the RK3588, because on this SoC the power domain does
+work on power-on.** That work is the BIU reset cycle 0003 adds, and a core that never
+suspends never powers up again to get it. Upstream's symptom is the IOMMU going deaf:
+`rk_iommu` reports `MMU_DTE_ADDR` not functioning on the next attach and the job after
+a timeout returns a surface of the output zero point. Measured on a ROCK 4D in one
+boot with that single line as the variable -- bare put 0 of 128 channels with the core
+still reading active and its rail up, `put_autosuspend()` 128 of 128 with it suspended
+and no IOMMU message, and a third run back on the bare put failing again.
+
+Igor Paunovic ran the differential on the RK3588 -- 45 induced resets across three
+cores, with and without the two patches before it upstream -- and the domain dropped
+every time on both kernels with no MMU message, so this is not rocket-wide and
+`rocket/` does not carry a counterpart. His protocol crosses a healthy block with a
+lowered timeout rather than a hung one, which he was careful to say it cannot settle;
+what it does settle is that the RK3588 shows nothing.
 
 ## What 0010 fixes, and why it is not RK3576-specific
 
@@ -932,14 +969,17 @@ RK3588 geometry does not run here; a userspace needs its own RK3576 encoder. Wit
 that in hand the kernel side runs: an int8 convolution encoded for this part is
 bit-exact against a CPU model on real silicon (H96 MAX M9), and multi-task
 row-windowed programs are bit-exact submitted back to back with no gap. Carried from
-the upstream series at **v8**; re-sync from a later revision by re-splitting it into
-this directory and updating `series/rk3576-npu.toml`.
+the upstream series at **v8**, plus 0034 from v9; re-sync from a later revision by
+re-splitting it into this directory and updating `series/rk3576-npu.toml`.
 
-**0026 to 0033 have not been on hardware.** They are reasoned from the source and
+**0026 to 0034 have not been on hardware here.** They are reasoned from the source and
 build clean, and none of them changes what a correct submit does: 0026 and 0027 are
 the same operations with a different count and a different lock scope, 0028 adds a
 wait on a path that is only entered when a job has already timed out, 0029 and 0030
-are paths a passing run does not take, and 0031 to 0033 are `Documentation/`. Every
+are paths a passing run does not take, 0031 to 0033 are `Documentation/`, and 0034
+changes how one reference is put on the timeout path. 0034 is the exception to
+"reasoned from the source": it was measured upstream on a ROCK 4D, just not on the
+H96. Every
 measurement above stands, but the H96 has not been through a run with them applied --
 the checks that would close that are a submit sweep unchanged, an unbind and rebind
 with a job in flight, and `dtbs_check` clean on `rk3576.dtsi`.

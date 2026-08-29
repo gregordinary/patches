@@ -15,10 +15,10 @@
 # real silicon, including multi-task row-windowed programs submitted with no gap
 # between tasks.
 #
-# 0001-0007, 0031 and 0032 come from the linux-rockchip series "accel/rocket: RK3576 NPU
-# (RKNN) enablement" (Jiaxing Hu), tracked at its v8 posting; everything else is ours.
-# 0001, 0003, 0004, 0005, 0031 and 0032 are verbatim; 0002, 0006 and 0007 carry local
-# changes.
+# 0001-0007, 0031, 0032 and 0034 come from the linux-rockchip series "accel/rocket: RK3576
+# NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v8 posting except 0034, which is
+# v9's 03/13; everything else is ours. 0001, 0003, 0004, 0005, 0031 and 0032 are
+# verbatim; 0002, 0006, 0007 and 0034 carry local changes.
 #
 # 0001 widens the binding to describe the RK3576 node and pins the exact shape per
 # compatible in an allOf, which is what makes a one-domain RK3576 core a dtbs_check
@@ -249,6 +249,18 @@
 # rocket_job_init(), because struct rocket_core outlives an unbind whenever another
 # core stays bound and a rebinding core would otherwise never retire again.
 #
+# 0034 lets a core suspend after a reset. rocket_reset() put the in-flight job's
+# runtime PM reference back with pm_runtime_put_noidle(), a bare decrement that
+# requests nothing, so a core came out of a timeout at usage_count 0 but still
+# runtime-active and did not suspend until something else asked. On this SoC that is
+# the difference between a working NPU and a dead one: the power domain does its work
+# on power-on -- the BIU reset cycle 0003 adds -- and a core that never suspends never
+# powers up again to get it, so the IOMMU stops answering and the next job comes back
+# as the output zero point with MMU_DTE_ADDR complaints. Upstream measured 0 of 128
+# channels against 128 of 128 on one boot with that single line as the variable. The
+# put in rocket_job_run()'s failed get_sync() stays bare, because it unwinds a
+# reference to a device that never resumed.
+#
 # 0031-0033 are the schema for what 0003, 0007 and the completion path describe, and
 # they are last only because Documentation/ has no apply-order dependency on anything.
 # Every DT they cover is rejected without them. 0031: pd-node carries no `resets`
@@ -327,6 +339,7 @@ kernel = [
     "rk3576/npu/0031-dt-bindings-power-rockchip-allow-resets-in-a-power-domain-node.patch",
     "rk3576/npu/0032-dt-bindings-iommu-rockchip-describe-the-rk3576-npu-mmu.patch",
     "rk3576/npu/0033-dt-bindings-npu-rockchip-describe-the-rk3576-dpu-register-banks.patch",
+    "rk3576/npu/0034-accel-rocket-let-the-core-suspend-after-a-reset.patch",
 ]
 
 ffmpeg    = []
