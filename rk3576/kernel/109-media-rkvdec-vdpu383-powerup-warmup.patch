@@ -23,16 +23,18 @@ the outcome either before or after a decode. Nothing programmed per run
 moves it, and nothing precedes the first decode of a power cycle:
 runtime resume enables the clocks and returns.
 
-Decode a canned 2x2 H.264 IDR frame through the link-mode engine from
-runtime resume, which is the one point that does precede every decode
-of the cycle. The vendor driver carries an RK3576-only workaround for
-this block that does the same from its own runtime resume, gated on the
-RK3576 compatible alone. Build the job once at probe into a two-page
-coherent buffer -- the register image and the link node that points at
-it carry the buffer's own IOVA -- then at resume mask the block's
-interrupt, program the link registers, kick, poll for completion and
-put the link registers back. The job has no V4L2 context behind it, so
-the host interrupt is disabled across it as well.
+Decode a canned 2x2 H.264 IDR frame from runtime resume, which is the
+one point that does precede every decode of the cycle. The vendor
+driver carries an RK3576-only workaround for this block that does the
+same from its own runtime resume, gated on the RK3576 compatible alone.
+Build the job once at probe into a two-page coherent buffer -- its
+register image carries the buffer's own IOVA -- then at resume mask the
+block's interrupt, write the image into the function register window,
+kick DEC_ENABLE and poll for completion. That is the submission path
+the codec backends already use; the vendor submits the same job through
+the link-mode engine instead, and the engine turns out not to matter
+(below). The job has no V4L2 context behind it, so the host interrupt
+is disabled across it as well.
 
 What matters is that the block completes a decode, and the job carries
 only what that takes: the decode mode, a core timeout, the stream, and
@@ -71,20 +73,43 @@ Every arm was checked to be decoding in hardware rather than falling
 back to software, which would otherwise emit the reference hash and
 read as a fix.
 
+How the job is submitted makes no difference, which is why this does
+not use link mode. Measured as a repair arm -- classify a power-up,
+run the job on the state it already latched without power-cycling, and
+classify again -- the direct register kick cleared 36 of 36 latched
+power-ups and broke none of the 64 clean ones beside them, and the same
+job through link mode with both its interrupts left armed cleared 33 of
+33 while the handler actually took 71 of the completions. As a
+prevention arm against a control interleaved draw by draw, the direct
+kick is 0/400 against 128/400, CMH p = 1e-34.
+
+An ordinary V4L2 decode is not a substitute and the difference is not
+in the submission. On an already-latched power-up, one that never
+clears the state: a 16x16 clip -- the smallest this driver decodes, and
+one intra macroblock just like the canned job -- an HEVC clip, twenty
+16x16 decodes in a row, a clip with its deblocking filter on, a decode
+with the ten per-block auto clock gates off, and a decode with the
+reference read caches off. Pooled, 0 of 111 latched power-ups against
+the canned job's 73 of 73 on the same draws.
+
+The whole 8-255 span of the register file is written rather than the
+dozen words the job sets, because the rest have to be seen as zero and
+nothing else clears what a previous decode left in them.
+
 The job costs about 315 us on a resume that already takes about 31 ms.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- .../rockchip/rkvdec/rkvdec-vdpu383-regs.h     |  31 +++
- .../media/platform/rockchip/rkvdec/rkvdec.c   | 187 +++++++++++++++++-
+ .../rockchip/rkvdec/rkvdec-vdpu383-regs.h     |  17 ++
+ .../media/platform/rockchip/rkvdec/rkvdec.c   | 179 +++++++++++++++++-
  .../media/platform/rockchip/rkvdec/rkvdec.h   |  17 ++
- 3 files changed, 234 insertions(+), 1 deletion(-)
+ 3 files changed, 212 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h
-index 2ecb953f8..c0f6007bb 100644
+index 2ecb953f8..f17ca0d77 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-regs.h
-@@ -29,6 +29,29 @@
+@@ -29,6 +29,15 @@
  
  #define VDPU383_LINK_IP_ENABLE		0x58
  #define VDPU383_IP_CRU_MODE		BIT(24)
@@ -95,26 +120,12 @@ index 2ecb953f8..c0f6007bb 100644
 + */
 +#define VDPU383_IP_IRQ_DIS		BIT(15)
 +
-+/*
-+ * Link-mode engine. The codec backends drive the block by writing its register
-+ * file directly and kicking DEC_ENABLE; link mode instead takes a node
-+ * descriptor in memory that points at three register segments, and is how the
-+ * power-up warm-up job is submitted.
-+ */
-+#define VDPU383_LINK_CCU_MODE		0x00
-+#define VDPU383_LINK_NODE_ADDR		0x04
-+#define VDPU383_LINK_MODE		0x08
-+#define VDPU383_LINK_CFG		0x0c
-+#define VDPU383_LINK_EN			0x18
-+#define VDPU383_CCU_MODE_VAL		0x00010001
-+#define VDPU383_LINK_MODE_VAL		0x00000001
-+#define VDPU383_LINK_EN_VAL		0x00000001
-+#define VDPU383_LINK_CFG_VAL		0x00000001
++/* The core timeout the power-up warm-up job runs under. */
 +#define VDPU383_LINK_TIMEOUT_VAL	0x0007ffff
  
  #define VDPU383_LINK_DEC_ENABLE		0x40
  #define VDPU383_DEC_E_BIT		BIT(0)
-@@ -41,6 +64,14 @@
+@@ -41,6 +50,14 @@
  #define VDPU383_STA_INT_DEC_RDY_STA	BIT(0)
  #define VDPU383_STA_INT_SOFTRESET_RDY	(BIT(10) | BIT(11))
  #define VDPU383_STA_INT_ALL		0x3ff
@@ -130,7 +141,7 @@ index 2ecb953f8..c0f6007bb 100644
  /*
   * Reference read caches, in the "cache" reg region. Three identical banks
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.c b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
-index 5a4faf958..2f1e492d3 100644
+index 5a4faf958..897252c5f 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
 @@ -11,9 +11,12 @@
@@ -146,15 +157,15 @@ index 5a4faf958..2f1e492d3 100644
  #include <linux/module.h>
  #include <linux/of.h>
  #include <linux/of_device.h>
-@@ -39,6 +42,41 @@ module_param(read_cache, bool, 0644);
+@@ -39,6 +42,44 @@ module_param(read_cache, bool, 0644);
  MODULE_PARM_DESC(read_cache,
  		 "Enable the VDPU383 reference read caches (default 1; 0 to measure against)");
  
 +/*
 + * The canned power-up warm-up job, laid out in one two-page coherent buffer: a
 + * 32-byte H.264 IDR slice and the parameter set that describes it, the frame it
-+ * decodes into and its colmv, and then the register image and the link node that
-+ * points at it.
++ * decodes into and its colmv, and the register image the job is programmed
++ * from.
 + */
 +#define VDPU383_WARMUP_SIZE		(2 * PAGE_SIZE)
 +#define VDPU383_WARMUP_RLC		0
@@ -163,12 +174,15 @@ index 5a4faf958..2f1e492d3 100644
 +#define VDPU383_WARMUP_OUT		1344
 +#define VDPU383_WARMUP_COLMV		2880
 +#define VDPU383_WARMUP_REGS		4096
-+#define VDPU383_WARMUP_SEG0		(VDPU383_WARMUP_REGS + 32)
-+#define VDPU383_WARMUP_SEG1		(VDPU383_WARMUP_REGS + 256)
-+#define VDPU383_WARMUP_SEG2		(VDPU383_WARMUP_REGS + 512)
-+#define VDPU383_WARMUP_DEBUG		(VDPU383_WARMUP_REGS + 1024)
 +#define VDPU383_WARMUP_MAGIC		0x76543210
-+#define VDPU383_WARMUP_TABLE_INFO	0x76543212
++
++/*
++ * The span of the register image, as register indices: the block's file from
++ * the first word a decode programs to the last, all of which the warm-up
++ * writes, most of them zero.
++ */
++#define VDPU383_WARMUP_FIRST_REG	8
++#define VDPU383_WARMUP_NUM_REGS		256
 +
 +/* A 2x2 IDR slice, and the parameter set that describes it. */
 +static const u8 vdpu383_warmup_rlc[] = {
@@ -188,14 +202,13 @@ index 5a4faf958..2f1e492d3 100644
  static bool rkvdec_image_fmt_match(enum rkvdec_image_fmt fmt1,
  				   enum rkvdec_image_fmt fmt2)
  {
-@@ -1176,6 +1214,130 @@ void rkvdec_vdpu383_config_read_cache(struct rkvdec_dev *rkvdec)
+@@ -1176,6 +1217,119 @@ void rkvdec_vdpu383_config_read_cache(struct rkvdec_dev *rkvdec)
  	writel(VDPU383_CACHE_MAX_READS_VAL, rkvdec->cache + VDPU383_CACHE_MAX_READS);
  }
  
 +/*
-+ * Build the canned link-mode job once, at probe. The register image and the node
-+ * that points at it carry the buffer's own IOVA, so neither can be built before
-+ * the buffer exists.
++ * Build the canned job once, at probe. Its register image carries the buffer's
++ * own IOVA, so it cannot be built before the buffer exists.
 + */
 +static int rkvdec_vdpu383_warmup_init(struct rkvdec_dev *rkvdec)
 +{
@@ -240,27 +253,16 @@ index 5a4faf958..2f1e492d3 100644
 +	reg[168] = iova + VDPU383_WARMUP_OUT;
 +	reg[216] = iova + VDPU383_WARMUP_COLMV;
 +
-+	/*
-+	 * The link node header shares the register region's base and occupies the
-+	 * six words below the first register segment.
-+	 */
-+	reg[0] = iova + VDPU383_WARMUP_OUT;
-+	reg[1] = VDPU383_WARMUP_TABLE_INFO;
-+	reg[2] = iova + VDPU383_WARMUP_DEBUG;
-+	reg[3] = iova + VDPU383_WARMUP_SEG0;
-+	reg[4] = iova + VDPU383_WARMUP_SEG1;
-+	reg[5] = iova + VDPU383_WARMUP_SEG2;
-+
 +	return 0;
 +}
 +
 +/*
-+ * Run the canned job through the link-mode engine.
++ * Run the canned job: program the register file and kick DEC_ENABLE, the way a
++ * codec backend runs a decode.
 + *
 + * The block's interrupt is masked in hardware and the host interrupt is disabled
-+ * across the submission, because this job has no V4L2 context behind it. The
-+ * link registers are returned to zero afterwards so that a codec backend's own
-+ * kick is unaffected.
++ * across the submission, because this job has no V4L2 context behind it and the
++ * handler resolves one unconditionally.
 + *
 + * Silent when it works. The two warnings are the only signal that the block is
 + * running unwarmed and that H.264 output for the rest of this power cycle is
@@ -270,22 +272,26 @@ index 5a4faf958..2f1e492d3 100644
 + */
 +static void rkvdec_vdpu383_warmup_run(struct rkvdec_dev *rkvdec)
 +{
++	const u32 *reg = rkvdec->warmup_cpu + VDPU383_WARMUP_REGS;
 +	u32 irq_val, status;
++	unsigned int i;
 +	int ret;
 +
 +	disable_irq_nosync(rkvdec->irq);
 +
 +	writel(VDPU383_IP_IRQ_DIS, rkvdec->link + VDPU383_LINK_IP_ENABLE);
-+
 +	writel(VDPU383_LINK_TIMEOUT_VAL, rkvdec->link + VDPU383_LINK_TIMEOUT_THRESHOLD);
-+	writel(VDPU383_CCU_MODE_VAL, rkvdec->link + VDPU383_LINK_CCU_MODE);
-+	writel(rkvdec->warmup_dma + VDPU383_WARMUP_REGS,
-+	       rkvdec->link + VDPU383_LINK_NODE_ADDR);
-+	writel(VDPU383_LINK_MODE_VAL, rkvdec->link + VDPU383_LINK_MODE);
-+	writel(VDPU383_LINK_EN_VAL, rkvdec->link + VDPU383_LINK_EN);
 +
-+	wmb();	/* the node and its register image must land before the kick */
-+	writel(VDPU383_LINK_CFG_VAL, rkvdec->link + VDPU383_LINK_CFG);
++	/*
++	 * The whole span is written, not just the dozen words the job sets: the
++	 * rest have to be seen as zero, and nothing else clears what a previous
++	 * decode left in them.
++	 */
++	for (i = VDPU383_WARMUP_FIRST_REG; i < VDPU383_WARMUP_NUM_REGS; i++)
++		writel(reg[i], rkvdec->regs + i * sizeof(u32));
++
++	wmb();	/* the job's buffers must land before the kick */
++	writel(VDPU383_DEC_E_BIT, rkvdec->link + VDPU383_LINK_DEC_ENABLE);
 +
 +	/*
 +	 * INT_EN is what the block raises on completion, so it must not be
@@ -307,9 +313,6 @@ index 5a4faf958..2f1e492d3 100644
 +	writel(VDPU383_WM16_CLEAR_ALL, rkvdec->link + VDPU383_LINK_INT_EN);
 +	writel(VDPU383_WM16_CLEAR_ALL, rkvdec->link + VDPU383_LINK_STA_INT);
 +
-+	writel(0, rkvdec->link + VDPU383_LINK_CCU_MODE);
-+	writel(0, rkvdec->link + VDPU383_LINK_MODE);
-+	writel(0, rkvdec->link + VDPU383_LINK_EN);
 +	writel(0, rkvdec->link + VDPU383_LINK_IP_ENABLE);
 +	udelay(5);
 +
@@ -319,7 +322,7 @@ index 5a4faf958..2f1e492d3 100644
  void rkvdec_schedule_watchdog(struct rkvdec_dev *rkvdec, u32 timeout_threshold)
  {
  	/* Set watchdog at 2 times the hardware timeout threshold */
-@@ -1772,6 +1934,7 @@ static const struct rkvdec_variant_ops vdpu383_variant_ops = {
+@@ -1772,6 +1926,7 @@ static const struct rkvdec_variant_ops vdpu383_variant_ops = {
  };
  
  static const struct rkvdec_variant vdpu383_variant = {
@@ -327,7 +330,7 @@ index 5a4faf958..2f1e492d3 100644
  	.coded_fmts = vdpu383_coded_fmts,
  	.num_coded_fmts = ARRAY_SIZE(vdpu383_coded_fmts),
  	.rcb_sizes = vdpu383_rcb_sizes,
-@@ -1871,6 +2034,8 @@ static int rkvdec_probe(struct platform_device *pdev)
+@@ -1871,6 +2026,8 @@ static int rkvdec_probe(struct platform_device *pdev)
  	if (irq <= 0)
  		return -ENXIO;
  
@@ -336,7 +339,7 @@ index 5a4faf958..2f1e492d3 100644
  	ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
  					rkvdec_irq_handler, IRQF_ONESHOT,
  					dev_name(&pdev->dev), rkvdec);
-@@ -1879,6 +2044,13 @@ static int rkvdec_probe(struct platform_device *pdev)
+@@ -1879,6 +2036,13 @@ static int rkvdec_probe(struct platform_device *pdev)
  		return ret;
  	}
  
@@ -350,7 +353,7 @@ index 5a4faf958..2f1e492d3 100644
  	rkvdec->sram_pool = of_gen_pool_get(pdev->dev.of_node, "sram", 0);
  	if (!rkvdec->sram_pool && rkvdec->variant->num_rcb_sizes > 0)
  		dev_info(&pdev->dev, "No sram node, RCB will be stored in RAM\n");
-@@ -1931,8 +2103,21 @@ static void rkvdec_remove(struct platform_device *pdev)
+@@ -1931,8 +2095,21 @@ static void rkvdec_remove(struct platform_device *pdev)
  static int rkvdec_runtime_resume(struct device *dev)
  {
  	struct rkvdec_dev *rkvdec = dev_get_drvdata(dev);
@@ -374,7 +377,7 @@ index 5a4faf958..2f1e492d3 100644
  
  static int rkvdec_runtime_suspend(struct device *dev)
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.h b/drivers/media/platform/rockchip/rkvdec/rkvdec.h
-index 5f3918205..fd6285317 100644
+index 5f3918205..a320f0408 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec.h
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.h
 @@ -85,6 +85,12 @@ struct rkvdec_variant {
@@ -382,9 +385,9 @@ index 5f3918205..fd6285317 100644
  	const struct rkvdec_variant_ops *ops;
  	bool has_single_reg_region;
 +	/*
-+	 * The block has the VDPU383 link window, and so both the erratum this
-+	 * driver works around at power-up and the link-mode submission engine
-+	 * the workaround is submitted through.
++	 * The block has the VDPU383 link window -- its top-level control and
++	 * status registers -- and with it the power-up erratum this driver works
++	 * around.
 +	 */
 +	bool has_vdpu383_link;
  	unsigned int quirks;
