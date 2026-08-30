@@ -22,6 +22,11 @@ series fits together.
 12. `073-rkvdec-hevc-bound-tile-counts.patch`
 13. `074-rkvdec-av1-bound-tile-counts.patch`
 14. `075-hantro-fix-run-fail-cleanup.patch`
+15. `076-rkvdec-align-10bit-bytesperline-64.patch`
+16. `077-rkvdec-vp9-rename-get-ref-buf.patch`
+17. `078-rkvdec-vp9-move-to-common-file.patch`
+18. `079-rkvdec-vdpu381-vp9.patch`
+19. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -84,6 +89,35 @@ The patches here come from different places, and they age differently:
   path rides; `075` gives `hantro_end_prepare_run()` an error argument so the rejection is
   clean. Carried unmodified and retires when it merges. The JPEG decoder the rest of that
   series adds is not carried — nothing in our userspace can drive a hardware JPEG decoder.
+
+- **`076` — our own patch, for a consumer upstream does not have.** The packed 10-bit
+  capture formats carry five bytes per four samples, so NV15 and NV20 get a stride of
+  `width * 5 / 4`, which a 64-aligned width does not make a multiple of 64 — 1920 gives
+  2400. The decoder does not care, since every stride register takes `bytesperline / 16`.
+  The RGA 2D engine does: it rejects a blit whose source stride is not 64-byte aligned,
+  and it is the only route from a packed 10-bit decoded frame to any other pixel format.
+  Without this every width that is not a multiple of 256 loses hardware scale, convert and
+  blend entirely — 1080p 10-bit among them, while 4K survives only because `3840 * 5 / 4`
+  lands on 4800. The same hunk was posted as 4/4 of the VP9 series below and dropped in
+  review on its own terms: the decoder was measured byte-identical with and without it.
+  That finding stands; it is the RGA requirement that makes the padding worth having.
+- **`077`–`079` — an unmerged upstream series, vendored whole.** Venkata Atchuta
+  Bheemeswara Sarma Darbha's "media: rkvdec: Add VP9 support for VDPU381 variant" v1,
+  one file per posted patch, each naming its msgid after the `---`. It is the last decode
+  this SoC was missing: VP9 profile 0 and profile 2, so 8-bit `NV12` and 10-bit `NV15`,
+  up to 7680x4320. The posting scores 224/305 on Fluster VP9-TEST-VECTORS across three
+  RK3588 boards and three kernel bases; the failures are frames below 64x64, mid-stream
+  resolution changes on a non-keyframe, 4:2:2 and 4:4:4 (which the hardware cannot do and
+  the profile control refuses), and seven not yet root-caused. Patch 4/4 of the posting is
+  not carried — `076` makes that change for a different reason. Retires on merge rather
+  than being rebased.
+- **`080` — the delta that makes `079` build here, as `071` is for `070`.** The multi-core
+  series moved the register window, the AXI clock and the watchdog out of `struct
+  rkvdec_dev` into `struct rkvdec_core`, so the vendored VP9 backend does not compile
+  against this tree. It takes all four from `ctx->core`, exactly as the VDPU381 H.264 and
+  HEVC backends already do, and uses the `rkvdec_schedule_watchdog()` helper `045` factored
+  out instead of the backend's open-coded copy. Kept separate so `079` stays byte-identical
+  to the posting and retires with it.
 
 Anything NPU-shaped lives in the sibling [`../../rocket/`](../../rocket/) scope, which
 has its own dependency notes.

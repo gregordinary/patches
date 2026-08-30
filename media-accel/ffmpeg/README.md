@@ -12,7 +12,7 @@ with `git am` onto the base.
 2. `0002-lsws-add-NV15-and-NV20-formats-support.patch`
 3. `0003-lavu-add-RKMPP-hwcontext.patch`
 4. `0004-lavf-rkrga-add-RKRGA-scale-vpp-and-overlay-filters.patch`
-5. `0005-rkrga-accept-v4l2request-10bit-nv15-nv20.patch`
+5. `0005-hwcontext-v4l2request-tag-nv15-nv20-as-themselves.patch`
 6. `0006-hwcontext-vulkan-import-multiplanar-drm-frames.patch`
 7. `0007-rkrga-do-not-free-frame-owned-by-ff-filter-frame.patch`
 8. `0008-rkrga-clear-output-frame-crop-rectangle.patch`
@@ -24,11 +24,44 @@ with `git am` onto the base.
 14. `0014-lavfi-add-alphasrc-source-video-filter.patch`
 15. `0015-lavfi-subtitles-add-sub2video-option.patch`
 
-Patches 0001–0004 are the graft; 0005 normalizes the v4l2-request 10-bit planar
-tags to the semi-planar NV15/NV20 that `scale_rkrga` expects. 0006 is independent
-of the graft — it makes the base's own V4L2-request frames importable into Vulkan.
-0007–0013 are defect fixes in the grafted code. 0014 and 0015 are independent of
-the graft too: they build the subtitle branch every hardware burn-in chain needs.
+Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
+0006 is independent of the graft — it makes the base's own V4L2-request frames
+importable into Vulkan. 0007–0013 are defect fixes in the grafted code. 0014 and
+0015 are independent of the graft too: they build the subtitle branch every
+hardware burn-in chain needs.
+
+## 0005 — what a 10-bit decoded frame is called
+
+The base tags a packed `V4L2_PIX_FMT_NV15` capture buffer — four 10-bit samples in
+five bytes, no padding — with the planar logical `sw_format` `AV_PIX_FMT_YUV420P10`,
+and NV20 with `YUV422P10`. Neither describes the buffer: wrong plane count, wrong
+sample layout. Upstream ffmpeg has no packed 10-bit pixel format, so the base has
+nothing better to say.
+
+Because the tag is wrong, the base has to switch off everything generic that would
+act on it. `v4l2request_transfer_get_formats()` blanks its entire format list when
+`sw_format` is `YUV420P`, `YUV420P10` or `YUV422P10`, and `v4l2request_map_from()`
+returns `ENOSYS` for the same three. So `hwdownload` of a 10-bit frame fails for
+*every* target format, not one, and `hwmap` fails outright. On RK3588 that is every
+10-bit HEVC, VP9 and AV1 frame the stateless decoder produces — which is why HDR
+content has to fall back to software decode to reach a tone mapper, at 26x the CPU
+for a twelfth of the throughput.
+
+`0001` already adds `AV_PIX_FMT_NV15`/`NV20` and `0002` already teaches swscale to
+read them, so the fix is to name the two table entries correctly and let the
+machinery work as it stands: `hwdownload` yields a real NV15 frame, `hwmap` maps the
+dma-buf with no copy, and `format=yuv420p10le` unpacks it. `v4l2request_map_frame()`
+needs nothing — it fills `data[]` and `linesize[]` from the DRM layer descriptors and
+never consults `sw_format`.
+
+The two guards are deliberately left alone. They still name the planar tags, and that
+is still right for the entries that genuinely carry one: the Allwinner tiled NV12, the
+Broadcom SAND128 pair and the AFBC formats all keep a logical tag that lies about
+their layout, and none of them may be downloaded or mapped.
+
+This replaces a patch that normalised the same two tags back to NV15/NV20 inside the
+RGA filters — the same fix applied one consumer at a time. `map_av_to_rga_format()`
+maps `AV_PIX_FMT_NV15` natively, so with the tag right the RGA filters need nothing.
 
 ## 0007–0013 — defect fixes
 

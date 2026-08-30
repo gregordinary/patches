@@ -153,6 +153,46 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # 4-7) is deliberately NOT carried: no ffmpeg path drives a Rockchip hardware JPEG decoder,
 # so the driver would have no consumer here (see TODO.md section 4).
 #
+# 076 pads the decoded stride to 64 bytes, which is a no-op for every 8-bit format
+# and the whole of the 10-bit hardware filter path. The packed 10-bit capture
+# formats carry five bytes per four samples, so NV15 and NV20 get a stride of
+# width * 5 / 4 -- 2400 at 1920 -- and a 64-aligned width does not make that a
+# multiple of 64. The decoder is indifferent, because every stride register takes
+# bytesperline / 16; the RGA 2D engine is not, and it rejects a blit whose source
+# stride is unaligned. Since RGA is the only route from a packed 10-bit decoded
+# frame to any other pixel format, without this every width that is not a multiple
+# of 256 has no hardware scale, convert or blend at all -- 1080p 10-bit HEVC among
+# them, while 4K works only because 3840 * 5 / 4 lands on 4800. The same hunk was
+# posted as patch 4/4 of the VP9 series below and dropped in review, correctly for
+# the reason it was argued there: Francesco Saverio Pavone measured byte-identical
+# decode with and without it on the two shapes that reach it, and the decoder does
+# not need it. It is carried here for the consumer the posting did not have.
+#
+# 077-079 are Venkata Atchuta Bheemeswara Sarma Darbha's "media: rkvdec: Add VP9
+# support for VDPU381 variant" v1 (linux-media, 2026-07-26), carried as three files
+# because that is what it is: an upstream series whose patches read in order. 077
+# renames get_ref_buf, 078 lifts the shared VP9 helpers into a common file, and 079
+# is the VDPU381 backend itself -- profile 0 and profile 2, so 8-bit NV12 and 10-bit
+# NV15, up to 7680x4320. The posting scores 224/305 on Fluster VP9-TEST-VECTORS,
+# reproduced on three RK3588 boards across three kernel bases; the failures are
+# frames below 64x64 (a hardware floor), mid-stream resolution changes on a
+# non-keyframe, 4:2:2 and 4:4:4 (profiles 1 and 3, which the hardware cannot do and
+# the control's menu_skip_mask refuses), and seven not yet root-caused. Patch 4/4 of
+# that posting is not taken; 076 makes that change on its own terms. This is the
+# only decode the stack was missing on this SoC, and it retires the way 050 and 073
+# do -- dropped when it merges, not rebased.
+#
+# 080 is the delta that makes 079 build here, and it exists for the same reason 071
+# does: the vendored code is written against a tree this series has already changed.
+# The multi-core series moved the register window, the AXI clock and the watchdog
+# from struct rkvdec_dev to struct rkvdec_core, so the VP9 backend's rkvdec->regs,
+# rkvdec->axi_clk and rkvdec->watchdog_work do not resolve and struct rkvdec_dev has
+# no dev member. It takes all four from ctx->core, exactly as the VDPU381 H.264 and
+# HEVC backends and the pre-VDPU381 VP9 backend already do, and replaces the
+# open-coded watchdog with rkvdec_schedule_watchdog(), which 045 factored out for
+# this. It is carried separately so 079 stays byte-identical to the posting and
+# retires with it.
+#
 # 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
 # it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
 # frees it again on the way out of the ioctl. Both reaching failures are ordinary
@@ -335,6 +375,11 @@ kernel = [
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
     "media-accel/kernel/074-rkvdec-av1-bound-tile-counts.patch",
     "media-accel/kernel/075-hantro-fix-run-fail-cleanup.patch",
+    "media-accel/kernel/076-rkvdec-align-10bit-bytesperline-64.patch",
+    "media-accel/kernel/077-rkvdec-vp9-rename-get-ref-buf.patch",
+    "media-accel/kernel/078-rkvdec-vp9-move-to-common-file.patch",
+    "media-accel/kernel/079-rkvdec-vdpu381-vp9.patch",
+    "media-accel/kernel/080-rkvdec-vdpu381-vp9-multicore-fixups.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",
@@ -357,7 +402,26 @@ kernel = [
 # ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
 # materialized as an ordered `git am` series (0001-0004; one commit needs a 3-way
 # resolution a cherry-pick cannot reproduce — see media-accel/ffmpeg/README.md),
-# then the NV15/NV20 fix that scale_rkrga expects (0005).
+# then the NV15/NV20 tag fix the base needs (0005).
+#
+# 0005 is what makes 10-bit hardware decode usable at all beyond the RGA filters.
+# The base tags a packed NV15 capture buffer with the planar logical sw_format
+# YUV420P10, which describes neither its plane count nor its sample layout, and it
+# then has to switch off everything generic that would act on that tag:
+# transfer_get_formats() blanks its whole format list for YUV420P/YUV420P10/
+# YUV422P10 and map_from() returns ENOSYS for the same three. So hwdownload of a
+# 10-bit frame fails for every target format and hwmap fails outright -- which is
+# why HDR has to fall back to software decode to reach a tone mapper, at 26x the CPU
+# for a twelfth of the throughput. 0001 already adds AV_PIX_FMT_NV15/NV20 and 0002
+# already teaches swscale to read them, so the fix is to tag the two table entries
+# honestly and let the machinery work: hwdownload yields a real NV15 frame, hwmap
+# maps the dma-buf with no copy, and `format=yuv420p10le` unpacks. The guards stay
+# as they are, because the tiled and AFBC entries genuinely do carry a logical tag
+# that lies about their layout and must keep failing.
+#
+# It replaces a patch that normalised the same two tags back to NV15/NV20 inside the
+# RGA filters. That was the same fix applied one consumer at a time; the RGA filters
+# map AV_PIX_FMT_NV15 natively, so with the tag right they need nothing.
 #
 # 0006 belongs to the base, not the graft: it teaches hwcontext_vulkan's DRM
 # importer the composed one-layer/N-plane descriptor that hwcontext_v4l2request
@@ -410,7 +474,7 @@ ffmpeg = [
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
     "media-accel/ffmpeg/0003-lavu-add-RKMPP-hwcontext.patch",
     "media-accel/ffmpeg/0004-lavf-rkrga-add-RKRGA-scale-vpp-and-overlay-filters.patch",
-    "media-accel/ffmpeg/0005-rkrga-accept-v4l2request-10bit-nv15-nv20.patch",
+    "media-accel/ffmpeg/0005-hwcontext-v4l2request-tag-nv15-nv20-as-themselves.patch",
     "media-accel/ffmpeg/0006-hwcontext-vulkan-import-multiplanar-drm-frames.patch",
     "media-accel/ffmpeg/0007-rkrga-do-not-free-frame-owned-by-ff-filter-frame.patch",
     "media-accel/ffmpeg/0008-rkrga-clear-output-frame-crop-rectangle.patch",
