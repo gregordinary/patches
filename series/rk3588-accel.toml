@@ -6,7 +6,7 @@
 # (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
 # A series is owned by a kernel definition, not a device. It spans the 7.1 and 7.2
-# generations from one file, because 28 of its 31 kernel-list entries are identical
+# generations from one file, because 34 of its 37 kernel-list entries are identical
 # across them: only 050 and 072 turn on the kernel version, and each carries its
 # own `kernels` range below. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
