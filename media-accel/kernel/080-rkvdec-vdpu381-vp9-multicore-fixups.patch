@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: x <x@y>
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sun, 30 Aug 2026 13:07:21 -0400
 Subject: [PATCH] media: rkvdec: build the VDPU381 VP9 backend against
  multi-core
