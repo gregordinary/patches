@@ -21,11 +21,14 @@ with `git am` onto the base.
 11. `0011-hwcontext-rkmpp-honour-device-level-cacheable-flags.patch`
 12. `0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch`
 13. `0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch`
+14. `0014-lavfi-add-alphasrc-source-video-filter.patch`
+15. `0015-lavfi-subtitles-add-sub2video-option.patch`
 
 Patches 0001–0004 are the graft; 0005 normalizes the v4l2-request 10-bit planar
 tags to the semi-planar NV15/NV20 that `scale_rkrga` expects. 0006 is independent
 of the graft — it makes the base's own V4L2-request frames importable into Vulkan.
-0007–0013 are defect fixes in the grafted code.
+0007–0013 are defect fixes in the grafted code. 0014 and 0015 are independent of
+the graft too: they build the subtitle branch every hardware burn-in chain needs.
 
 ## 0007–0013 — defect fixes
 
@@ -72,6 +75,54 @@ format, and neither layout decomposes into `R8`/`GR88` or `R16`/`GR1616`.
 Origin is jellyfin-ffmpeg's
 `debian/patches/0079-add-fixes-for-vaapi-drm-prime-vulkan-interop.patch`
 (nyanmisaka); the patch header records what was and was not carried across.
+
+## 0014, 0015 — the subtitle branch
+
+No hardware compositor rasterizes text, so every hardware burn-in chain has the
+same two-branch shape: the video on one input, and on the other a transparent
+frame with libass drawn into it. These two patches build that second branch; the
+compositor at the end of it may be `overlay_rkrga`, `overlay_vulkan` or
+`libplacebo`, and none of them care which.
+
+```
+alphasrc , format=bgra , subtitles=FILE:alpha=1:sub2video=1 , hwupload ...
+```
+
+**`0014` supplies the transparent base.** The `color` filter cannot: `ff_draw_init`
+leaves the alpha component alone unless the caller passes `FF_DRAW_PROCESS_ALPHA`
+and `vsrc_color` passes `0`, so `color=c=black@0` emits *opaque* black and the
+overlay covers the video instead of laying text over it. `alphasrc` constrains
+format negotiation to alpha-capable formats and zero-fills, so transparency is a
+property of the filter rather than of a colour argument that may not survive
+negotiation. It is also required by name: Jellyfin probes `alphasrc` to decide
+whether a hardware filter chain is available at all, and silently falls back to
+software filtering without it.
+
+**`0015` makes the rasterized overlay's alpha correct.** Drawing onto a
+transparent base through the unpatched path gets it wrong twice: `ff_blend_mask`
+weights every component by `color->rgba[3]` including the alpha component, whose
+source value is the event's own alpha, so the alpha plane receives `a * a`; and
+the colour blend against a zero base leaves the premultiplied `a * C` where a
+straight-alpha overlay expects `C`. On a 50%-alpha white glyph the branch emits
+`R=127 A=63` against a correct `R=255 A=127`. The errors partly cancel under a
+straight overlay, which is why the result looks plausible rather than broken —
+measured at 34.7 dB against CPU burn-in, where opaque subtitles reach 82.4 dB.
+Neither is recoverable downstream, because the per-event alpha is gone from the
+frame.
+
+`FF_DRAW_MASK_SRC_ALPHA_OPAQUE` and `FF_DRAW_MASK_UNPREMUL_RGB32` fix them at the
+source, set only when `sub2video` is on and the link is not already
+premultiplied, so no other `drawutils` caller changes behaviour.
+`AVALPHA_MODE_PREMULTIPLIED` is not an alternative: `ff_draw_color` premultiplies
+only the colour components and leaves alpha straight, so the alpha error survives
+it and the colour is premultiplied twice.
+
+`0015` is the one patch here that touches shared code — `drawutils` is also used
+by `drawtext`, `drawbox` and the pad/fill filters. Its additions are gated on new
+flags no other caller sets, so the exposure is rebase surface, not behaviour.
+
+Measurements, harnesses and the ASS assets behind the figures above are in
+`board-research/media-accel/subtitle-burnin/` of the workspace.
 
 ## Provenance
 

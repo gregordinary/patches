@@ -382,6 +382,29 @@ kernel = [
 #
 # None of the seven has run on hardware. They compile warning-clean and the
 # series reproduces byte-for-byte, which is not the same thing.
+#
+# 0014 and 0015 belong to the base as 0006 does, and build the subtitle branch
+# every hardware burn-in chain needs: a transparent frame with libass drawn into
+# it, for a compositor to lay over the video. Neither is RK3588-specific and
+# neither shares a file with the graft.
+#
+# 0014's `alphasrc` supplies the transparent base, which `color` cannot --
+# `ff_draw_init` leaves the alpha component alone unless the caller asks for it
+# and `vsrc_color` does not, so `color=c=black@0` emits opaque black. It is also
+# the name Jellyfin probes to decide whether any hardware filter chain is
+# available, falling back to software filtering when it is absent.
+#
+# 0015's `sub2video` makes that branch's alpha correct. Unpatched, drawing onto a
+# transparent base gets it wrong twice: `ff_blend_mask` weights every component
+# including alpha by the event's own alpha, so the alpha plane receives a*a, and
+# the colour lands premultiplied where a straight-alpha overlay expects it not to
+# be. Measured against CPU burn-in that is 34.7 dB for semi-transparent subtitles
+# where opaque ones reach 82.4. `AVALPHA_MODE_PREMULTIPLIED` does not substitute:
+# `ff_draw_color` premultiplies only the colour and leaves alpha straight.
+#
+# 0015 is the only patch in this list that touches shared code -- `drawutils` also
+# backs drawtext, drawbox and the pad/fill filters -- but its additions are gated
+# on new flags no other caller sets.
 ffmpeg = [
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
@@ -396,6 +419,8 @@ ffmpeg = [
     "media-accel/ffmpeg/0011-hwcontext-rkmpp-honour-device-level-cacheable-flags.patch",
     "media-accel/ffmpeg/0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch",
     "media-accel/ffmpeg/0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch",
+    "media-accel/ffmpeg/0014-lavfi-add-alphasrc-source-video-filter.patch",
+    "media-accel/ffmpeg/0015-lavfi-subtitles-add-sub2video-option.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
