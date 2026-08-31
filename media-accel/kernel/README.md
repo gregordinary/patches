@@ -27,6 +27,7 @@ series fits together.
 17. `078-rkvdec-vp9-move-to-common-file.patch`
 18. `079-rkvdec-vdpu381-vp9.patch`
 19. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
+20. `081-hantro-align-nv15-bytesperline-64.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -118,6 +119,17 @@ The patches here come from different places, and they age differently:
   HEVC backends already do, and uses the `rkvdec_schedule_watchdog()` helper `045` factored
   out instead of the backend's open-coded copy. Kept separate so `079` stays byte-identical
   to the posting and retires with it.
+- **`081` — the AV1 half of `076`.** AV1 decodes on Hantro/VPU981, a separate driver
+  `076` does not reach, and its NV15 capture stride has the same shape: `width * 5 / 4`,
+  a multiple of 64 only when the width is a multiple of 256, so 1920 gets 2400 and the
+  RGA refuses the blit while 4K survives on 4800. The pad sits in `hantro_try_fmt()`
+  after `v4l2_fill_pixfmt_mp()`, scoped to plain `V4L2_PIX_FMT_NV15` — a fourcc that
+  appears in exactly one format list in the whole verisilicon driver, the VPU981
+  postprocessor's, so the i.MX8M, Sunxi and STM32 variants (`NV15_4L4`, `P010_4L4`) are
+  untouched. The hardware honours the padded stride: the postprocessor programs its
+  output strides and chroma offset straight from `bytesperline`. The internal reference
+  buffers never leave the decoder, so the reference-frame path
+  (`hantro_set_reference_frames_format()`) keeps its own geometry.
 
 Anything NPU-shaped lives in the sibling [`../../rocket/`](../../rocket/) scope, which
 has its own dependency notes.

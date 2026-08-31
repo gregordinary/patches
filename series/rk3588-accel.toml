@@ -6,7 +6,7 @@
 # (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
 # A series is owned by a kernel definition, not a device. It spans the 7.1 and 7.2
-# generations from one file, because 34 of its 37 kernel-list entries are identical
+# generations from one file, because 35 of its 38 kernel-list entries are identical
 # across them: only 050 and 072 turn on the kernel version, and each carries its
 # own `kernels` range below. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
@@ -192,6 +192,17 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # open-coded watchdog with rkvdec_schedule_watchdog(), which 045 factored out for
 # this. It is carried separately so 079 stays byte-identical to the posting and
 # retires with it.
+#
+# 081 is the AV1 half of 076. AV1 decodes on Hantro/VPU981 -- a separate driver 076
+# does not reach -- and its NV15 capture stride has the same shape: width * 5 / 4,
+# a multiple of 64 only when the width is a multiple of 256, so 1920 gets 2400 and
+# the RGA refuses the blit while 4K survives on 4800. The pad sits in
+# hantro_try_fmt() after v4l2_fill_pixfmt_mp(), scoped to plain V4L2_PIX_FMT_NV15,
+# which appears in exactly one format list in the whole verisilicon driver -- the
+# VPU981 postprocessor's -- so the i.MX8M, Sunxi and STM32 variants (NV15_4L4,
+# P010_4L4) are untouched, and the internal reference buffers keep their own
+# geometry. The postprocessor programs its output strides and chroma offset
+# straight from bytesperline, so the hardware honours the pad.
 #
 # 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
 # it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
@@ -380,6 +391,7 @@ kernel = [
     "media-accel/kernel/078-rkvdec-vp9-move-to-common-file.patch",
     "media-accel/kernel/079-rkvdec-vdpu381-vp9.patch",
     "media-accel/kernel/080-rkvdec-vdpu381-vp9-multicore-fixups.patch",
+    "media-accel/kernel/081-hantro-align-nv15-bytesperline-64.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",
@@ -469,6 +481,21 @@ kernel = [
 # 0015 is the only patch in this list that touches shared code -- `drawutils` also
 # backs drawtext, drawbox and the pad/fill filters -- but its additions are gated
 # on new flags no other caller sets.
+#
+# 0016 makes SPS-level RPS streams decode correctly. The VDPU381/383 hardware
+# parses slice headers itself, so a slice that selects its short or long term
+# RPS from the SPS by index needs the SPS tables in the driver -- the Linux 7.2
+# EXT_SPS_ST_RPS / EXT_SPS_LT_RPS controls, which the base never sends. Without
+# them the driver programs no RPS table (it warns "Long and short term RPS not
+# set") and every inter frame of such a stream reconstructs against the wrong
+# references while decoding reports success. Encoders split on where they put
+# the RPS: x265 writes the inline slice-header form the hardware parses itself,
+# HM writes SPS-level sets -- which is why the gap is invisible on typical
+# encoder output and dominates conformance scoring (JCT-VC-HEVC_V1 runs 15/147
+# without the controls). Short term sets are sent in the explicit form: the
+# driver only derives per-set delta POCs and used flags, which the explicit
+# syntax encodes exactly. Both controls are probed like the other optional
+# controls, so drivers without the uAPI are untouched.
 ffmpeg = [
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
@@ -485,6 +512,7 @@ ffmpeg = [
     "media-accel/ffmpeg/0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch",
     "media-accel/ffmpeg/0014-lavfi-add-alphasrc-source-video-filter.patch",
     "media-accel/ffmpeg/0015-lavfi-subtitles-add-sub2video-option.patch",
+    "media-accel/ffmpeg/0016-v4l2request-hevc-set-sps-rps-controls.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
