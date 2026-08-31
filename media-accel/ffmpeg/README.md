@@ -23,12 +23,14 @@ with `git am` onto the base.
 13. `0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch`
 14. `0014-lavfi-add-alphasrc-source-video-filter.patch`
 15. `0015-lavfi-subtitles-add-sub2video-option.patch`
+16. `0016-v4l2request-hevc-set-sps-rps-controls.patch`
 
 Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
 0006 is independent of the graft — it makes the base's own V4L2-request frames
 importable into Vulkan. 0007–0013 are defect fixes in the grafted code. 0014 and
 0015 are independent of the graft too: they build the subtitle branch every
-hardware burn-in chain needs.
+hardware burn-in chain needs. 0016 is a fix to the base's HEVC hwaccel,
+described below.
 
 ## 0005 — what a 10-bit decoded frame is called
 
@@ -156,6 +158,30 @@ flags no other caller sets, so the exposure is rebase surface, not behaviour.
 
 Measurements, harnesses and the ASS assets behind the figures above are in
 `board-research/media-accel/subtitle-burnin/` of the workspace.
+
+## 0016 — SPS-level RPS
+
+The rkvdec VDPU381/VDPU383 hardware parses slice headers itself, so a slice
+that selects its short or long term RPS from the SPS by index needs the SPS
+RPS tables in the driver — the Linux 7.2 controls
+`V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS` and `_LT_RPS`, which the base never
+sends. Without them the driver programs no RPS table (it warns `Long and
+short term RPS not set` in dmesg) and every inter frame of such a stream
+reconstructs against the wrong references while decoding reports success.
+
+Encoders split on where they put the RPS, which is what makes the gap
+treacherous: x265 writes the inline slice-header form the hardware parses
+itself, so typical encoder output is untouched, while the HM reference
+encoder writes SPS-level sets, so conformance streams concentrate the
+failures — JCT-VC-HEVC_V1 on RK3588 runs 15/147 without the controls.
+
+Each short term set is sent in the explicit (non inter-set-predicted) form:
+the driver only derives the per-set delta POCs and used flags from the
+control, which the explicit syntax encodes exactly, so re-encoding an
+inter-predicted set loses nothing. Both controls are probed like the other
+optional controls and sent only when the driver exposes them, and their
+definitions are carried in the file for builds against pre-7.2 kernel
+headers.
 
 ## Provenance
 
