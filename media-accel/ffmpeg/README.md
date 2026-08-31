@@ -24,13 +24,18 @@ with `git am` onto the base.
 14. `0014-lavfi-add-alphasrc-source-video-filter.patch`
 15. `0015-lavfi-subtitles-add-sub2video-option.patch`
 16. `0016-v4l2request-hevc-set-sps-rps-controls.patch`
+17. `0017-v4l2m2m-set-coded-format-before-raw-when-encoding.patch`
+18. `0018-v4l2m2m-negotiate-formats-the-driver-offers.patch`
+19. `0019-v4l2m2m-add-mjpeg-encoder.patch`
 
 Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
 0006 is independent of the graft — it makes the base's own V4L2-request frames
 importable into Vulkan. 0007–0013 are defect fixes in the grafted code. 0014 and
 0015 are independent of the graft too: they build the subtitle branch every
 hardware burn-in chain needs. 0016 is a fix to the base's HEVC hwaccel,
-described below.
+described below. 0017–0019 are independent of the graft as well: they reach the
+mainline VEPU121 JPEG encoder through V4L2, with no vendor userspace involved,
+and are described below.
 
 ## 0005 — what a 10-bit decoded frame is called
 
@@ -213,3 +218,98 @@ Two nyanmisaka commits match the encode/scale subject keywords but are deliberat
 - `383893abc6a1a0ae5ad0f2e3927f9649593c3019` — *lavc/rkmppdec: refactor RKMPP
   decoders*. Forces the vendor MPP decode HAL that mainline lacks; breaks the
   working V4L2 stateless decode. Decode stays on the mainline V4L2 path.
+
+## 0017–0019 — reaching a hardware JPEG encoder
+
+The RK3588's VEPU121 JPEG encoder is a mainline V4L2 stateful M2M device, bound and
+working on `/dev/video2`, and FFmpeg could not reach it in either direction: there is
+no V4L2 JPEG M2M codec wrapper upstream, and never has been. That single gap is what
+kept every consumer that drives FFmpeg — Jellyfin trickplay, Frigate snapshots — on a
+software JPEG encode beside idle silicon. These three patches close it for the encode
+direction. They touch no vendor library and speak only the kernel uAPI, so unlike the
+graft they are upstreamable as they stand.
+
+Two of the three are generic V4L2 M2M fixes that JPEG happens to be the first codec to
+need, and both were found by measuring the driver rather than by reading:
+
+**0017 — the coded format goes first when encoding.** The V4L2 stateful encoder
+interface has the client set the coded format on CAPTURE first and the raw format on
+OUTPUT second, because a driver derives its raw format from the coded one and may
+reset OUTPUT whenever CAPTURE is set. FFmpeg did it the other way round. hantro
+implements the interface faithfully — `hantro_set_fmt_cap()` on an encoder calls
+`hantro_reset_raw_fmt()` — so asking for `NM12` and then setting the capture format
+put the hardware back in `YM12` while FFmpeg's own cached `v4l2_format` still said
+`NM12`. Nothing failed; the encoder read the frame's chroma with the wrong plane
+layout. Decoding is the same rule with the queues the other way round, which is the
+order the code already used, so decode is unchanged.
+
+**0018 — negotiate the fourccs a driver actually offers.** Two assumptions, both
+wrong for this device:
+
+- `AV_CODEC_ID_MJPEG` maps to `V4L2_PIX_FMT_MJPEG` *and* `V4L2_PIX_FMT_JPEG`, and
+  `ff_v4l2_format_avcodec_to_v4l2()` returned only the first of them.
+  `v4l2_get_coded_format()` then required `VIDIOC_ENUM_FMT` to produce exactly that
+  fourcc. `rockchip_vpu_hw.c` enumerates only `V4L2_PIX_FMT_JPEG`, so the encoder
+  could not probe at all. The driver's enumeration is now the outer loop.
+- `v4l2_try_raw_format()` treated a successful `VIDIOC_TRY_FMT` as agreement. A
+  driver that cannot do the requested fourcc is *required* to substitute one it can
+  and still succeed, so success proves nothing on its own — asking this device for
+  `V4L2_PIX_FMT_NV12` on a multiplanar queue returns `YM12`, not `NM12`. The
+  returned fourcc is now compared, and every fourcc a pixel format has (the
+  contiguous one and the non-contiguous multiplanar one) is offered in turn.
+
+Neither changes anything for a driver whose fourccs are the ones FFmpeg lists first,
+which is every V4L2 M2M codec that worked before.
+
+**0019 — the encoder.** JPEG shares none of the inter-coded setup: no GOP, no
+bitrate, no rate control, no B-frame probe. Its one control,
+`V4L2_CID_JPEG_COMPRESSION_QUALITY`, lives in the JPEG control class, and passing it
+under the `V4L2_CTRL_CLASS_MPEG` the code hardcoded is refused with `EINVAL` by the
+control framework — so the class is now derived from the control id, which is correct
+for every existing call site too. Three further things a JPEG instance needs:
+
+- **The visible size.** A raw OUTPUT format is macroblock aligned, so 1080 lines
+  become 1088 and the JPEG's `SOF` would say 1088 with eight rows of alignment
+  padding in the picture. V4L2 names the visible part of that buffer with the OUTPUT
+  crop rectangle, which hantro reads as the JPEG's own dimensions. Set for every
+  encoder, not just this one — an inter-coded stream has the same padding otherwise.
+- **A capture buffer the driver sizes.** FFmpeg's estimate is half a raw frame, which
+  suits an inter-coded stream and underruns JPEG, whose frames can approach the raw
+  picture. Requesting zero is what V4L2 defines for a coded format as "use your own
+  maximum".
+- **A keyframe flag on every packet.** Every JPEG is a complete intra picture and
+  this driver does not flag it, so without this no packet in an `.mjpeg` stream is
+  seekable.
+
+### Using it
+
+```sh
+ffmpeg -i input.mkv -frames:v 1 -c:v mjpeg_v4l2m2m -quality 80 -update 1 out.jpg
+```
+
+`-quality` is the driver's 5–100 percentage, larger is better; `-q:v` maps to the
+same scale, and leaving both off keeps the driver's default of 50. Input is
+`yuv420p`, `nv12`, `yuyv422` or `uyvy422` — system memory, not `drm_prime`, so a
+hardware-decoded frame arrives through FFmpeg's own transfer or an explicit
+`hwdownload,format=nv12`.
+
+### What it measures at, on an RK1 at 1080p
+
+Quality is monotonic across the control's range — q=10 gives 49.7 KB at 33.6 dB,
+q=50 gives 116 KB at 40.6 dB, q=90 gives 310 KB at 46.8 dB — and the quantisation
+tables are byte-identical to GStreamer's `v4l2jpegenc` at the same setting, which is
+the cross-check that the wrapper drives the hardware the same way an independent
+userspace does. Two honest caveats. Rate-distortion trails FFmpeg's software `mjpeg`
+encoder by roughly 7–30% in size at matched PSNR, because the hardware uses fixed
+quantisation and Huffman tables where the software encoder optimises them. And the
+CPU saving is smaller than the silicon suggests — 4.9 CPU-seconds per 300 frames
+against 8.1 for a single-threaded software encode — because what remains is dominated
+by the copy of each frame into the V4L2 buffer. The win is steady wall-clock time and
+free cores, not a large CPU reduction.
+
+It encodes to 8K. Note a driver-side limit while doing so: `VIDIOC_ENUM_FRAMESIZES`
+advertises `8192x8192`, but a dimension of exactly 8192 produces a JPEG whose `SOF`
+reads 0x0, silently and under GStreamer too — 8176 is the last size that works in
+each axis. Widths are rounded up to a multiple of 4 by the driver's own selection
+handling, and the wrapper warns when the coded size it gets back differs from the one
+asked for.

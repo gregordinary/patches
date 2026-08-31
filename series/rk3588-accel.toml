@@ -496,6 +496,36 @@ kernel = [
 # driver only derives per-set delta POCs and used flags, which the explicit
 # syntax encodes exactly. Both controls are probed like the other optional
 # controls, so drivers without the uAPI are untouched.
+#
+# 0017-0019 reach the VEPU121 JPEG encoder, a mainline V4L2 stateful M2M device
+# that ffmpeg had no wrapper for in either direction -- which is what kept every
+# consumer driving ffmpeg (Jellyfin trickplay, Frigate snapshots) on a software
+# JPEG encode beside idle silicon. They speak only the kernel uAPI and touch no
+# vendor library, so unlike 0001-0004 they are upstreamable as they stand.
+#
+# 0017 and 0018 are generic V4L2 M2M fixes that JPEG is simply the first codec
+# here to need, and both were found by measuring the driver rather than reading.
+# 0017: the stateful encoder interface has the client set the coded format on
+# CAPTURE first, because a driver derives its raw format from the coded one and
+# may reset the raw queue when the coded one is set -- which hantro does, in
+# hantro_set_fmt_cap() -> hantro_reset_raw_fmt(). ffmpeg set them the other way
+# round, so asking for NM12 left the hardware in YM12 while ffmpeg's cached
+# v4l2_format still said NM12: no error, wrong chroma. 0018: AV_CODEC_ID_MJPEG
+# maps to both V4L2_PIX_FMT_MJPEG and V4L2_PIX_FMT_JPEG and only the first was
+# ever tried, while this driver enumerates only the second -- and separately, a
+# TRY_FMT that succeeds is not agreement, because a driver that cannot do the
+# requested fourcc must substitute one it can and still return 0 (asking this
+# device for NV12 on a multiplanar queue yields YM12, not NM12).
+#
+# 0019 is the encoder. JPEG shares none of the inter-coded setup, and its one
+# control lives in the JPEG control class, which the MPEG class the code
+# hardcoded is refused for with EINVAL. Three further things it needs: the
+# OUTPUT crop rectangle, which is what V4L2 calls the visible part of a
+# macroblock-aligned buffer and what hantro reads as the JPEG's own dimensions
+# (without it 1080 lines are coded as 1088); a capture buffer the driver sizes,
+# since ffmpeg's half-a-raw-frame estimate is an inter-coded assumption that an
+# intra-only JPEG can exceed; and a keyframe flag on every packet, which this
+# driver does not set and without which no packet in an .mjpeg is seekable.
 ffmpeg = [
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
@@ -513,6 +543,9 @@ ffmpeg = [
     "media-accel/ffmpeg/0014-lavfi-add-alphasrc-source-video-filter.patch",
     "media-accel/ffmpeg/0015-lavfi-subtitles-add-sub2video-option.patch",
     "media-accel/ffmpeg/0016-v4l2request-hevc-set-sps-rps-controls.patch",
+    "media-accel/ffmpeg/0017-v4l2m2m-set-coded-format-before-raw-when-encoding.patch",
+    "media-accel/ffmpeg/0018-v4l2m2m-negotiate-formats-the-driver-offers.patch",
+    "media-accel/ffmpeg/0019-v4l2m2m-add-mjpeg-encoder.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
