@@ -165,6 +165,17 @@ and a same-stack configuration initialises its device exactly once. They also
 pin the RK3588 pairing end to end — `-hwaccel v4l2request` with `hevc_rkmpp` —
 and the 10-bit refusal.
 
-**Not yet run on hardware.** The measurements quoted above were taken with the
-previous, narrower version of this work, which reached the same FFmpeg command
-line by hard-coding the pairing inside the `rkmpp` type.
+**Validated on hardware, 2026-08-31.** A server built from this series
+(self-contained linux-arm64 publish, .NET 10.0.400) ran on a Turing RK1
+(kernel 7.2.2, boot2deb jellyfin image) with the configuration above. Real
+playback requests through the Jellyfin API produced exactly the intended
+command lines, and every transcode ran to completion:
+
+- 1080p 8-bit HEVC → 720p: `-hwaccel v4l2request` with `hevc_rkmpp`, 6.7x
+  realtime. The same argv replayed under `time` costs **17.6 CPU-s against
+  47.6** without the flag — the 2.96x saving in the table above, reproduced
+  through the server-emitted command.
+- 4K 8-bit H.264 → 1080p: `-hwaccel v4l2request` with `h264_rkmpp`, 2.4x.
+- 4K 10-bit HEVC: the type declines it — no `-hwaccel` emitted, software
+  decode, `hevc_rkmpp` still on the encode side, exactly the designed
+  degradation.
