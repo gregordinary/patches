@@ -43,7 +43,11 @@
 # 0006 attaches the power domains the node lists instead of deciding from the SoC it
 # matched, so the phandle count is a hardware description and not a driver-dispatch
 # signal. That is the one place this series and upstream differ on mechanism: upstream
-# gates the attach on a per-SoC multi_power_domain flag.
+# gates the attach on a per-SoC multi_power_domain flag. It also holds a runtime PM
+# reference across the register dump rocket_job_timedout() logs, taking it with
+# pm_runtime_get_if_active() rather than testing pm_runtime_active(): the test only
+# samples, and the domain can drop between it and the first readl, where a register
+# access with the domain down takes an async SError on this part.
 #
 # 0007 carries one local change: each core takes five register banks rather than three,
 # because 0012 and its successors retire a job on the DPU's and the PPU's own
@@ -234,7 +238,14 @@
 # lock for its whole body and waiting for it from inside the guard would deadlock
 # rather than fence anything. The poll work is already fenced above by
 # cancel_work_sync(), so what this closes is the shared interrupt thread the RK3576
-# still takes for the DMA-error bits; rocket/091 is the same change for the RK3588.
+# still takes for the DMA-error bits. Ahead of the wait it clears INTERRUPT_MASK, since
+# waiting alone fences the handler that is running and not the interrupt the hardware is
+# still entitled to raise: hw_submit() arms the mask on every submit -- the DMA-error
+# pair here -- and only the hardirq clears it, so on an ordinary timeout it is still
+# live. That write is the function's first register access and the function holds no
+# runtime PM reference of its own, so it goes under pm_runtime_get_if_active(), which
+# holds one rather than sampling it; with the domain down a register access takes an
+# async SError on this part. rocket/091 is the same change for the RK3588.
 # 0029 stops the poll writing registers with nothing in flight.
 # An interrupt has a level-triggered condition that INTERRUPT_CLEAR ends, so it must
 # write whatever the state; the poll sampled a status register and has nothing to

@@ -16,6 +16,26 @@ dropped.
 Call synchronize_irq(core->irq) after drm_sched_stop() and reword the
 comment to say what holds afterwards.
 
+Mask the block first.  rocket_job_hw_submit() arms INTERRUPT_MASK on
+every submit -- the DMA-error pair on RK3576, the DPU pair on RK3588 --
+and only the hardirq clears it, so on an ordinary timeout the mask is
+still live and an interrupt can arrive after the sync returns.  Waiting
+without masking fences the handler that is running, not the one the
+hardware is still entitled to raise.  The next submit re-arms the mask,
+so nothing is lost by clearing it here.
+
+That write is guarded by pm_runtime_get_if_active(), and it needs to be.
+It is the first register access rocket_reset() makes, and the function
+holds no runtime PM reference of its own: the only one in the window
+belongs to in_flight_job, and the completion path can have put it and
+cleared the pointer before the timeout worker arrives.  drm_sched_stop()
+sits in between, can block, and subtracts every pending job's credits,
+so rocket_job_is_idle() is true and nothing keeps the core resumed.  A
+register access with the domain down takes an async SError on this
+hardware, so the reset must not be what causes one.  pm_runtime_active()
+would not do: it is a snapshot that holds no reference, and the domain
+can drop between the test and the write.
+
 It has to go before the scoped_guard(mutex, &core->job_lock) rather than
 inside it.  rocket_job_handle_irq() takes job_lock -- 0027 moved the
 register writes under it, so it now holds that lock for the whole
@@ -34,27 +54,51 @@ finishing its work on the job the reset is about to drop.  That window
 needs the check and the register writes to be one step under the lock,
 which is what 0027 does; the two are complementary.
 
-Igor Paunovic's observation on linux-rockchip; the function is shared
-with the RK3588, which carries the same fix as rocket/091.
+From the v8 posting of this series -- Jiaxing Hu's patch, suggested by
+Igor Paunovic; the function is shared with the RK3588, which carries the
+same fix as rocket/091.
 
   https://lore.kernel.org/linux-rockchip/20260817113603.1436067-3-gahing@gahingwoo.com/
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- drivers/accel/rocket/rocket_job.c | 17 ++++++++++++++---
- 1 file changed, 14 insertions(+), 3 deletions(-)
+ drivers/accel/rocket/rocket_job.c | 40 ++++++++++++++++++++++++++++---
+ 1 file changed, 37 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 50a76b83a..37fa9caac 100644
+index 4ce6564c9..7a5a60c1f 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -787,9 +787,20 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+@@ -787,9 +787,43 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  	drm_sched_stop(&core->sched, bad);
  
  	/*
 -	 * Remaining interrupts have been handled, but we might still have
 -	 * stuck jobs. Let's make sure the PM counters stay balanced by
 -	 * manually calling pm_runtime_put_noidle().
++	 * Mask the block before waiting.  rocket_job_hw_submit() arms
++	 * INTERRUPT_MASK on every submit -- the DMA-error pair on RK3576, the
++	 * DPU pair on RK3588 -- and only the hardirq clears it, so on an
++	 * ordinary timeout it is still live and an interrupt can arrive after
++	 * the sync below returns.  The next submit re-arms it, so nothing is
++	 * lost here.
++	 *
++	 * Only when the device is already awake, though.  This function holds
++	 * no runtime PM reference of its own: the only one in the window
++	 * belongs to in_flight_job, and the completion path may have put it
++	 * and cleared the pointer before the timeout worker got here.
++	 * drm_sched_stop() above can block for a long time, and it drops
++	 * every pending job's credits, so rocket_job_is_idle() is true and
++	 * nothing keeps the core resumed.  On this hardware a register access
++	 * with the domain down takes an async SError, so a reset must not be
++	 * the thing that causes one.
++	 */
++	if (pm_runtime_get_if_active(core->dev) > 0) {
++		rocket_pc_writel(core, INTERRUPT_MASK, 0x0);
++		pm_runtime_put_autosuspend(core->dev);
++	}
++
++	/*
 +	 * drm_sched_stop() returns without waiting for a threaded handler that
 +	 * is already running, so wait for one here.  This has to stay outside
 +	 * job_lock: rocket_job_handle_irq() takes that lock, so waiting for the

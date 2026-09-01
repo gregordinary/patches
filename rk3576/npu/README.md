@@ -76,6 +76,14 @@ the SoC it matched. See "The power domains are not a board's job" below. This is
 one place where this series and upstream differ on mechanism rather than on wording:
 upstream gates the attach on a per-SoC `multi_power_domain` flag in `rocket_soc_data`.
 
+**0006 holds a runtime PM reference across the timeout register dump.** The
+`rocket_job_timedout()` path logs `INTERRUPT_RAW_STATUS`, `INTERRUPT_MASK` and
+`OPERATION_ENABLE` to say what the block was doing when the deadline passed, and takes
+the reference for those reads with `pm_runtime_get_if_active()` rather than testing
+`pm_runtime_active()` first. The test only samples: it holds nothing, and the domain
+can drop between it and the first `readl`, where a register access with the domain
+down takes an async SError on this part.
+
 **0006 also counts the cores over the driver's own match table.** `rocket_device_init()`
 sized `rdev->cores` by walking a hand-written list of compatible strings, which meant
 adding a SoC in two places. The table is exported as `rocket_dt_match` and the count
@@ -205,6 +213,21 @@ poll work is already fenced above by the `hrtimer_cancel()`/`cancel_work_sync()`
 so what this closes is the shared interrupt thread, which this SoC still takes for the
 DMA-error bits. It does not close the window where a handler has already read
 `in_flight_job` -- that is 0027's -- and the two are complementary.
+
+Waiting is only half of it, so the mask goes first. `rocket_job_hw_submit()` arms
+`INTERRUPT_MASK` on every submit -- the DMA-error pair here, the DPU pair on the
+RK3588 -- and only the hardirq clears it, so on an ordinary timeout the mask is still
+live: `synchronize_irq()` alone fences the handler that is *running*, not the one the
+hardware is still entitled to raise. Clearing it costs nothing, because the next
+submit re-arms it. The write is guarded by `pm_runtime_get_if_active()`, and has to
+be: it is the first register access `rocket_reset()` makes and the function holds no
+runtime PM reference of its own -- the only one in the window belongs to
+`in_flight_job`, and the completion path may have put it and cleared the pointer
+before the timeout worker arrives. `drm_sched_stop()` sits in between, can block, and
+subtracts every pending job's credits, so `rocket_job_is_idle()` is true and nothing
+keeps the core resumed. `pm_runtime_active()` would not do: it is a snapshot that
+holds no reference, and the domain can drop between the test and the write, where a
+register access takes an async SError on this part.
 
 **0029 -- an idle poll writing to a gated core.** The two writes above are an
 *acknowledgement* for an interrupt and nothing at all for the poll, which sampled a
@@ -973,13 +996,12 @@ the upstream series at **v8**, plus 0034 from v9; re-sync from a later revision 
 re-splitting it into this directory and updating `series/rk3576-npu.toml`.
 
 **0026 to 0034 have not been on hardware here.** They are reasoned from the source and
-build clean, and none of them changes what a correct submit does: 0026 and 0027 are
-the same operations with a different count and a different lock scope, 0028 adds a
-wait on a path that is only entered when a job has already timed out, 0029 and 0030
-are paths a passing run does not take, 0031 to 0033 are `Documentation/`, and 0034
-changes how one reference is put on the timeout path. 0034 is the exception to
-"reasoned from the source": it was measured upstream on a ROCK 4D, just not on the
-H96. Every
+build clean, and none of them changes what a correct submit does: 0026 and 0027 are the
+same operations with a different count and a different lock scope, 0028 adds a wait and
+a mask clear on a path that is only entered when a job has already timed out, 0029 and
+0030 are paths a passing run does not take, 0031 to 0033 are `Documentation/`, and 0034
+changes how one reference is put on the timeout path. 0034 is the exception to "reasoned
+from the source": it was measured upstream on a ROCK 4D, just not on the H96. Every
 measurement above stands, but the H96 has not been through a run with them applied --
 the checks that would close that are a submit sweep unchanged, an unbind and rebind
 with a job in flight, and `dtbs_check` clean on `rk3576.dtsi`.

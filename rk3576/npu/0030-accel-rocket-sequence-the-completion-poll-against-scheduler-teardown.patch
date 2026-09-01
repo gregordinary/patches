@@ -52,7 +52,7 @@ index 4779aa3a7..535e0dce4 100644
  	struct drm_gpu_scheduler sched;
  	u64 fence_context;
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index fb1540f6d..d31ce26cd 100644
+index 66faaf4ba..0e98f042a 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -714,6 +714,10 @@ static void rocket_poll_work_fn(struct work_struct *work)
