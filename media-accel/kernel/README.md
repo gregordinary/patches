@@ -28,6 +28,7 @@ series fits together.
 18. `079-rkvdec-vdpu381-vp9.patch`
 19. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
 20. `081-hantro-align-nv15-bytesperline-64.patch`
+21. `082-rkvdec-rcb-map-sram-through-dma-api.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -130,6 +131,22 @@ The patches here come from different places, and they age differently:
   output strides and chroma offset straight from `bytesperline`. The internal reference
   buffers never leave the decoder, so the reference-frame path
   (`hantro_set_reference_frames_format()`) keeps its own geometry.
+- **`082` — the RCB SRAM is mapped through the DMA API.** `045`'s RCB buffers come
+  out of an SRAM `gen_pool` and have to be mapped into the decoder's address space.
+  The mapping called `iommu_map()` directly on `rkvdec->iommu_global_domain`, passing
+  the SRAM's kernel virtual address as the IOVA. That domain is the device's **DMA**
+  domain — the one whose IOVA allocator serves every `dma_alloc_coherent()` the driver
+  makes for frame buffers — and nothing told the allocator the range was taken, so it
+  hands the range out again. The address is not even the one that was chosen:
+  `__iommu_map()` checks no aperture and `rockchip-iommu` masks an IOVA with
+  `0xffc00000` / `0x003ff000` and casts to `u32`, so a 64-bit ioremap address aliases
+  silently to its low 32 bits. On RK3588 the allocator descends from the top of the
+  4 GiB aperture and reaches the RCB once roughly 2 GiB of buffers are mapped;
+  `rk_iommu_map_iova()` then returns `-EADDRINUSE` and the decode falls back to
+  software. Not specific to large frames — three concurrent 8-bit 8K streams collide
+  at the same address. `dma_map_resource()` is the interface for handing a device a
+  physical range that is not RAM, and it takes its IOVA from the same allocator, so
+  the range cannot be issued twice.
 
 Anything NPU-shaped lives in the sibling [`../../rocket/`](../../rocket/) scope, which
 has its own dependency notes.

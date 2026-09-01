@@ -204,6 +204,20 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # geometry. The postprocessor programs its output strides and chroma offset
 # straight from bytesperline, so the hardware honours the pad.
 #
+# 082 fixes how 045's RCB buffers reach the decoder. The RCB comes out of an SRAM
+# gen_pool and has to be mapped into the decoder's address space, and the mapping
+# was made by calling iommu_map() directly on rkvdec->iommu_global_domain with the
+# SRAM's kernel virtual address as the IOVA. That domain is the device's DMA
+# domain, so the IOVA allocator that serves every frame buffer is unaware the range
+# is taken and hands it out again; rockchip-iommu also masks an IOVA to 32 bits
+# without complaint, so the address it lands on is not the one that was picked. On
+# RK3588 the allocator descends from the top of the 4 GiB aperture and reaches the
+# RCB once roughly 2 GiB of buffers are mapped, whereupon rk_iommu_map_iova()
+# returns -EADDRINUSE and the decode falls back to software. It is not specific to
+# large frames: three concurrent 8-bit 8K streams collide at the same address.
+# dma_map_resource() takes an IOVA from the same allocator, which is what makes the
+# range unrepeatable.
+#
 # 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
 # it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
 # frees it again on the way out of the ioctl. Both reaching failures are ordinary
@@ -392,6 +406,7 @@ kernel = [
     "media-accel/kernel/079-rkvdec-vdpu381-vp9.patch",
     "media-accel/kernel/080-rkvdec-vdpu381-vp9-multicore-fixups.patch",
     "media-accel/kernel/081-hantro-align-nv15-bytesperline-64.patch",
+    "media-accel/kernel/082-rkvdec-rcb-map-sram-through-dma-api.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",
