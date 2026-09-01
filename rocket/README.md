@@ -25,7 +25,7 @@ cherry-pick.
 | **Required** | `088-rocket-drv-reset-before-iommu-detach.patch` | Resets the NPU **before** detaching its IOMMU domain. Detaching a core that is still mid-DMA makes the `rk_iommu` stall handshake time out — a `dev_err` per MMU bank on every faulting job, and a **WARN in the IOMMU core** (a taint, and a panic under `panic_on_warn`) when the handshake behind the group's default domain fails too. Reached by any client of `/dev/accel` pointing one unvalidated `regcmd` field at an unmapped address. Needs `083`. |
 | **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
 | **Required** | `090-rocket-drv-irq-under-job-lock.patch` | Takes the completion's `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` under `job_lock`. `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside that lock, so the completion's zero can land after a submit's one and stop a task that has only just started. The second writer is `rocket_reset()`, which a client reaches through the same unvalidated `regcmd` IOVA as `088`. |
-| **Required** | `091-rocket-drv-irq-sync-before-reset.patch` | `090`'s other half. `rocket_reset()` calls `drm_sched_stop()`, which stops the scheduler and returns without waiting for a threaded handler that is already running — so the comment that followed it, "Remaining interrupts have been handled", stated an assumption rather than something the code arranged. A `synchronize_irq()` between the stop and the `job_lock` guard makes it true. Igor Paunovic's, from the v8 posting of the RK3576 series. |
+| **Required** | `091-rocket-drv-irq-sync-before-reset.patch` | `090`'s other half. `rocket_reset()` calls `drm_sched_stop()`, which stops the scheduler and returns without waiting for a threaded handler that is already running — so the comment that followed it, "Remaining interrupts have been handled", stated an assumption rather than something the code arranged. A `synchronize_irq()` between the stop and the `job_lock` guard makes it true, and clearing `INTERRUPT_MASK` first — under `pm_runtime_get_if_active()`, since the function holds no reference of its own — fences the completion the hardware is still entitled to raise, not just the handler already running. From the v8 posting of the RK3576 series: Jiaxing Hu's patch, suggested by Igor Paunovic. |
 | **Required** | `092-rocket-drv-fix-job-push-null-and-overflow.patch` | Checks the `bos` allocation in `rocket_job_push()`. `kvmalloc_array()` can fail at entirely ordinary BO counts, and the `memcpy()` on the next line then writes through **NULL** — an ordinary submit oopses a kernel that is merely short of memory. Also sums the two BO counts with `check_add_overflow()`, which `u32` arithmetic could otherwise wrap to a shorter allocation than the copies use. Upstream `a85402bff218`, in no released kernel — **drop it once you build 7.3**. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
@@ -64,10 +64,11 @@ mainline's, so the double free is reachable on a tree with none of the others ap
 adds a second way *into* that path — a submit carrying a trailing field the kernel does not
 know — but it does not create the bug.
 
-`091` is correct on its own too — `synchronize_irq()` after `drm_sched_stop()` fences a
-running handler whatever else is applied. What `090` changes is only *where* it may go:
-once the handler holds `job_lock` for its whole body, the wait can no longer be moved
-inside the guard, and the comment in `091` says so.
+`091` is correct on its own too — the `INTERRUPT_MASK` clear and the `synchronize_irq()`
+after `drm_sched_stop()` fence the block and a running handler whatever else is applied,
+and the register and the runtime-PM helpers they reach for are all mainline's. What `090`
+changes is only *where* the wait may go: once the handler holds `job_lock` for its whole
+body, it can no longer be moved inside the guard, and the comment in `091` says so.
 
 `092` is the exception this section is worded to exclude: a **diff-context** dependency
 rather than a real one. The fix itself stands alone — nothing in it needs another patch —

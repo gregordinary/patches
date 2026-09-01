@@ -115,7 +115,7 @@ index 3d978f32a..21edf03da 100644
  	.open			= rocket_open,
  	.postclose		= rocket_postclose,
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 186d5999b..722e0b98e 100644
+index 1078cf0ff..8d3b4b44c 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -165,6 +165,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo

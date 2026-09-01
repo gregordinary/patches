@@ -280,19 +280,26 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # for that SoC, where the poll work and the interrupt thread make the two writers
 # concurrent outright.
 #
-# 091 is 090's other half and Igor Paunovic's observation, from the v8 posting of the
-# RK3576 series. rocket_reset() calls drm_sched_stop(), which stops the scheduler and
-# returns; it does not wait for a threaded handler that is already running, so the
-# comment that followed it -- "Remaining interrupts have been handled" -- stated an
-# assumption rather than something the code arranged. A handler mid-flight when the
-# reset starts keeps running against a core rocket_core_reset() is about to put through
-# a reset, and against an in_flight_job the reset has already dropped. The
+# 091 is 090's other half, from the v8 posting of the RK3576 series -- Jiaxing Hu's
+# patch, suggested by Igor Paunovic. rocket_reset() calls drm_sched_stop(), which stops
+# the scheduler and returns; it does not wait for a threaded handler that is already
+# running, so the comment that followed it -- "Remaining interrupts have been handled"
+# -- stated an assumption rather than something the code arranged. A handler mid-flight
+# when the reset starts keeps running against a core rocket_core_reset() is about to put
+# through a reset, and against an in_flight_job the reset has already dropped. The
 # synchronize_irq() has to sit between drm_sched_stop() and the job_lock guard: after
 # 090 the handler holds job_lock for its whole body, so waiting for it from inside that
 # lock would deadlock rather than fence anything, and both callers run in process
-# context so sleeping there is allowed. It does not close the window where a handler
-# has already read in_flight_job -- that is 090's -- and the two are complementary.
-# rk3576/npu 0028 is the same change for that SoC.
+# context so sleeping there is allowed. Ahead of the wait it clears INTERRUPT_MASK,
+# because waiting alone fences the handler that is running and not the completion the
+# hardware is still entitled to raise: hw_submit() arms the mask on every submit and
+# only the hardirq clears it, so on an ordinary timeout it is still live. That write is
+# the function's first register access and the function holds no runtime PM reference of
+# its own -- drm_sched_stop() drops every pending job's credits, so nothing keeps the
+# core resumed and a register access with the domain down takes an async SError -- hence
+# pm_runtime_get_if_active(), which holds a reference rather than sampling one. It does
+# not close the window where a handler has already read in_flight_job -- that is 090's
+# -- and the two are complementary. rk3576/npu 0028 is the same change for that SoC.
 #
 # 092 checks the bos array allocation in rocket_job_push() and computes its element
 # count with check_add_overflow(). The two halves are not equally reachable. The missing
