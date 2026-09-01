@@ -218,6 +218,42 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # dma_map_resource() takes an IOVA from the same allocator, which is what makes the
 # range unrepeatable.
 #
+# 083 bounds the SPS reference picture sets the VDPU381 and VDPU383 take through
+# the 7.2 EXT_SPS_ST_RPS and EXT_SPS_LT_RPS controls, which 0016 on the ffmpeg side
+# is what fills. Nothing bounded them: the V4L2 core validates the short-term
+# control's flags word and nothing else, and the SPS counts saying how much of each
+# array to read are u8. num_short_term_ref_pic_sets and num_long_term_ref_pics_sps
+# index the RPS table by set, where the field macros hold 64 and 32 entries, so a
+# larger count writes outside struct rkvdec_rps; num_negative_pics and
+# num_positive_pics index the control's own delta_poc arrays of 16 and are walked
+# inclusively by the prediction path through two 16-byte stack arrays; and
+# delta_idx_minus1, which names the set to predict from as an offset back from the
+# current one, is subtracted in u8, so a value past the current index wraps rather
+# than going negative. Same shape as 073 and 074 -- bound against the limits the
+# hardware table already spells out, reject rather than clamp, and refuse nothing a
+# conforming stream can produce, since HEVC caps the three counts at 64, 32 and 15.
+# A set derived by prediction can hold one delta POC more than the set it predicts
+# from, so the chain is bounded where it is computed as well as at the control.
+#
+# 084 raises the VPU981's AV1 frame size from 4096x2304 to 8192x4352, the largest
+# an AV1 level describes, and raises the two raw formats it decodes into with it so
+# the capture queue does not clamp instead. Nothing in the driver derived the old
+# number: the deblocking, CDEF, superres and loop-restoration column buffers are
+# computed from the frame height and tile column count, the motion vector storage
+# from the superblock count, and the picture dimension registers are thirteen bits
+# of eight-pixel units, which spans far past 8K. 074's tile bounds are counts
+# rather than dimensions and stay as they are -- an 8K frame needs at least four
+# tiles, against the 128 the scratch holds. What made this wait was 8K allocation
+# failing, which is 082's subject.
+#
+# 085 corrects the JPEG encoder's advertised maximum, which is one macroblock step
+# above what it can encode. A dimension of exactly 8192 yields a JPEG whose SOF
+# reads 0x0 in that axis with nothing reported: the dimensions reach the hardware
+# as macroblock counts through nine-bit register fields, so 512 is masked to zero
+# rather than clamped. 8176 is 511 macroblocks and the last size that works. The
+# format entry is shared by the Rockchip JPEG encoder variants, so the correction
+# reaches all of them; it was measured on the RK3588 VEPU121 that 0019 drives.
+#
 # 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
 # it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
 # frees it again on the way out of the ioctl. Both reaching failures are ordinary
@@ -414,6 +450,9 @@ kernel = [
     "media-accel/kernel/080-rkvdec-vdpu381-vp9-multicore-fixups.patch",
     "media-accel/kernel/081-hantro-align-nv15-bytesperline-64.patch",
     "media-accel/kernel/082-rkvdec-rcb-map-sram-through-dma-api.patch",
+    "media-accel/kernel/083-rkvdec-bound-sps-rps-tables.patch",
+    "media-accel/kernel/084-hantro-raise-vpu981-av1-frame-size.patch",
+    "media-accel/kernel/085-hantro-jpeg-enc-max-frame-size.patch",
     "rocket/081-rocket-drv-npu-clk.patch",
     "rocket/082-rocket-drv-npu-volt.patch",
     "rocket/083-rocket-drv-iommu-keepattach.patch",

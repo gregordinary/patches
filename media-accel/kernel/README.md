@@ -29,6 +29,9 @@ series fits together.
 19. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
 20. `081-hantro-align-nv15-bytesperline-64.patch`
 21. `082-rkvdec-rcb-map-sram-through-dma-api.patch`
+22. `083-rkvdec-bound-sps-rps-tables.patch`
+23. `084-hantro-raise-vpu981-av1-frame-size.patch`
+24. `085-hantro-jpeg-enc-max-frame-size.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -147,6 +150,40 @@ The patches here come from different places, and they age differently:
   at the same address. `dma_map_resource()` is the interface for handing a device a
   physical range that is not RAM, and it takes its IOVA from the same allocator, so
   the range cannot be issued twice.
+- **`083` — the SPS reference picture sets are bounded.** The VDPU381 and VDPU383
+  parse slice headers in hardware and take the SPS-level RPS through the 7.2
+  `EXT_SPS_ST_RPS` / `EXT_SPS_LT_RPS` controls, which nothing bounded: the V4L2 core
+  validates the short-term control's flags word and nothing else, and the SPS counts
+  saying how much of each array to read are `u8`. `num_short_term_ref_pic_sets` and
+  `num_long_term_ref_pics_sps` index the RPS table by set, and the field macros hold
+  64 and 32, so a larger count writes outside `struct rkvdec_rps`.
+  `num_negative_pics` and `num_positive_pics` index the control's own
+  `delta_poc_s0_minus1[16]` / `delta_poc_s1_minus1[16]`, and their sum is walked
+  *inclusively* by the prediction path through two 16-byte stack arrays.
+  `delta_idx_minus1` names the set to predict from as an offset back from the current
+  one, and the subtraction is done in `u8`, so a value past the current index wraps
+  instead of going negative. Bounded the way `073` and `074` bound tile counts —
+  against the limits the field macros already state, rejecting rather than clamping,
+  and refusing nothing conforming, since HEVC caps the three at 64, 32 and 15. A set
+  derived by prediction holds up to one delta POC more than the set it predicts from,
+  so the chain is bounded where it is computed as well. The scratch array the
+  calculation builds also becomes a checked `kcalloc()`.
+- **`084` — the VPU981 AV1 frame size reaches 8192x4352.** The old 4096x2304 was
+  declared, not derived: the deblocking, CDEF, superres and loop-restoration column
+  buffers are computed from the frame height and the tile column count, the motion
+  vector storage from the superblock count, and `av1_pic_width_in_cbs` /
+  `av1_pic_height_in_cbs` are thirteen bits of eight-pixel units, which spans far past
+  8K. The new limit is the largest frame an AV1 level describes; the `NV12_4L4` and
+  `NV15_4L4` entries move with it so the capture queue is not what clamps. `074`'s
+  tile bounds are counts rather than dimensions and are unchanged — an 8K frame needs
+  at least four tiles, against the 128 the `tile_info` scratch holds.
+- **`085` — the JPEG encoder's advertised maximum is one macroblock too high.** A
+  dimension of exactly 8192 produces a JPEG whose SOF marker reads `0x0` in that axis,
+  silently. The dimensions reach the hardware as macroblock counts through nine-bit
+  register fields (`VEPU_REG_MB_WIDTH()` and `VEPU_REG_MB_HEIGHT()` mask with `0x1ff`,
+  and the H1 pair are nine bits each), so 512 is masked to zero rather than clamped.
+  8176 is 511 macroblocks and the last size that encodes. The format entry is shared
+  across the Rockchip JPEG encoder variants, so the correction reaches all of them.
 
 Anything NPU-shaped lives in the sibling [`../../rocket/`](../../rocket/) scope, which
 has its own dependency notes.
