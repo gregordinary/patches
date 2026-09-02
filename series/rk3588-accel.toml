@@ -590,6 +590,28 @@ kernel = [
 # since ffmpeg's half-a-raw-frame estimate is an inter-coded assumption that an
 # intra-only JPEG can exceed; and a keyframe flag on every packet, which this
 # driver does not set and without which no packet in an .mjpeg is seekable.
+#
+# 0020 and 0021 belong to the base as 0006, 0014 and 0015 do: overlay_vulkan is
+# upstream's own filter and neither patch touches anything Rockchip. They are
+# here because this is the only series that builds ffmpeg with Vulkan, so this
+# is where the filter first ran.
+#
+# 0020 is a timestamp defect. overlay_vulkan copies its output pts from the
+# frame framesync hands it, which framesync has already rewritten into the
+# timebase it derived as the gcd of both inputs' -- while the output link keeps
+# the main input's timebase, because nothing sets it and the generic code
+# defaults it there. So the pts are in one timebase and labelled with another,
+# and the output is stretched by the ratio between them: a 1/1000 main branch
+# against a 30000/1001 overlay branch is 30x. It corrupts quietly, and the
+# obvious `fps=` repair makes it worse -- it silences the symptom by dropping
+# 870 of 900 frames. The fix states the output timebase and pins framesync to
+# it, which is what overlay, overlay_vaapi and overlay_cuda all do.
+#
+# 0021 publishes eof_action, shortest and repeatlast, which overlay_vulkan
+# drives but never exposed. Framesync's default is eof_action=repeat, so an
+# unbounded overlay source -- 0014's alphasrc, which is exactly what a burn-in
+# chain puts there -- keeps the graph compositing after the main input ends,
+# with no option available to say otherwise.
 ffmpeg = [
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
@@ -610,6 +632,8 @@ ffmpeg = [
     "media-accel/ffmpeg/0017-v4l2m2m-set-coded-format-before-raw-when-encoding.patch",
     "media-accel/ffmpeg/0018-v4l2m2m-negotiate-formats-the-driver-offers.patch",
     "media-accel/ffmpeg/0019-v4l2m2m-add-mjpeg-encoder.patch",
+    "media-accel/ffmpeg/0020-overlay-vulkan-keep-the-main-inputs-timebase.patch",
+    "media-accel/ffmpeg/0021-overlay-vulkan-expose-the-framesync-options.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous

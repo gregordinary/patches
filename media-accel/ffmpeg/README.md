@@ -27,6 +27,8 @@ with `git am` onto the base.
 17. `0017-v4l2m2m-set-coded-format-before-raw-when-encoding.patch`
 18. `0018-v4l2m2m-negotiate-formats-the-driver-offers.patch`
 19. `0019-v4l2m2m-add-mjpeg-encoder.patch`
+20. `0020-overlay-vulkan-keep-the-main-inputs-timebase.patch`
+21. `0021-overlay-vulkan-expose-the-framesync-options.patch`
 
 Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
 0006 is independent of the graft — it makes the base's own V4L2-request frames
@@ -35,7 +37,8 @@ importable into Vulkan. 0007–0013 are defect fixes in the grafted code. 0014 a
 hardware burn-in chain needs. 0016 is a fix to the base's HEVC hwaccel,
 described below. 0017–0019 are independent of the graft as well: they reach the
 mainline VEPU121 JPEG encoder through V4L2, with no vendor userspace involved,
-and are described below.
+and are described below. 0020 and 0021 are defect fixes in upstream's own
+`overlay_vulkan`, found the first time this scope built ffmpeg with Vulkan.
 
 ## 0005 — what a 10-bit decoded frame is called
 
@@ -313,3 +316,53 @@ reads 0x0, silently and under GStreamer too — 8176 is the last size that works
 each axis. Widths are rounded up to a multiple of 4 by the driver's own selection
 handling, and the wrapper warns when the coded size it gets back differs from the one
 asked for.
+
+## 0020, 0021 — overlay_vulkan
+
+Both are defects in upstream's `overlay_vulkan`, unrelated to Rockchip: this is
+simply the only series that builds ffmpeg with Vulkan, so it is where the filter
+first ran. Neither is on the shipped path — `overlay_rkrga` beats the Vulkan
+compositor on every chain measured on this hardware — but both corrupt silently
+for anyone who takes the Vulkan route.
+
+**0020 — the output timebase.** `ff_framesync_configure()` derives its timebase
+as the gcd of both inputs', and `framesync_inject_frame()` rewrites every
+arriving frame's pts into it. `overlay_vulkan_blend()` copies that pts onto the
+output with `av_frame_copy_props()`, but nothing ever sets the output link's
+timebase, so it keeps the one `ff_filter_config_links()` defaults it to — the
+main input's. The timestamps are therefore in one timebase and labelled with
+another, and the output is stretched by the ratio between them. A 1/1000 main
+branch composited against a 30000/1001 overlay branch gives a framesync timebase
+of 1/30000 and an output 30x too slow.
+
+It is worth knowing how this hides. The obvious repair, inserting `fps=` on the
+main branch, *masks* it: the stretched timestamps make `fps` drop roughly 870 of
+900 frames, so the chain finishes fast, reports a spectacular CPU figure, and
+composites almost nothing. The command-line workaround that actually works is
+`settb=1001/30000` on the main branch, which makes both timebases agree so the
+mislabelling has no effect. The fix states the output timebase as the main
+input's and pins framesync to it, which is what `overlay`, `overlay_vaapi` and
+`overlay_cuda` all do.
+
+**0021 — the framesync options.** `overlay_vulkan` drives framesync but published
+only `x` and `y`, so `eof_action`, `shortest` and `repeatlast` were unreachable
+and framesync's default `eof_action=repeat` stood. That extends the overlay
+branch past its last frame for as long as the main branch runs, which is wrong
+for an unbounded overlay source — and 0014's `alphasrc` is exactly that, and is
+what a burn-in chain puts there, so the graph keeps compositing after the main
+input ends with no option available to stop it. The three options are published
+the way `overlay`, `overlay_vaapi`, `overlay_cuda` and `overlay_qsv` publish
+them, with `FRAMESYNC_DEFINE_CLASS()` and the preinit callback it requires.
+
+Three further findings from the same measurement are **not** fixed here, because
+neither is an ffmpeg defect. `libplacebo` converting a Vulkan BGRA surface to
+NV12 swaps red and blue, and P010 is broken in both directions across the Vulkan
+boundary — an upload reads back all-zero, a download reads back flat green. In
+both cases `vf_libplacebo.c` does nothing but call `pl_map_avframe_ex()`, and
+every format and component-order decision is inside libplacebo's own
+`pl_map_avframe_vulkan()`. P010 is also the only format in the failing set that
+reaches libplacebo's `map_vk_fmt()`, which re-describes the `_3PACK16` formats as
+their plain 16-bit equivalents; `nv12`, `yuv420p` and `yuv420p10le` all bypass it
+and all upload correctly. Separately, there is no zero-copy Vulkan-to-RKMPP
+handoff — every `hwmap` variant is `ENOSYS` — and `scale_vulkan` rejects BGRA
+with `Unsupported colorspace` and exposes no option to name the matrix.
