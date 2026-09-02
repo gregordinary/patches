@@ -173,10 +173,15 @@ The patches here come from different places, and they age differently:
   buffers are computed from the frame height and the tile column count, the motion
   vector storage from the superblock count, and `av1_pic_width_in_cbs` /
   `av1_pic_height_in_cbs` are thirteen bits of eight-pixel units, which spans far past
-  8K. The new limit is the largest frame an AV1 level describes; the `NV12_4L4` and
-  `NV15_4L4` entries move with it so the capture queue is not what clamps. `074`'s
-  tile bounds are counts rather than dimensions and are unchanged — an 8K frame needs
-  at least four tiles, against the 128 the `tile_info` scratch holds.
+  8K. The new limit is the largest frame an AV1 level describes. **Both of the
+  decoder's format lists move**, and either one alone would be a silent clamp:
+  `hantro_try_fmt()` applies the constraints of whichever format the CAPTURE queue
+  holds, so raising only the decoder's own `NV12_4L4`/`NV15_4L4` entries would accept
+  an 8K stream on the coded queue and hand back a 4096x2304 frame with no error
+  anywhere — the postprocessor's `NV12`/`NV15`/`P010` entries are what a consumer
+  actually receives. `074`'s tile bounds are counts rather than dimensions and are
+  unchanged — an 8K frame needs at least four tiles, against the 128 the `tile_info`
+  scratch holds.
 - **`085` — the JPEG encoder's advertised maximum is one macroblock too high.** A
   dimension of exactly 8192 produces a JPEG whose SOF marker reads `0x0` in that axis,
   silently. The dimensions reach the hardware as macroblock counts through nine-bit

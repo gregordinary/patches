@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: gregordinary <33880035+gregordinary@users.noreply.github.com>
-Date: Tue, 1 Sep 2026 07:59:25 -0400
+Date: Tue, 1 Sep 2026 20:51:37 -0400
 Subject: [PATCH] media: verisilicon: correct the JPEG encoder's maximum frame
  size
 
@@ -27,7 +27,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/media/platform/verisilicon/rockchip_vpu_hw.c b/drivers/media/platform/verisilicon/rockchip_vpu_hw.c
-index 48d31e9e3..6d9759ca9 100644
+index ef0f3fccc..f033a624c 100644
 --- a/drivers/media/platform/verisilicon/rockchip_vpu_hw.c
 +++ b/drivers/media/platform/verisilicon/rockchip_vpu_hw.c
 @@ -52,10 +52,10 @@ static const struct hantro_fmt rockchip_vpu_enc_fmts[] = {

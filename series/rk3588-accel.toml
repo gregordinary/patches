@@ -236,8 +236,11 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # from, so the chain is bounded where it is computed as well as at the control.
 #
 # 084 raises the VPU981's AV1 frame size from 4096x2304 to 8192x4352, the largest
-# an AV1 level describes, and raises the two raw formats it decodes into with it so
-# the capture queue does not clamp instead. Nothing in the driver derived the old
+# an AV1 level describes. Both of the decoder's format lists move, because either
+# one alone silently clamps: hantro_try_fmt() applies the constraints of whichever
+# format the CAPTURE queue holds, so leaving the postprocessor's NV12/NV15/P010
+# entries at 4K would take an 8K stream on the coded queue and hand back a
+# 4096x2304 frame with nothing reported. Nothing in the driver derived the old
 # number: the deblocking, CDEF, superres and loop-restoration column buffers are
 # computed from the frame height and tile column count, the motion vector storage
 # from the superblock count, and the picture dimension registers are thirteen bits
