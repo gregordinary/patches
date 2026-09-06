@@ -394,6 +394,40 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # Not run on hardware. It applies under strict git am, builds warning-clean at W=1, and
 # the defect it fixes was measured on silicon; the fix path itself has not been executed.
 #
+# 094, 095 and 096 are Igor Paunovic's core-management fixes from linux-rockchip, all
+# three Cc: stable with a Fixes: tag and none in a released kernel. 094: rocket_remove()
+# decrements num_cores per core removed while find_core_for_dev() searches
+# 0..num_cores-1, so unbinding the cores in bind order never finds the last one, the
+# device is never torn down, the file-scoped rdev outlives it, and the next bind round
+# starts from the stale count -- on an RK3588 slots 1, 2 and 3 of an array allocated for
+# three, a write past the end. It records the allocated count as max_cores and searches
+# all of it. 096 is the same shrinking range in sched_to_core(), whose two callers
+# (rocket_job_run, rocket_job_timedout) dereference the result unchecked, so unbinding a
+# middle core NULL-derefs from the surviving core's job queue and from its reset work.
+# One line, and it reads max_cores, so it does NOT COMPILE without 094 -- a hard
+# dependency, not diff context like 092's.
+#
+# 095 changes what core->index means. rocket_job_hw_submit() scales it into the CNA and
+# CORE S_POINTER registers as 0x10000000 * index, which the vendor driver derives from
+# the HARDWARE number of the core; rocket_probe() assigned the bind-order slot. The two
+# agree only while the cores that bind are a prefix of the devicetree's core nodes in
+# devicetree order. Otherwise every task on a mis-numbered core times out at 500 ms, the
+# reset does not help, and the inference returns WRONG OUTPUT -- upstream measured five
+# of the six bind orders doing so. 095 numbers each core by its position among the
+# matching devicetree nodes instead. Every use of core->index in the fully patched tree
+# was audited: six, none indexes rdev->cores[], all six mainline's. Latent for this
+# stack's workflows -- an ordinary boot binds in order, and unbinding the LAST core,
+# which is what the RK3576 recipe does, leaves every remaining slot equal to its
+# position -- and taken because the failure is silent until it is loud and the fix is
+# free.
+#
+# Measured 2026-09-05 on the RK1 at 7.2.0: all sixteen rocket patches apply strict, the
+# module builds and binds all three cores, and rocket-userspace's RK3588 gate list is
+# 96/96 with the same 22 skips name for name with and without 095 and 096. No run drove
+# traffic through mis-numbered cores, so 095's wrong-output claim is upstream's. A full
+# unbind/rebind brings the device back as accel1 while the tests open accel0 by name --
+# every test then SKIPs, which reads like a pass; reload the module first.
+#
 # 100-103 are the crypto scope and are the RK356x/RK3588 second-generation crypto
 # offloader: AES (ECB/CBC/XTS) and SHA-1/256/384/512, MD5 and SM3 over an LLI-based
 # DMA engine. They are Dawid Olesinski's and Corentin Labbe's, carried verbatim from
@@ -469,6 +503,9 @@ kernel = [
     "rocket/091-rocket-drv-irq-sync-before-reset.patch",
     "rocket/092-rocket-drv-fix-job-push-null-and-overflow.patch",
     "rocket/093-rocket-drv-ppu-completion.patch",
+    "rocket/094-rocket-drv-find-core-all-slots.patch",
+    "rocket/095-rocket-drv-core-hw-index.patch",
+    "rocket/096-rocket-drv-sched-to-core-all-slots.patch",
     "crypto/kernel/100-dt-bindings-crypto-rockchip-rk356x-rk3588-engine.patch",
     "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",
     "crypto/kernel/102-arm64-dts-rockchip-rk356x-crypto-node.patch",
