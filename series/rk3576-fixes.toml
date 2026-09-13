@@ -69,6 +69,40 @@ applies_to_kernel = ">=7.1, <7.3"
 # verify-applies gate enforces. Retires when a kernel arrives carrying an
 # upstream equivalent, from both series at once.
 #
+# 083 is shared with series/rk3588-accel on the same terms as 073: one rkvdec
+# defect, reached through the VDPU383 this SoC carries, so the fix is the same file
+# in both series rather than a second copy of it. 105 is the same defect as that
+# series' 082 and carries the same commit message, but not the same file: the
+# RK3588 copy sits on the multicore split (044/045), where the RCB helpers take a
+# `rkvdec_dev` and a `rkvdec_core` and the mapping device is `main_core->dev`. This
+# SoC has one core and no split, so the patch is written against the mainline
+# `rkvdec_ctx` signature instead. The two retire together, whenever an upstream
+# equivalent lands.
+#
+# 105 stops the RCB buffers colliding with the decoder's own DMA allocations.
+# rkvdec_allocate_rcb() takes the row-cache buffers out of an SRAM gen_pool and
+# maps them into the device's DMA default domain by hand, using the SRAM's kernel
+# virtual address as the IOVA. rockchip-iommu masks that address to 32 bits, and
+# the IOVA allocator that serves every dma_alloc_coherent on the same domain is
+# never told the range is taken. Once cumulative demand walks the allocator down
+# to it, iommu_map refuses the second mapping and the capture buffer fails to
+# allocate. On this SoC the aliased address is 0x80780000 and the SRAM behind it
+# is rk3576.dtsi's `sram@3ff88000`, whose first child is rkvdec_sram; the kernel
+# names both in the rejection. The fix maps the pool through dma_map_resource(),
+# so the allocator hands out the IOVA and knows it is in use. Size, bit depth and
+# codec are all incidental -- what reaches the collision is cumulative IOVA demand
+# in the one domain, which is what concurrent decoding produces.
+#
+# 083 bounds the HEVC SPS reference-picture-set tables. The VDPU383 takes the
+# SPS-level sets through the EXT_SPS_ST_RPS and EXT_SPS_LT_RPS controls, whose
+# counts arrive from userspace as u8 and index fixed-size arrays -- the RPS table
+# by set, the control's own delta_poc arrays, and two 16-byte stack scratch arrays
+# walked inclusively by the prediction path. The V4L2 core validates the
+# short-term control's flags word and nothing else. This kernel already exposes
+# both controls, so the exposure is present whether or not a player sets them.
+# The bounds are the field macros' own limits, which are also the format's, so no
+# conforming stream is refused.
+#
 # 108 stops rkvdec_irq_handler() dereferencing a NULL context. It resolves the
 # current job with v4l2_m2m_get_curr_priv() and hands the result straight to a
 # variant handler that opens with ctx->dev, and that function returns NULL when
@@ -120,6 +154,8 @@ kernel = [
     "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
     "rk3576/kernel/104-media-rkvdec-vdpu383-read-cache.patch",
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
+    "rk3576/kernel/105-media-rkvdec-map-rcb-sram-through-dma-api.patch",
+    "media-accel/kernel/083-rkvdec-bound-sps-rps-tables.patch",
     "rk3576/kernel/108-media-rkvdec-guard-null-context-in-irq-handler.patch",
     "rk3576/kernel/109-media-rkvdec-vdpu383-powerup-warmup.patch",
 ]

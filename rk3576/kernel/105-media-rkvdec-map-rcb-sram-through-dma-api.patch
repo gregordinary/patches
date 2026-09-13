@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 00:38:21 -0400
+Subject: [PATCH] media: rkvdec: map the RCB SRAM through the DMA API
+
+The RCB buffers come out of an SRAM gen_pool, and the decoder reaches
+them through the same IOMMU as everything else, so they have to be
+mapped into its address space. That mapping is made by hand: iommu_map()
+is called on rkvdec->iommu_domain with the SRAM's kernel virtual address
+as the IOVA, and the registers are then programmed with that same value.
+
+Two things are wrong with choosing the address that way.
+
+rkvdec->iommu_domain is iommu_get_domain_for_dev(), which is the device's
+DMA default domain -- the one whose IOVA allocator serves every
+dma_alloc_coherent() on the device, including the vb2 capture buffers.
+Nothing tells that allocator the RCB range is taken, so it is free to
+hand the same addresses out again.
+
+And rockchip-iommu builds its descriptor indices by masking the IOVA and
+casting to u32, with no aperture check, so a 64-bit kernel virtual
+address silently aliases to its low 32 bits. The address that collides is
+not the one the driver picked.
+
+The two together are a decode failure that waits for load: once
+cumulative demand walks the IOVA allocator down onto the aliased range,
+rk_iommu_map_iova() finds a live PTE and refuses, and the capture buffer
+allocation fails:
+
+  iova: 0x0000000080780000 already mapped to 0x000000003ff88000 \
+    cannot remap to phys: 0x0000000183ff4000 prot: 0x3
+  rkvdec 27b00000.video-codec: dma alloc of size 12443648 failed
+
+0x3ff88000 there is the SRAM's own physical base, and 0x80780000 is what
+its kernel virtual address masks down to. Size, bit depth and codec are
+incidental; what reaches the collision is cumulative IOVA demand in the
+one domain, so concurrent decoding finds it first.
+
+Map the pool with dma_map_resource() instead. The IOVA then comes from
+the same allocator as everything else on the device, which is what makes
+it exclusive, and the reserved range is released with dma_unmap_resource()
+from the free path.
+
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
+---
+ .../platform/rockchip/rkvdec/rkvdec-rcb.c     | 34 +++++++++++++------
+ 1 file changed, 23 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-rcb.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-rcb.c
+index fdcf1f177..ba23ab016 100644
+--- a/drivers/media/platform/rockchip/rkvdec/rkvdec-rcb.c
++++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-rcb.c
+@@ -9,8 +9,9 @@
+ #include "rkvdec.h"
+ #include "rkvdec-rcb.h"
+ 
+-#include <linux/iommu.h>
++#include <linux/dma-mapping.h>
+ #include <linux/genalloc.h>
++#include <linux/iommu.h>
+ #include <linux/sizes.h>
+ #include <linux/types.h>
+ 
+@@ -61,7 +62,10 @@ void rkvdec_free_rcb(struct rkvdec_ctx *ctx)
+ 			virt_addr = (unsigned long)cfg->rcb_bufs[i].cpu;
+ 
+ 			if (dev->iommu_domain)
+-				iommu_unmap(dev->iommu_domain, virt_addr, rcb_size);
++				dma_unmap_resource(dev->dev,
++						   cfg->rcb_bufs[i].dma,
++						   rcb_size, DMA_BIDIRECTIONAL,
++						   0);
+ 			gen_pool_free(dev->sram_pool, virt_addr, rcb_size);
+ 			break;
+ 		case RKVDEC_ALLOC_DMA:
+@@ -125,14 +129,22 @@ int rkvdec_allocate_rcb(struct rkvdec_ctx *ctx,
+ 							SZ_4K);
+ 		}
+ 
+-		/* If an IOMMU is used, map the SRAM address through it */
++		/*
++		 * If an IOMMU is used, the SRAM has to be mapped into the
++		 * decoder's address space.  Go through the DMA API rather than
++		 * calling iommu_map() directly: the domain here is the device's
++		 * DMA domain, so an address chosen by hand is one the IOVA
++		 * allocator does not know is taken and will hand out again to a
++		 * frame buffer, and rockchip-iommu truncates an IOVA to 32 bits
++		 * without complaint, so the collision need not even be visible
++		 * in the address that was picked.
++		 */
+ 		if (cpu && rkvdec->iommu_domain) {
+-			unsigned long virt_addr = (unsigned long)cpu;
+-			phys_addr_t phys_addr = dma;
++			dma_addr_t iova = dma_map_resource(rkvdec->dev, dma,
++							   rcb_size,
++							   DMA_BIDIRECTIONAL, 0);
+ 
+-			ret = iommu_map(rkvdec->iommu_domain, virt_addr, phys_addr,
+-					rcb_size, IOMMU_READ | IOMMU_WRITE, 0);
+-			if (ret) {
++			if (dma_mapping_error(rkvdec->dev, iova)) {
+ 				gen_pool_free(ctx->dev->sram_pool,
+ 					      (unsigned long)cpu,
+ 					      rcb_size);
+@@ -141,10 +153,10 @@ int rkvdec_allocate_rcb(struct rkvdec_ctx *ctx,
+ 			}
+ 
+ 			/*
+-			 * The registers will be configured with the virtual
+-			 * address so that it goes through the IOMMU
++			 * The registers are configured with the mapped address
++			 * so that the access goes through the IOMMU.
+ 			 */
+-			dma = virt_addr;
++			dma = iova;
+ 		}
+ 
+ ram_fallback:
+-- 
+2.43.0
+
