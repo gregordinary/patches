@@ -16,8 +16,9 @@
 # between tasks.
 #
 # 0001-0007, 0031, 0032 and 0034 come from the linux-rockchip series "accel/rocket: RK3576
-# NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v8 posting except 0034, which is
-# v9's 03/13; everything else is ours. 0001, 0003, 0004, 0005, 0031 and 0032 are
+# NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v12 posting; everything else is
+# ours, though 0027 and 0028 make the same changes as that series' 02/14 and 03/14 and
+# each patch says so. 0001, 0003, 0004, 0005, 0031 and 0032 are
 # verbatim; 0002, 0006, 0007 and 0034 carry local changes.
 #
 # 0001 widens the binding to describe the RK3576 node and pins the exact shape per
@@ -47,17 +48,34 @@
 # reference across the register dump rocket_job_timedout() logs, taking it with
 # pm_runtime_get_if_active() rather than testing pm_runtime_active(): the test only
 # samples, and the domain can drop between it and the first readl, where a register
-# access with the domain down takes an async SError on this part.
+# access with the domain down takes an async SError on this part. And it refuses a
+# device with no match data at the top of rocket_probe(), before anything is allocated:
+# core->soc is dereferenced unchecked by every one of its users, and a device bound by
+# name rather than by compatible has no of_node, so the walk that sizes rdev->cores[]
+# never counted it and the slot the probe would write is past the end. Upstream carries
+# the same check, as 11/14 of the v12 posting.
+#
+# 0007 clocks the NPU inside the voltage its rail is given. CLK_RKNN_DSU0 clocks both
+# cores and the CBUF they share, nothing else in mainline sets its rate, and the block
+# comes up at 786.432 MHz while Rockchip's OPP table asks 800 mV of its 800 MHz step and
+# nothing sets the rail either -- so a board that follows this DTS runs the NPU above the
+# step whose voltage it happens to boot with. The node asks for 594 MHz, a GPLL divider
+# between the table's 500 and 600 MHz steps, both of which ask 725 mV at every leakage
+# bin. Upstream measured the failure that names: on a ROCK 4D with both cores enabled and
+# the rail at the 750 mV its PMIC boots with, two jobs at once make the second core write
+# 13 to 20 single words of a 5400-row pass wrong, and 594 MHz, 800 mV or 850 mV each give
+# four clean passes. The rate costs 4.0-4.2% of decode with two cores and 23% with one,
+# which is what a board in this tree pays, since each of them enables a single core.
 #
 # 0007 carries one local change: each core takes five register banks rather than three,
 # because 0012 and its successors retire a job on the DPU's and the PPU's own
 # completions and need those banks mapped. The rest of what this file used to list as
 # local -- rknn_core_1 at 0x27708000, the CBUF clocks on core 1, both NPU power domains
-# on both core nodes -- is upstream as of v8 and is no longer a divergence. The board
+# on both core nodes -- is upstream now and is no longer a divergence. The board
 # patch (enable NPU on the Radxa ROCK 4D) is dropped: the board enable is
 # board-specific, and the H96 wires its own via its device `.dts`.
 #
-# One consequence of v8 to know before wiring a board: RK3576_PD_NPU now carries
+# One consequence to know before wiring a board: RK3576_PD_NPU carries
 # need_regulator, so a board that describes the NPU rail with domain-supply on the
 # pd_npu node (0007 labels it) has that rail enabled before the domain powers and
 # disabled after. A board that does not describe it takes the dummy regulator and is
@@ -242,10 +260,19 @@
 # waiting alone fences the handler that is running and not the interrupt the hardware is
 # still entitled to raise: hw_submit() arms the mask on every submit -- the DMA-error
 # pair here -- and only the hardirq clears it, so on an ordinary timeout it is still
-# live. That write is the function's first register access and the function holds no
-# runtime PM reference of its own, so it goes under pm_runtime_get_if_active(), which
-# holds one rather than sampling it; with the domain down a register access takes an
-# async SError on this part. rocket/091 is the same change for the RK3588.
+# live. Beside it goes INTERRUPT_CLEAR, the same set the completion path clears -- with
+# PC_DONE_0/1 where the completion is polled, which is here -- because masking ends
+# nothing already raised and 0025 reads those raw bits to decide the writing block has
+# finished: a bit left standing across a reset is a completion the next job's first poll
+# tick can read as its own, which 0024's sequence number does not cover because it
+# fences a stale work item and not a stale register. Both writes are the function's
+# first register accesses and the function holds no runtime PM reference of its own, so
+# they go under pm_runtime_get_if_active(), which holds one rather than sampling it;
+# with the domain down a register access takes an async SError on this part. It is
+# tested > 0 and not != 0: that helper tests power.disable_depth before
+# power.runtime_status, so -EINVAL masks a suspended device rather than excluding one,
+# and this driver makes that state in both pm_runtime_force_suspend() and
+# rocket_core_fini(). rocket/091 is the same change for the RK3588.
 # 0029 stops the poll writing registers with nothing in flight.
 # An interrupt has a level-triggered condition that INTERRUPT_CLEAR ends, so it must
 # write whatever the state; the poll sampled a status register and has nothing to
@@ -290,7 +317,7 @@
 # 0004 and 0005 are BOTH upstream now -- "iommu/rockchip: Take all DT clocks" and
 # "iommu/rockchip: Clear stale page faults before enabling stall", merged 2026-07-26
 # and present in linux-next from next-20260814. Neither is in 7.1.x, which is why both
-# are still carried here, and it is why the v8 posting of this series drops them. When
+# are still carried here, and it is why this series no longer posts them upstream. When
 # this series moves to a kernel that has them, each becomes a redundant patch that
 # `git am --3way` will absorb silently rather than reject, so both have to be dropped
 # by hand at that bump.
