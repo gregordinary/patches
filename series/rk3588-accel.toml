@@ -319,8 +319,8 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # for that SoC, where the poll work and the interrupt thread make the two writers
 # concurrent outright.
 #
-# 091 is 090's other half, from the v8 posting of the RK3576 series -- Jiaxing Hu's
-# patch, suggested by Igor Paunovic. rocket_reset() calls drm_sched_stop(), which stops
+# 091 is 090's other half, from the RK3576 series -- Jiaxing Hu's patch, suggested by
+# Igor Paunovic, tracked at its v12 posting. rocket_reset() calls drm_sched_stop(), which stops
 # the scheduler and returns; it does not wait for a threaded handler that is already
 # running, so the comment that followed it -- "Remaining interrupts have been handled"
 # -- stated an assumption rather than something the code arranged. A handler mid-flight
@@ -336,7 +336,14 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # the function's first register access and the function holds no runtime PM reference of
 # its own -- drm_sched_stop() drops every pending job's credits, so nothing keeps the
 # core resumed and a register access with the domain down takes an async SError -- hence
-# pm_runtime_get_if_active(), which holds a reference rather than sampling one. It does
+# pm_runtime_get_if_active(), which holds a reference rather than sampling one, and > 0
+# rather than != 0: that helper tests power.disable_depth before power.runtime_status, so
+# -EINVAL masks a suspended device rather than excluding one, and this driver makes that
+# state in both pm_runtime_force_suspend() and rocket_core_fini(). Beside the mask it
+# clears INTERRUPT_CLEAR, because masking ends nothing already raised: the hardirq decides
+# on INTERRUPT_RAW_STATUS alone and the line is IRQF_SHARED, so a latched completion bit
+# and another device's interrupt together wake the threaded handler again after the sync
+# has returned. It does
 # not close the window where a handler has already read in_flight_job -- that is 090's
 # -- and the two are complementary. rk3576/npu 0028 is the same change for that SoC.
 #
@@ -428,6 +435,23 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # unbind/rebind brings the device back as accel1 while the tests open accel0 by name --
 # every test then SKIPs, which reads like a pass; reload the module first.
 #
+# 097 is Jiaxing Hu's, from the same series, and puts the in-flight job's runtime PM
+# reference back with pm_runtime_put_autosuspend() rather than pm_runtime_put_noidle().
+# A bare put requests nothing, so a core comes out of a timeout at usage_count 0 and
+# still runtime-active: it does not suspend until something else asks, and on a core
+# that takes no further submits nothing ever does -- the clocks stay enabled and the
+# domain stays up for as long as the driver is bound. It also matches the put in the
+# completion path a few lines away. The measured failure behind it upstream is RK3576's,
+# where the power domain does a bus-interface reset on power-on that a core which never
+# suspends never gets; Igor Paunovic's RK3588 differential -- 45 induced resets across
+# three cores -- found the domain dropping either way on this part, so here the change is
+# that the driver stops producing a state it produces nowhere else. It requires 091, and
+# not only for the comment it rewrites: 091's synchronize_irq() is what guarantees no
+# threaded handler is still running to touch the core this makes suspendable. The other
+# put in the file, on rocket_job_run()'s failed get_sync(), stays a bare put_noidle(),
+# which unwinds a reference to a device that never resumed. rk3576/npu 0034 is the same
+# change for that SoC.
+#
 # 100-103 are the crypto scope and are the RK356x/RK3588 second-generation crypto
 # offloader: AES (ECB/CBC/XTS) and SHA-1/256/384/512, MD5 and SM3 over an LLI-based
 # DMA engine. They are Dawid Olesinski's and Corentin Labbe's, carried verbatim from
@@ -506,6 +530,7 @@ kernel = [
     "rocket/094-rocket-drv-find-core-all-slots.patch",
     "rocket/095-rocket-drv-core-hw-index.patch",
     "rocket/096-rocket-drv-sched-to-core-all-slots.patch",
+    "rocket/097-rocket-drv-suspend-after-reset.patch",
     "crypto/kernel/100-dt-bindings-crypto-rockchip-rk356x-rk3588-engine.patch",
     "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",
     "crypto/kernel/102-arm64-dts-rockchip-rk356x-crypto-node.patch",

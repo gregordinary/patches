@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jiaxing Hu <gahing@gahingwoo.com>
+Date: Mon, 24 Aug 2026 11:08:52 +0000
+Subject: [PATCH] accel/rocket: let the core suspend after a reset
+
+rocket_reset() drops the in-flight job's runtime PM reference with
+pm_runtime_put_noidle(), a bare decrement that requests nothing.  The
+core is left at usage_count 0 but still runtime-active with no idle
+request pending, so it does not suspend until something else asks.  On a
+core that takes no further submits, nothing ever does: the clocks
+rocket_device_runtime_resume() prepared stay enabled and the domain stays
+up for as long as the driver is bound.
+
+It also matches the put in the completion path a few lines away, so the
+reset path no longer leaves the device in a state the rest of the driver
+never produces.  The other put in this file, on rocket_job_run()'s failed
+pm_runtime_get_sync(), stays a bare put_noidle(): it unwinds a reference
+to a device that never resumed, so there is nothing to request idle on.
+
+What this does not do on RK3588 is fix an observed failure.  The reason
+upstream carries it is a platform whose power domain does work when it
+comes up -- on RK3576 a bus interface reset -- where a core that never
+suspends never gets that work and the job after a timeout comes back as
+the output zero point with rk_iommu reporting MMU_DTE_ADDR not
+functioning, 0 of 128 channels against 128 of 128 with the single line
+changed.  Igor Paunovic ran the differential here: 45 induced resets
+across three cores, with and without, and the domain dropped every time
+with no MMU message on either kernel.  So on this part the change is that
+the driver stops producing a state it produces nowhere else, and stops
+holding a core resumed after a job it has already given up on.
+
+One consequence to know.  pm_runtime_put_autosuspend() is asynchronous
+against the autosuspend delay, so on a workload whose gap to the next
+submit is shorter than that delay the core does not actually suspend
+between the two, and the reset is followed by a resume that never
+happened.  Nothing here depends on it having happened; it is the
+platforms that do work on power-on that care.
+
+Tested-by: Igor Paunovic <royalnet026@gmail.com>  # RK3588, three cores, induced reset, JOB_TIMEOUT_MS=2
+Fixes: 0810d5ad88a1 ("accel/rocket: Add job submission IOCTL")
+Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
+[carried for the RK3588 series; the comment this rewrites is the one 091
+ leaves behind, and 091 is also what guarantees no threaded handler is
+ still running when the core it just made suspendable goes down]
+---
+ drivers/accel/rocket/rocket_job.c |  6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
+index 638019b90..9a1c2f0e7 100644
+--- a/drivers/accel/rocket/rocket_job.c
++++ b/drivers/accel/rocket/rocket_job.c
+@@ -542,13 +542,13 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+ 	synchronize_irq(core->irq);
+ 
+ 	/*
+ 	 * No handler is running now, but we might still have stuck jobs. Let's
+-	 * make sure the PM counters stay balanced by manually calling
+-	 * pm_runtime_put_noidle().
++	 * make sure the PM counters stay balanced by putting the reference the
++	 * job took, and request idle while doing it so the core can suspend.
+ 	 */
+ 	scoped_guard(mutex, &core->job_lock) {
+ 		if (core->in_flight_job)
+-			pm_runtime_put_noidle(core->dev);
++			pm_runtime_put_autosuspend(core->dev);
+ 
+ 		core->in_flight_job = NULL;
+ 	}
+-- 
+2.43.0
