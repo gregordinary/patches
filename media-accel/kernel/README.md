@@ -14,24 +14,23 @@ series fits together.
 4. `043-v4l2-export-max-parallel-jobs.patch`
 5. `044-rkvdec-split-core-and-master.patch`
 6. `045-rkvdec-multicore.patch`
-7. `050-av1-iommu-v14-curated.patch` (kernels `<7.2`)
-8. `060-vepu580-rcawston-v3.patch`
-9. `070-rga-multicore-vendor-oot.patch`
-10. `071-rga-multicore-fixups.patch`
-11. `072-rk3588-rga-dts-7.1.patch` (kernels `<7.2`) / `072-rk3588-rga-dts-7.2.patch` (kernels `>=7.2`)
-12. `073-rkvdec-hevc-bound-tile-counts.patch`
-13. `074-rkvdec-av1-bound-tile-counts.patch`
-14. `075-hantro-fix-run-fail-cleanup.patch`
-15. `076-rkvdec-align-10bit-bytesperline-64.patch`
-16. `077-rkvdec-vp9-rename-get-ref-buf.patch`
-17. `078-rkvdec-vp9-move-to-common-file.patch`
-18. `079-rkvdec-vdpu381-vp9.patch`
-19. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
-20. `081-hantro-align-nv15-bytesperline-64.patch`
-21. `082-rkvdec-rcb-map-sram-through-dma-api.patch`
-22. `083-rkvdec-bound-sps-rps-tables.patch`
-23. `084-hantro-raise-vpu981-av1-frame-size.patch`
-24. `085-hantro-jpeg-enc-max-frame-size.patch`
+7. `060-vepu580-rcawston-v3.patch`
+8. `070-rga-multicore-vendor-oot.patch`
+9. `071-rga-multicore-fixups.patch`
+10. `072-rk3588-rga-dts-7.2.patch`
+11. `073-rkvdec-hevc-bound-tile-counts.patch`
+12. `074-rkvdec-av1-bound-tile-counts.patch`
+13. `075-hantro-fix-run-fail-cleanup.patch`
+14. `076-rkvdec-align-10bit-bytesperline-64.patch`
+15. `077-rkvdec-vp9-rename-get-ref-buf.patch`
+16. `078-rkvdec-vp9-move-to-common-file.patch`
+17. `079-rkvdec-vdpu381-vp9.patch`
+18. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
+19. `081-hantro-align-nv15-bytesperline-64.patch`
+20. `082-rkvdec-rcb-map-sram-through-dma-api.patch`
+21. `083-rkvdec-bound-sps-rps-tables.patch`
+22. `084-hantro-raise-vpu981-av1-frame-size.patch`
+23. `085-hantro-jpeg-enc-max-frame-size.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch

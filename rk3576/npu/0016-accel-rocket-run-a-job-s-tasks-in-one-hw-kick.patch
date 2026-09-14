@@ -86,7 +86,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  4 files changed, 134 insertions(+), 9 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index c019d0a30..a96944e91 100644
+index f8554f8ca..18b1d6bd7 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -154,7 +154,7 @@ static const struct drm_ioctl_desc rocket_drm_driver_ioctls[] = {
@@ -116,18 +116,18 @@ index c019d0a30..a96944e91 100644
  	.open			= rocket_open,
  	.postclose		= rocket_postclose,
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 1d30507d8..385a8756c 100644
+index 24c91d057..e98969700 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -11,6 +11,7 @@
- #include <linux/interrupt.h>
+@@ -12,6 +12,7 @@
+ #include <linux/overflow.h>
  #include <linux/iommu.h>
  #include <linux/kref.h>
 +#include <linux/moduleparam.h>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
  #include <linux/stddef.h>
-@@ -69,6 +70,12 @@ static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
+@@ -70,6 +71,12 @@ static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
  	return (PC_TASK_CON_CTRL << core->soc->task_number_bits) | task_number;
  }
  
@@ -140,7 +140,7 @@ index 1d30507d8..385a8756c 100644
  /*
   * The submit ioctl's descriptors (drm_rocket_job, drm_rocket_task) are
   * EXTENSIBLE: userspace declares the size of the struct it was built against
-@@ -87,12 +94,31 @@ static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
+@@ -88,12 +95,31 @@ static u32 rocket_pc_task_con(struct rocket_core *core, u32 task_number)
   * copy_struct_from_user() is the kernel's standard answer to both: it copies
   * min(usize, ksize), zero-fills the fields the caller did not supply, and
   * returns -E2BIG if userspace set anything in a trailing field this kernel does
@@ -174,7 +174,7 @@ index 1d30507d8..385a8756c 100644
  static struct rocket_job *
  to_rocket_job(struct drm_sched_job *sched_job)
  {
-@@ -191,7 +217,16 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -193,7 +219,16 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  	/* GO ! */
  
  	task = &job->tasks[job->next_task_idx];
@@ -192,7 +192,7 @@ index 1d30507d8..385a8756c 100644
  
  	rocket_pc_writel(core, BASE_ADDRESS, 0x1);
  
-@@ -230,7 +265,9 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -232,7 +267,9 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  				 PC_INTERRUPT_CLEAR_DPU_0 | PC_INTERRUPT_CLEAR_DPU_1);
  	}
  
@@ -203,7 +203,7 @@ index 1d30507d8..385a8756c 100644
  
  	rocket_pc_writel(core, TASK_DMA_BASE_ADDR, PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
  
-@@ -458,6 +495,18 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+@@ -450,6 +487,18 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
  		core->attached_domain = job->domain;
  	}
  
@@ -222,7 +222,7 @@ index 1d30507d8..385a8756c 100644
  	scoped_guard(mutex, &core->job_lock) {
  		core->in_flight_job = job;
  		rocket_job_hw_submit(core, job);
-@@ -554,6 +603,13 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+@@ -541,6 +590,13 @@ static void rocket_job_handle_irq(struct rocket_core *core)
  
  	scoped_guard(mutex, &core->job_lock)
  		if (core->in_flight_job) {
@@ -236,7 +236,7 @@ index 1d30507d8..385a8756c 100644
  			if (core->in_flight_job->next_task_idx < core->in_flight_job->task_count) {
  				rocket_job_hw_submit(core, core->in_flight_job);
  				return;
-@@ -804,6 +860,19 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+@@ -793,6 +849,19 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
  	if (job->task_count == 0)
  		return -EINVAL;
  
@@ -256,9 +256,9 @@ index 1d30507d8..385a8756c 100644
  	rjob = kzalloc_obj(*rjob);
  	if (!rjob)
  		return -ENOMEM;
-@@ -812,6 +881,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
- 
+@@ -802,6 +871,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
  	rjob->rdev = rdev;
+ 	rjob->domain = rocket_iommu_domain_get(file_priv);
  
 +	/*
 +	 * Userspace's per-job chained-submit request.  rocket_job_run ANDs this
@@ -267,10 +267,10 @@ index 1d30507d8..385a8756c 100644
 +	 */
 +	rjob->want_batched = !!(job->flags & DRM_ROCKET_JOB_BATCHED);
 +
- 	/*
- 	 * Take the IOMMU domain reference here, while the job is still empty.
- 	 * rocket_job_cleanup() puts it unconditionally, and every rejection
-@@ -901,9 +977,8 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
+ 	ret = drm_sched_job_init(&rjob->base,
+ 				 &file_priv->sched_entity,
+ 				 1, NULL, file->client_id);
+@@ -880,9 +956,8 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
  	 * Report a rejected job.  The return was previously discarded, so SUBMIT
  	 * answered 0 even when a job failed validation -- userspace could not
  	 * tell a queued job from a dropped one, and every per-job check (task

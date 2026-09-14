@@ -98,23 +98,17 @@
 # not that the write DMA has drained; the wait is bounded by a dpu_grace_us parameter
 # (500 us) because a task with a wide DPU output element raises no DPU bit at all. That
 # is what lets the poll period ship at 50 us: 2.42x per submit against the 500 us it
-# replaces, and correct where PC_DONE at that period hands back partial surfaces. 0010
-# fixes rocket_job_run()'s two early returns, which leak a runtime-PM reference and a
-# scheduler credit and pin the NPU runtime-active past a module reload; that bug is
-# mainline's and the RK3588 reaches the same paths, so 0010 duplicates no RK3588 patch
-# only because none exists yet. See rk3576/npu/README.md for the measurements.
+# replaces, and correct where PC_DONE at that period hands back partial surfaces. See
+# rk3576/npu/README.md for the measurements.
 #
-# 0013 and 0014 are ours and are two ways an unprivileged caller crashes the kernel
-# through /dev/accel, which is group `render`. 0013 takes the job's IOMMU domain at
-# construction: rocket_job_cleanup() puts it unconditionally, but the submit ioctl
-# assigns it only after five rejection sites, so a malformed submit reaches the put
-# with the kzalloc's NULL. 0014 moves the IOVA allocator from rocket_file_priv into
+# 0014 is ours and is one way an unprivileged caller crashes the kernel through
+# /dev/accel, which is group `render`. It moves the IOVA allocator from rocket_file_priv into
 # the refcounted rocket_iommu_domain: a BO's IOVA node is removed in its GEM free
 # path, which the drm_sched free worker can run after the owning file has closed, so
 # a client that submits and closes without waiting frees the allocator out from under
-# it. Both are mainline code that the RK3576 enablement does not touch -- the RK3588
-# series carries the same fixes as 084 and 085 -- and they are here because this is
-# the series the RK3576 image applies.
+# it. It is mainline code that the RK3576 enablement does not touch -- the RK3588
+# series carries the same fix as 085 -- and it is here because this is the series the
+# RK3576 image applies.
 #
 # 0015-0017 are ours and are the submit uAPI. 0015 makes the submit descriptors
 # actually extensible -- the size fields promise forward compatibility that guarding on
@@ -141,8 +135,8 @@
 # costs time, never correctness. 0016 needs a userspace that emits the chained layout
 # (rocket-userspace, ROCKET_RK3576_BATCH_TASKS); an unflagged job is unaffected by both.
 #
-# 0018-0020 are ours and are three more ways an unprivileged caller reaches a kernel
-# defect through /dev/accel, all of them mainline code the RK3588 reaches unchanged.
+# 0018 and 0019 are ours and are two more ways an unprivileged caller reaches a kernel
+# defect through /dev/accel, both of them mainline code the RK3588 reaches unchanged.
 # 0018 puts the file's IOMMU domain when CREATE_BO fails: every error path frees the
 # object with drm_gem_shmem_object_free(), which calls drm_gem_shmem_free() directly
 # and so never reaches the .free handler that would drop the reference, leaking one
@@ -150,11 +144,7 @@
 # mapping it holds. 0019 frees the scheduler array the file allocated: the entity
 # keeps that pointer only when it has more than one runqueue to choose between, so
 # on a single-core device -- the supported RK3576 configuration -- the close path
-# frees NULL and leaks the array on every open. 0020 is a double free of the submit
-# ioctl's task array, which rocket_copy_tasks() frees on its failure path without
-# clearing and rocket_job_cleanup() then frees again; a kmalloc-16 object handed to
-# two owners, reached by a job that asks for no registers. 0020 is verified on the
-# RK3576 under slub_debug=FZPU and carried for the RK3588 as rocket/087.
+# frees NULL and leaks the array on every open.
 #
 # 0021 is ours and closes the last class of job that retires on a deadline rather than on
 # a completion. PC_OPERATION_ENABLE is a per-block bitmap and a pooling program enables
@@ -341,7 +331,7 @@
 # IOMMU driver or the power-domain driver that these touch, and 0004 is still not
 # upstream, so nothing is silently absorbed. The ceiling is 7.3 because 7.2 is the
 # newest generation the series has been dry-run against.
-applies_to_kernel = ">=7.1, <7.3"
+applies_to_kernel = ">=7.2.4, <7.3"
 
 kernel = [
     "rk3576/npu/0001-dt-bindings-npu-rockchip-add-rk3576-rknn-core.patch",
@@ -353,17 +343,14 @@ kernel = [
     "rk3576/npu/0007-arm64-dts-rockchip-rk3576-add-npu-nodes.patch",
     "rk3576/npu/0008-accel-rocket-program-pc-task-con-per-soc-task-number.patch",
     "rk3576/npu/0009-accel-rocket-make-the-rk3576-completion-poll-period-tunable.patch",
-    "rk3576/npu/0010-accel-rocket-complete-jobs-that-never-reach-the-hardware.patch",
     "rk3576/npu/0011-accel-rocket-keep-the-iommu-domain-attached-across-jobs.patch",
     "rk3576/npu/0012-accel-rocket-retire-an-rk3576-job-on-the-dpu-completion.patch",
-    "rk3576/npu/0013-accel-rocket-take-the-job-s-iommu-domain-before-it-can-be-rejected.patch",
     "rk3576/npu/0014-accel-rocket-anchor-the-iova-allocator-to-the-iommu-domain.patch",
     "rk3576/npu/0015-accel-rocket-make-the-submit-ioctl-s-uapi-structs-extensible.patch",
     "rk3576/npu/0016-accel-rocket-run-a-job-s-tasks-in-one-hw-kick.patch",
     "rk3576/npu/0017-accel-rocket-let-userspace-name-a-job-s-completion-class.patch",
     "rk3576/npu/0018-accel-rocket-put-the-iommu-domain-when-create_bo-fails.patch",
     "rk3576/npu/0019-accel-rocket-free-the-scheduler-list-the-file-allocated.patch",
-    "rk3576/npu/0020-accel-rocket-do-not-free-the-task-array-twice.patch",
     "rk3576/npu/0021-accel-rocket-retire-an-rk3576-pooling-job-on-the-ppu-s-completion.patch",
     "rk3576/npu/0022-accel-rocket-retire-an-rk3576-job-on-the-hardware-s-own-account-of-the-kick.patch",
     "rk3576/npu/0023-accel-rocket-do-cache-maintenance-over-named-ranges-of-a-bo.patch",

@@ -23,17 +23,14 @@ messages, `Signed-off-by` and `Reviewed-by` lines intact. They compose after
 | 0007 | arm64: dts: rockchip: rk3576: add NPU (RKNN) nodes |
 | 0008 | accel/rocket: program PC_TASK_CON with the per-SoC TASK_NUMBER width (ours) |
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
-| 0010 | accel/rocket: complete jobs that never reach the hardware (ours) |
 | 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
 | 0012 | accel/rocket: retire an RK3576 job on the DPU's completion, not on `PC_DONE` (ours) |
-| 0013 | accel/rocket: take the job's IOMMU domain before it can be rejected (ours) |
 | 0014 | accel/rocket: anchor the IOVA allocator to the IOMMU domain (ours) |
 | 0015 | accel/rocket: make the submit ioctl's uAPI structs extensible (ours) |
 | 0016 | accel/rocket: run a job's tasks in one HW kick (ours) |
 | 0017 | accel/rocket: let userspace name a job's completion class (ours) |
 | 0018 | accel/rocket: put the IOMMU domain when `create_bo` fails (ours) |
 | 0019 | accel/rocket: free the scheduler list the file allocated (ours) |
-| 0020 | accel/rocket: do not free the task array twice (ours) |
 | 0021 | accel/rocket: retire an RK3576 pooling job on the PPU's completion (ours) |
 | 0022 | accel/rocket: retire an RK3576 job on the hardware's own account of the kick (ours) |
 | 0023 | accel/rocket: do cache maintenance over named ranges of a BO (ours) |
@@ -160,11 +157,10 @@ and is no longer a divergence. 0007 also emits the
 
 **0034 carries one local change: what it says about the other put.** Upstream's
 message notes that the remaining put in `rocket_job_run()` is a plain
-`pm_runtime_put()` left for its own patch. In this series 0010 already reached that
-path: the failed `pm_runtime_get_sync()` unwinds through `pm_runtime_put_noidle()`,
-which is right there and needs nothing, and the `iommu_attach_group()` failure below
-it already pairs `mark_last_busy()` with `put_autosuspend()`. The paragraph says that
-instead, so the patch describes the tree it is in.
+`pm_runtime_put()` left for its own patch. The kernel now unwinds that function
+through `err_put_pm`/`err_put_fences` and returns `ERR_PTR`, so the reference and the
+scheduler credit both come back on their own. The paragraph says that instead, so the
+patch describes the tree it is in.
 
 **Core 1 sits at `0x27708000`.** The two cores are the two halves of one 64 KB `RKNN TOP`
 window: the RK3576 TRM v1.2 address map has `RKNN TOP` at `0x27700000` (64 KB) and the
@@ -311,13 +307,13 @@ this hardware reaches it.
 
 ## What 0034 fixes: a core that never suspends after a reset
 
-The same failure 0010 describes -- a core pinned runtime-active for good -- has a
-third door, and it is the one on the reset path. `rocket_reset()` put the in-flight
+A core pinned runtime-active for good has one door the kernel's own `rocket_job_run()`
+error paths do not close, and it is the one on the reset path. `rocket_reset()` put the in-flight
 job's reference back with `pm_runtime_put_noidle()`. That decrements and requests
 nothing, so the core comes out of a timeout at usage_count 0, still runtime-active,
 with no idle request pending: it will not suspend until something else asks, and
-nothing else does. 0010 fixes `rocket_job_run()`'s two early returns; this fixes the
-timeout path. They are independent.
+nothing else does. The kernel's own error paths in `rocket_job_run()` cover the
+submit side; this fixes the timeout path.
 
 **It matters more here than on the RK3588, because on this SoC the power domain does
 work on power-on.** That work is the BIU reset cycle 0003 adds, and a core that never
@@ -335,164 +331,13 @@ every time on both kernels with no MMU message, so this is not rocket-wide and
 lowered timeout rather than a hung one, which he was careful to say it cannot settle;
 what it does settle is that the RK3588 shows nothing.
 
-## What 0010 fixes, and why it is not RK3576-specific
+## What 0014 fixes: a crash reachable from group `render`
 
-`rocket_job_run()` takes a runtime-PM reference and then attaches the IOMMU group.
-Both of its early returns leave the job half-started, and each of the two leaks that
-follow is enough on its own to pin the NPU runtime-active for good:
-
-- **The usage counter ratchets.** `pm_runtime_get_sync()` keeps its reference when the
-  resume fails, and the IOMMU path has already resumed successfully; neither is put.
-  `core->in_flight_job` is still `NULL`, so the completion path in
-  `rocket_job_handle_irq()` and the timeout path in `rocket_reset()` — both of which
-  only put when a job is in flight — never balance it.
-- **The scheduler never gets its credit back.** The fence handed to the scheduler is
-  one nothing will ever signal, so the job stays pending, and
-  `rocket_device_runtime_suspend()` returns `-EBUSY` for as long as a credit is
-  outstanding.
-
-The usage-counter half **outlives the driver**: the reference is on the platform
-device, which the OF core owns, so `rmmod`/`insmod` does not clear it — the freshly
-probed device comes back `active` and stays there until a reboot. That is the state
-in which the NPU's int32 output path silently writes nothing (its hazard is cleared
-by the power domain cycling, which a device that cannot suspend never does) while
-every other workload still passes, so it reads as a compute bug rather than a
-machine state.
-
-Measured on an H96 MAX M9 by failing the attach on one job [HW sweep]. Before, a
-single failure became self-sustaining — the job timed out at 500 ms, `rocket_reset()`
-called `rocket_core_reset()`, which takes the IOMMU down (`MMU_DTE_ADDR is not
-functioning`), so the next attach failed for real: one injected failure produced
-seven and leaked seven references, and the device then stayed `active` across a
-module reload. After, the injected failure is the only one — the job is retired with
-its error, the caller's next submit attaches and computes normally, no timeout fires,
-and the device suspends.
-
-The error paths are identical on the RK3588, which reaches them through the same
-`rocket_core_reset()`; the patch is in this series only because this is the part that
-wedges often enough to notice.
-
-## What 0009, 0011 and 0012 are for: the per-submit floor, and what actually bounds it
-
-`PC_DONE` is read-only in `INTERRUPT_MASK` on this SoC, so 0006 polls it on an hrtimer
-where the RK3588 takes an interrupt. A submit cannot complete faster than one poll, so
-that period is the per-submit floor and every RK3576 cost table is a submit-count table
-because of it. 0009 makes the period a module parameter; the shipped default is
-**50 us** (`poll_interval_us`).
-
-**What bounds it is not the poll rate.** `PC_DONE` means the program counter finished,
-not that the DPU's write DMA has drained, and the driver both tears down the IOMMU
-mapping and signals the fence as soon as it sees `PC_DONE`. A long period hides that
-behind its own detection lag. Two independent failures come out from under it, and
-they need separate fixes:
-
-- **The per-job IOMMU detach races the write drain.** Detaching on completion faults
-  writes still in flight, which leaves a *write* page fault active
-  (`RK_MMU_STATUS` `0x2b` = `PAGING_ENABLED|PAGE_FAULT_ACTIVE|IDLE|PAGE_FAULT_IS_WRITE`);
-  that blocks the next `enable_stall`, which the IOMMU reports as a timeout
-  (`0x1d` shows `STALL_ACTIVE` — the stall arrived, just after the poll gave up), and
-  the NPU raises `DMA_READ_ERROR|DMA_WRITE_ERROR`. **0011 removes this outright** by
-  keeping the domain attached across jobs.
-- **The fence is signalled before the writes are visible.** 0011 does not touch this
-  one; **0012 removes it** by retiring the job on the DPU's own completion — the
-  `DPU_0`/`DPU_1` bits in `INTERRUPT_RAW_STATUS`, which is what the RK3588 takes its
-  interrupt on — instead of on `PC_DONE`.
-
-Measured on an H96 MAX M9 with the int8 matmul gate, one run per point [HW sweep]:
-
-| poll period | 1000 us | 500 us | 250 us | 150 us |
-|---|---|---|---|---|
-| detach per job | 43/43 | 43/43 | 40/43 | 37/43 |
-| &nbsp;&nbsp;stall timeouts / DMA errors | 0 / 0 | 0 / 0 | 0 / 4 | 4 / 13 |
-| domain kept attached (0011) | 43/43 | 43/43 | 42/43 | 40/43 |
-| &nbsp;&nbsp;stall timeouts / DMA errors | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-
-### What 0012 retires on, and why the wait is bounded
-
-`INTERRUPT_RAW_STATUS` carries the signal that has drained: the `DPU_0`/`DPU_1` bits set
-tens to hundreds of microseconds *after* `PC_DONE`. Logged at the moment the poll retires
-[HW sweep]:
-
-```
-raw@retire=0x20000001 -> 0x30000155 after 82us
-```
-
-— `PC_DONE_1` with no DPU bit, then `DPU_0` (`0x100`).
-
-**Not every task raises one**, so the wait is bounded by `dpu_grace_us`, at the 500 us
-this patch defaults it to, past which the job retires anyway. (What that wait *starts*
-from is 0022's subject: `PC_DONE` alone is a per-task signal, and on a batched job it is
-not the kick being over. Whether that wait is bounded at all is 0025's: the shipped
-default is 0, which waits for the block.) A task whose DPU
-output element is wider than one byte — the int32 writer, and fp16 output — completes CNA
-and CORE and never sets a DPU bit at all (`raw=0x30000055`, held for milliseconds). The
-500 us default is twice what those tasks need: they still fail at 100 us (3 of 43 shapes)
-and pass at 250, 500, 1000 and 2000, and a longer grace only costs them wall time (the
-fp16 stem in the cost table is 13.5 ms at 500 us against 15.8 at 1000).
-
-With the DPU bit as the retire condition the poll period goes to 50 us. Per-submit cost of
-an 8x64x32 int8 matmul, n=300, us/submit [HW sweep]:
-
-| poll period | 500 us | 250 us | 125 us | 50 us | 25 us |
-|---|---|---|---|---|---|
-| retire on `PC_DONE` | 1065 | 731\* | 535\* | 433\* | — |
-| retire on the DPU bit | 1073 | 739 | 558 | 439 | 398 |
-
-\* *incorrect* — retiring on `PC_DONE`, the largest output surface in the int8 matmul gate
-fails 3 runs of 3 at 250 us with a **partial** surface (32x2048x3072, ~95-98k of 98304
-elements exact, the missing bytes a contiguous tail), and 7 of 43 shapes fail at 50 us.
-
-At the shipped defaults that is **2.42x** on every submit (1065 -> 439 us/submit), and the
-correctness is the point: retiring on the DPU bit, the gate is 43/43 at both 250 and 50 us,
-five runs in a row, and the full RK3576 gate set is clean at 50 us — convolution 102/102,
-the convolution library 154 + 8 refused, the int8 matmul gate 43/43 through both int32
-writers, the refusal gate 15/15, both fp16 sweeps, and nothing in `dmesg`.
-
-Whole-entry cost, NPU milliseconds [HW sweep]:
-
-| entry | 500 us / `PC_DONE` | 50 us / DPU bit |
-|---|---|---|
-| int8 stem 3x224x224 k3s2 oc32 | 4.00 | 3.33 |
-| conv 32->64 k1 56x56 | 3.12 | 1.90 |
-| conv 256->512 k1 14x14 | 3.78 | 2.46 |
-| dw 256 k3 14x14 | 1.42 | 1.00 |
-| matmul 32x1024x1024 | 5.83 | 4.74 |
-| matmul 32x1024x2560 | 13.37 | 11.17 |
-
-The RK3588 takes a completion interrupt and does not poll, so none of this reaches it.
-
-The upstream series' board patch (`arm64: dts: rockchip: rk3576-rock-4d: enable NPU`)
-is **not** carried: the board enable is board-specific. See below for what a board
-owes.
-
-## What 0013 and 0014 fix: two crashes reachable from group `render`
-
-`/dev/accel/accel0` is group `render`, so both of these are available to any client
-that may use the NPU at all. Neither is RK3576-specific -- the code is mainline's and
-the RK3576 enablement does not touch it; the RK3588 series carries the same two as 084
-and 085. They are here because this is the series the RK3576 image applies, and that
-image does not take the RK3588 series.
-
-**0013: the job reaches its destructor without its domain.** `rocket_job_cleanup()`
-puts `rjob->domain` unconditionally, but `rocket_ioctl_submit_job()` assigns it only
-after the task copy and both BO lookups have succeeded. Five rejection sites unwind
-through the cleanup ahead of that assignment -- a `task_struct_size` below
-`sizeof(struct drm_rocket_task)`, an unreadable `tasks` pointer, `regcmd_count == 0`,
-and either BO handle not existing -- so a malformed submit reaches
-`rocket_iommu_domain_put(NULL)`, which dereferences the NULL to get at the kref:
-
-```
-Internal error: Oops: 0000000096000004 [#1]  SMP
-pc : rocket_iommu_domain_put+0x50/0xac [rocket]
-lr : rocket_job_cleanup+0x20/0x23c [rocket]
-```
-
-Taking the reference at construction removes the window rather than teaching the put
-to tolerate NULL, so the next field added to that struct does not reopen it. The get
-cannot fail: `rocket_open()` creates the file's domain before the file is usable.
-Verified with `tests/uapi_submit_errpath_rocket` in rocket-userspace, one malformed
-submit per site from a forked child: 0 of 5 sites returned to userspace before, 5 of 5
-after.
+`/dev/accel/accel0` is group `render`, so this is available to any client that may use
+the NPU at all. It is not RK3576-specific -- the code is mainline's and the RK3576
+enablement does not touch it; the RK3588 series carries the same fix as 085. It is here
+because this is the series the RK3576 image applies, and that image does not take the
+RK3588 series.
 
 **0014: the IOVA allocator outlives its owner.** The allocator (`drm_mm` + `mm_lock`)
 lived in `rocket_file_priv` and was torn down in `rocket_postclose()`, but a BO's IOVA
@@ -596,11 +441,11 @@ self-chaining: an older kernel does not know the flag and would run a chained la
 down the per-task path. 1.4 and 1.6 are the bumps that add no uAPI -- what each names is
 a bound, which a caller that sizes its programs has no other way to ask about.
 
-## What 0018, 0019 and 0020 fix: two leaks and a double free
+## What 0018 and 0019 fix: two leaks
 
-Three more defects on the same footing as 0013 and 0014 -- mainline code the RK3576
-enablement does not touch, reachable by any client that may open `/dev/accel/accel0`
-at all. The RK3588 reaches all three; it carries 0020 as `rocket/087`.
+Two more defects on the same footing as 0014 -- mainline code the RK3576 enablement
+does not touch, reachable by any client that may open `/dev/accel/accel0` at all. The
+RK3588 reaches both.
 
 **0018: a failed `CREATE_BO` leaks the file's IOMMU domain.**
 `rocket_ioctl_create_bo()` takes a domain reference as soon as it has an object, and
@@ -626,29 +471,6 @@ driver keeps its own pointer and frees that after `drm_sched_entity_destroy()`, 
 the array belongs to the file rather than to the entity. Two smaller defects on the
 same path go with it: the `kmalloc` return was unchecked, and the
 `drm_sched_entity_init()` failure path leaked the array.
-
-**0020: the submit ioctl's task array is freed twice.** `rocket_copy_tasks()` frees
-`rjob->tasks` on its `fail:` path without clearing the pointer, and its only caller
-unwinds through `rocket_job_cleanup()`, which frees `job->tasks` unconditionally. Two
-failures reach it and both are ordinary userspace input: the task copy fails, or
-`task.regcmd_count` is 0 -- which is what a userspace whose register-program generator
-refused a shape submits if it submits anyway. It is an unprivileged double free of a
-kmalloc-16 object, one of the hottest caches in the kernel, so the damage surfaces far
-from here in whatever allocates next. It was chased through two faults that are not
-defects in the paths they appeared in: a scatterlist walked in
-`drm_gem_shmem_release()` from `rocket_gem_bo_free()`, and a wild `phys_to_virt()`
-inside `swiotlb_bounce()` reached from `drm_gem_shmem_get_pages_sgt()`. With
-`slub_debug=FZPU slab_nomerge` it is deterministic -- two
-
-```
-BUG kmalloc-16: Object already free
-```
-
-reports per run of a client that submits rejected jobs, naming
-`rocket_ioctl_submit()` as the allocation site and `rocket_job_cleanup()` as the
-second free -- before, and zero after, over ten rounds of the full gate sequence on a
-clean boot. The fix gives the array a single owner: `rocket_job_cleanup()` already
-frees it on every path out of the ioctl, so the `fail:` path only has to stop.
 
 ## What 0021 is for: the class of job that raises no DPU completion at all
 

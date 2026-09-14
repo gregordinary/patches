@@ -5,10 +5,9 @@
 # 7.1 or 7.2 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
 # (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
-# A series is owned by a kernel definition, not a device. It spans the 7.1 and 7.2
-# generations from one file, because 35 of its 38 kernel-list entries are identical
-# across them: only 050 and 072 turn on the kernel version, and each carries its
-# own `kernels` range below. Each list is the
+# A series is owned by a kernel definition, not a device. It targets 7.2.4 and later,
+# where the rocket driver carries the job-push and task-array fixes this series used to,
+# and every entry applies unconditionally. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
 # tree's list may span scopes (the kernel tree interleaves the media-accel,
 # rocket and crypto scopes). Paths are relative to this repo's root.
@@ -25,7 +24,7 @@
 #
 # The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
 # against, not because 7.3 is known to break it.
-applies_to_kernel = ">=7.1.5, <7.3"
+applies_to_kernel = ">=7.2.4, <7.3"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
 # in ascending numeric order satisfies the series' dependencies: npu-volt needs
@@ -131,7 +130,7 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # the VPU981 file is shared, so any SoC that binds HANTRO_AV1_DECODER gets the fix.
 # The divide-by-zero and the scratch overflow are also the two defects upstream's
 # "[PATCH v3 0/9] media: bound stateless HEVC/AV1 tile counts" 6-7 guard; if that series
-# merges, drop 074 rather than carry it, the same silent-absorption trap 050 has.
+# merges, drop 074 rather than carry it, the same silent-absorption trap 073 has.
 # Note 074 rejects through rockchip_vpu981_av1_dec_run()'s prepare_error path, which is
 # buggy in the base kernel -- that is what 075 fixes; see below.
 #
@@ -149,7 +148,7 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # fully clean. It is a codec-agnostic core change touching every hantro codec's ->run()
 # caller and hantro_end_prepare_run()'s signature, so it is carried as its own patch rather
 # than folded into 074, and it is dropped when it lands upstream -- the same silent
-# retirement 050 and 073 have. The rest of that series (the VPU720 JPEG decoder, patches
+# retirement 073 has. The rest of that series (the VPU720 JPEG decoder, patches
 # 4-7) is deliberately NOT carried: no ffmpeg path drives a Rockchip hardware JPEG decoder,
 # so the driver would have no consumer here (see TODO.md section 4).
 #
@@ -179,8 +178,8 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # non-keyframe, 4:2:2 and 4:4:4 (profiles 1 and 3, which the hardware cannot do and
 # the control's menu_skip_mask refuses), and seven not yet root-caused. Patch 4/4 of
 # that posting is not taken; 076 makes that change on its own terms. This is the
-# only decode the stack was missing on this SoC, and it retires the way 050 and 073
-# do -- dropped when it merges, not rebased.
+# only decode the stack was missing on this SoC, and it retires the way 073 does --
+# dropped when it merges, not rebased.
 #
 # 080 is the delta that makes 079 build here, and it exists for the same reason 071
 # does: the vendored code is written against a tree this series has already changed.
@@ -256,15 +255,7 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # rather than clamped. 8176 is 511 macroblocks and the last size that works. The
 # format entry is shared by the Rockchip JPEG encoder variants, so the correction
 # reaches all of them; it was measured on the RK3588 VEPU121 that 0019 drives.
-#
-# 087 is a double free of the submit ioctl's task array: rocket_copy_tasks() frees
-# it on its failure path and leaves the pointer set, and rocket_job_cleanup() then
-# frees it again on the way out of the ioctl. Both reaching failures are ordinary
-# userspace input and /dev/accel is group `render`, so it is an unprivileged double
-# free of a kmalloc-16 object. Validated on RK3588 silicon under slub_debug: six
-# "Object already free" reports over three runs without it, zero with it, and the
-# test exits 0 either way -- so no gate catches this without slub_debug. The
-# RK3576 carries the same fix as rk3576/npu 0020.
+
 #
 # 088 resets the NPU before detaching its IOMMU domain. rocket_reset() is entered
 # because the core is wedged -- the one caller a client can reach is
@@ -296,19 +287,13 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # carries the same four lines for its own SoC; when a kernel arrives with 089 upstream,
 # both copies have to go.
 #
-# 050 is the AV1 decoder's IOMMU and applies to 7.1 only. Four of its five patches --
-# the binding, the driver, the RK3588 DT node and the MAINTAINERS entry -- are in 7.2
-# as `iommu: Add verisilicon IOMMU driver` and its two follow-up cleanups, and the
-# tree's copy is the newer one, so on 7.2 the patch is not rebased but dropped.
-#
-# Its fifth hunk did not land, and it is load bearing: `CONFIG_VSI_IOMMU` is a
-# tristate with no default, so on 7.2 a consumer whose `base_defconfig` is the
-# in-tree arm64 `defconfig` builds no AV1 IOMMU at all and AV1 decode fails at
-# probe. Set the symbol from a kconfig fragment -- the series cannot, since a
-# defconfig hunk is all a patch has, and adding one back would only re-open the
-# conflict. This is the silent-absorption trap in its exact shape: the part that
-# breaks a build is the part upstream did not take, and `git am --3way` reports
-# nothing either way.
+# The AV1 decoder's IOMMU is the kernel's own from 7.2 (`iommu: Add verisilicon IOMMU
+# driver`), so this series carries no patch for it. `CONFIG_VSI_IOMMU` is a tristate
+# with no default, so a consumer whose `base_defconfig` is the in-tree arm64 `defconfig`
+# builds no AV1 IOMMU at all and AV1 decode fails at probe: the symbol has to come from
+# a kconfig fragment, and `fragments/accel/full.config` is where it does. A patch could
+# not supply it -- a defconfig hunk is all a patch has, and it would conflict on every
+# bump.
 #
 # 090 takes rocket_job_handle_irq()'s OPERATION_ENABLE and INTERRUPT_CLEAR writes under
 # job_lock. rocket_job_hw_submit() writes OPERATION_ENABLE from inside that lock, so a
@@ -346,24 +331,7 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # has returned. It does
 # not close the window where a handler has already read in_flight_job -- that is 090's
 # -- and the two are complementary. rk3576/npu 0028 is the same change for that SoC.
-#
-# 092 checks the bos array allocation in rocket_job_push() and computes its element
-# count with check_add_overflow(). The two halves are not equally reachable. The missing
-# NULL check is the one that matters: kvmalloc_array() can fail under ordinary memory
-# pressure at entirely ordinary BO counts, and the memcpy() on the next line then writes
-# through NULL, so a submit from either frontend oopses a kernel that is merely short of
-# memory. The unchecked sum is hardening -- in_bo_count and out_bo_count are u32 taken
-# verbatim from the ioctl and summed in u32, so the sum can wrap to a shorter allocation
-# than the copies and drm_gem_lock_reservations() go on to use, but reaching it needs the
-# two counts to sum past 2^32 while each survives its own drm_gem_objects_lookup(), which
-# allocates count pointers first. That gate is incidental, not a guarantee.
-#
-# It is upstream a85402bff218, in no released kernel: drivers/accel/rocket is
-# byte-identical in 7.1 and 7.2 and the fix sits in drm-next for 7.3. Drop this file when
-# the ceiling above moves past 7.2. Its first hunk adds linux/overflow.h to an include
-# block that 083 (kref.h) and 086 (moduleparam.h) grow, so it applies under strict git am
-# only from 086 onward; ascending numeric order satisfies that, and the fix itself
-# depends on nothing.
+
 #
 # 093 arms the interrupt the in-flight job can actually raise. PC_OPERATION_ENABLE is a
 # per-block bitmap and the completion classes are disjoint: a convolution or a matmul
@@ -412,7 +380,7 @@ applies_to_kernel = ">=7.1.5, <7.3"
 # (rocket_job_run, rocket_job_timedout) dereference the result unchecked, so unbinding a
 # middle core NULL-derefs from the surviving core's job queue and from its reset work.
 # One line, and it reads max_cores, so it does NOT COMPILE without 094 -- a hard
-# dependency, not diff context like 092's.
+# dependency, not the diff-context kind that ascending order alone satisfies.
 #
 # 095 changes what core->index means. rocket_job_hw_submit() scales it into the CNA and
 # CORE S_POINTER registers as 0x10000000 * index, which the vendor driver derives from
@@ -495,12 +463,10 @@ kernel = [
     "media-accel/kernel/043-v4l2-export-max-parallel-jobs.patch",
     "media-accel/kernel/044-rkvdec-split-core-and-master.patch",
     "media-accel/kernel/045-rkvdec-multicore.patch",
-    { path = "media-accel/kernel/050-av1-iommu-v14-curated.patch", kernels = "<7.2" },
     "media-accel/kernel/060-vepu580-rcawston-v3.patch",
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
     "media-accel/kernel/071-rga-multicore-fixups.patch",
-    { path = "media-accel/kernel/072-rk3588-rga-dts-7.1.patch", kernels = "<7.2" },
-    { path = "media-accel/kernel/072-rk3588-rga-dts-7.2.patch", kernels = ">=7.2" },
+    "media-accel/kernel/072-rk3588-rga-dts-7.2.patch",
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
     "media-accel/kernel/074-rkvdec-av1-bound-tile-counts.patch",
     "media-accel/kernel/075-hantro-fix-run-fail-cleanup.patch",
@@ -520,12 +486,10 @@ kernel = [
     "rocket/084-rocket-drv-fix-bo-mm-uaf.patch",
     "rocket/085-rocket-drv-uapi-extensible-structs.patch",
     "rocket/086-rocket-drv-batched-submit.patch",
-    "rocket/087-rocket-drv-fix-task-array-double-free.patch",
     "rocket/088-rocket-drv-reset-before-iommu-detach.patch",
     "rocket/089-rocket-drv-clocks-by-name.patch",
     "rocket/090-rocket-drv-irq-under-job-lock.patch",
     "rocket/091-rocket-drv-irq-sync-before-reset.patch",
-    "rocket/092-rocket-drv-fix-job-push-null-and-overflow.patch",
     "rocket/093-rocket-drv-ppu-completion.patch",
     "rocket/094-rocket-drv-find-core-all-slots.patch",
     "rocket/095-rocket-drv-core-hw-index.patch",

@@ -12,7 +12,7 @@ the SPS counts that say how much of each array to read are u8.
 Three of those values index fixed-size arrays:
 
   - num_short_term_ref_pic_sets and num_long_term_ref_pics_sps are the
-    loop bounds over the two 65-entry array controls, and they index the
+    loop bounds over the 64- and 32-entry array controls, and they index the
     RPS table by set: RPS_ST_REF_SET_*(i) is defined for i up to 63 and
     RPS_LT_REF_*(i) for i up to 31, so a larger count writes outside
     struct rkvdec_rps.
@@ -46,14 +46,14 @@ tested; make it a kcalloc() and return if it fails.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- .../rockchip/rkvdec/rkvdec-hevc-common.c      | 86 +++++++++++++++++--
+ .../rockchip/rkvdec/rkvdec-hevc-common.c      | 88 ++++++++++++++++---
  .../rockchip/rkvdec/rkvdec-hevc-common.h      | 16 ++++
  .../rockchip/rkvdec/rkvdec-vdpu381-hevc.c     |  5 +-
  .../rockchip/rkvdec/rkvdec-vdpu383-hevc.c     |  5 +-
- 4 files changed, 101 insertions(+), 11 deletions(-)
+ 4 files changed, 102 insertions(+), 12 deletions(-)
 
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
-index f6191079c..eb0c9217d 100644
+index 588fe23f7..6eb286a2c 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
 @@ -32,6 +32,56 @@ struct calculated_rps_st_set {
@@ -65,7 +65,7 @@ index f6191079c..eb0c9217d 100644
 + * nothing in the V4L2 core bounds them.  Both index the RPS table the decoder
 + * reads: a short-term set past 64, or a long-term entry past 32, is written
 + * outside struct rkvdec_rps entirely.  The same counts are the loop bounds over
-+ * the two RPS array controls, which hold 65 entries each.
++ * the two RPS array controls, which hold 64 and 32 entries.
 + */
 +int rkvdec_hevc_validate_sps_rps_counts(struct rkvdec_ctx *ctx,
 +					const struct v4l2_ctrl_hevc_sps *sps)
@@ -124,7 +124,16 @@ index f6191079c..eb0c9217d 100644
  {
  	const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps_data = &run->ext_sps_st_rps[idx];
  	struct calculated_rps_st_set *st_rps = &calculated_rps_st_sets[idx];
-@@ -238,6 +288,16 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
+@@ -233,7 +283,7 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
+ 	int dPoc;
+ 
+ 	if ((unsigned int)rps_data->delta_idx_minus1 + 1 > idx)
+-		return;
++		return -EINVAL;
+ 
+ 	ref_rps_idx = st_rps_idx - (rps_data->delta_idx_minus1 + 1); /* 7-59 */
+ 	delta_rps = (1 - 2 * rps_data->delta_rps_sign) *
+@@ -241,6 +291,16 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
  
  	ref_rps = &calculated_rps_st_sets[ref_rps_idx];
  
@@ -141,7 +150,7 @@ index f6191079c..eb0c9217d 100644
  	for (j = 0; j <= ref_rps->num_delta_pocs; j++) {
  		used_by_curr_pic_flag[j] = !!(rps_data->used_by_curr_pic & (1 << j));
  		use_delta_flag[j] = !!(rps_data->use_delta_flag & (1 << j));
-@@ -290,6 +350,8 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
+@@ -293,6 +353,8 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
  	st_rps->num_positive_pics = i;
  
  	st_rps->num_delta_pocs = st_rps->num_positive_pics + st_rps->num_negative_pics;
@@ -150,7 +159,7 @@ index f6191079c..eb0c9217d 100644
  }
  
  /*
-@@ -353,23 +415,29 @@ static void rkvdec_hevc_prepare_hw_st_rps(struct rkvdec_hevc_run *run, struct rk
+@@ -356,23 +418,29 @@ static void rkvdec_hevc_prepare_hw_st_rps(struct rkvdec_hevc_run *run, struct rk
  		return;
  
  	struct calculated_rps_st_set *calculated_rps_st_sets =
@@ -269,3 +278,4 @@ index 10b9947e4..1bb680d29 100644
  
 -- 
 2.43.0
+

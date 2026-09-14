@@ -22,12 +22,10 @@ cherry-pick.
 | **Required** | `081-rocket-drv-npu-clk.patch` | Raises the NPU compute clock from its 200 MHz boot default to 600 MHz (~1.43× throughput), and makes the park of that clock correct: refcounted (the three cores share one clock) and given a deadline that outlives a host-side gap within one inference. Without it the NPU runs at one-fifth speed; with the lever but without the park fixes it is *worse than stock*. |
 | **Required** | `084-rocket-drv-fix-bo-mm-uaf.patch` | Fixes a **use-after-free** on file close. A latent upstream bug, not a tuning knob. |
 | **Required** | `085-rocket-drv-uapi-extensible-structs.patch` | Fixes a **kernel oops any client can trigger with one malformed submit** (a NULL `job->domain` dereferenced on the cleanup path) and a submit error the ioctl was silently discarding. Also makes the descriptors extensible, which is the precondition for `086`. |
-| **Required** | `087-rocket-drv-fix-task-array-double-free.patch` | Fixes an **unprivileged double free** of the submit ioctl's task array, reached by ordinary userspace input — a bad task pointer, or a job that asks for no registers. The object is kmalloc-16, so the corruption surfaces far from the driver. Verified on RK3588 silicon, and on the RK3576 where the function is byte-identical. |
 | **Required** | `088-rocket-drv-reset-before-iommu-detach.patch` | Resets the NPU **before** detaching its IOMMU domain. Detaching a core that is still mid-DMA makes the `rk_iommu` stall handshake time out — a `dev_err` per MMU bank on every faulting job, and a **WARN in the IOMMU core** (a taint, and a panic under `panic_on_warn`) when the handshake behind the group's default domain fails too. Reached by any client of `/dev/accel` pointing one unvalidated `regcmd` field at an unmapped address. Needs `083`. |
 | **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
 | **Required** | `090-rocket-drv-irq-under-job-lock.patch` | Takes the completion's `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` under `job_lock`. `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside that lock, so the completion's zero can land after a submit's one and stop a task that has only just started. The second writer is `rocket_reset()`, which a client reaches through the same unvalidated `regcmd` IOVA as `088`. |
 | **Required** | `091-rocket-drv-irq-sync-before-reset.patch` | `090`'s other half. `rocket_reset()` calls `drm_sched_stop()`, which stops the scheduler and returns without waiting for a threaded handler that is already running — so the comment that followed it, "Remaining interrupts have been handled", stated an assumption rather than something the code arranged. A `synchronize_irq()` between the stop and the `job_lock` guard makes it true, and clearing `INTERRUPT_MASK` and `INTERRUPT_CLEAR` first — under `pm_runtime_get_if_active()`, since the function holds no reference of its own — fences both the completion the hardware is still entitled to raise and the one already latched, which the hardirq would find on its shared line and hand to the thread again. From the RK3576 series at its v12 posting: Jiaxing Hu's patch, suggested by Igor Paunovic. |
-| **Required** | `092-rocket-drv-fix-job-push-null-and-overflow.patch` | Checks the `bos` allocation in `rocket_job_push()`. `kvmalloc_array()` can fail at entirely ordinary BO counts, and the `memcpy()` on the next line then writes through **NULL** — an ordinary submit oopses a kernel that is merely short of memory. Also sums the two BO counts with `check_add_overflow()`, which `u32` arithmetic could otherwise wrap to a shorter allocation than the copies use. Upstream `a85402bff218`, in no released kernel — **drop it once you build 7.3**. |
 | **Required** | `094-rocket-drv-find-core-all-slots.patch` | Makes core removal find every core. `rocket_remove()` decrements `num_cores` while `find_core_for_dev()` searches `0..num_cores-1`, so the last core unbound is never found, the device is never torn down, and the next bind round writes **past the end of the core array**. Records the allocated count and searches all of it. Igor Paunovic's, from linux-rockchip; `Cc: stable`. Needed by `096`. |
 | **Required** | `095-rocket-drv-core-hw-index.patch` | Makes the driver tell the hardware which core it is talking to. `core->index` is assigned the **bind-order slot** but is used as the **hardware core number**, scaled into the CNA/CORE `S_POINTER` registers as `0x10000000 * index`. They agree only while the cores bind as a prefix of the devicetree nodes in devicetree order; otherwise tasks on a mis-numbered core time out and the inference returns **wrong output**. Igor Paunovic's, from linux-rockchip; `Cc: stable`. |
 | **Required** | `096-rocket-drv-sched-to-core-all-slots.patch` | `094`'s other half, in `sched_to_core()`. Same shrinking search range, and neither caller checks for NULL, so unbinding a middle core **NULL-derefs from the job queue and from reset work** on a core that is still running. Igor Paunovic's, reported by Sidong Yang; `Cc: stable`. Needs `094`. |
@@ -70,27 +68,15 @@ Seven, and all of them are real (not just diff context):
   register access takes an async SError. The comment `097` rewrites is also `091`'s, so
   it does not apply to a tree without it either.
 
-`081`, `083`, `084`, `085`, `087`, `089`, `090`, `091`, `094` and `095` each apply to a pristine
+`081`, `083`, `084`, `085`, `089`, `090`, `091`, `094` and `095` each apply to a pristine
 tree on their own, in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
 if you are unsure, just apply them lowest-number first.
-
-`087` in particular depends on nothing: the `fail:` path it removes the `kvfree()` from is
-mainline's, so the double free is reachable on a tree with none of the others applied. `085`
-adds a second way *into* that path — a submit carrying a trailing field the kernel does not
-know — but it does not create the bug.
 
 `091` is correct on its own too — the `INTERRUPT_MASK` clear and the `synchronize_irq()`
 after `drm_sched_stop()` fence the block and a running handler whatever else is applied,
 and the register and the runtime-PM helpers they reach for are all mainline's. What `090`
 changes is only *where* the wait may go: once the handler holds `job_lock` for its whole
 body, it can no longer be moved inside the guard, and the comment in `091` says so.
-
-`092` is the exception this section is worded to exclude: a **diff-context** dependency
-rather than a real one. The fix itself stands alone — nothing in it needs another patch —
-but its first hunk adds `#include <linux/overflow.h>` to a block whose trailing context
-`083` (`linux/kref.h`) and `086` (`linux/moduleparam.h`) grow. So it applies under strict
-`git am` only from `086` onward, and needs `patch -p1` fuzz on a pristine tree or on any
-subset below that. Ascending numeric order satisfies it; a cherry-pick may not.
 
 ## The uAPI header is part of the kernel you build
 
@@ -139,39 +125,15 @@ build](#the-uapi-header-is-part-of-the-kernel-you-build).
 | `081` `083` `084` `085` | yes | yes | 64/64 | stable | yes |
 | `081` `083` `084` `085` `086` — **the full series** | yes | yes | 64/64 | stable | yes |
 
-`087` is not a row here, because the columns above cannot see it. It deletes a `kvfree()`
-from a rejection path that never reaches the hardware, so it moves no measured number —
-the rows describe the series with it applied.
-
-It has its own A/B instead, on a **Turing RK1** running `7.1.1-1-arm64` with
-`slub_debug=FZPU slab_nomerge`, against an out-of-tree module pair built from stock
-v7.1.1 plus `081`-`086` with and without `087`, `srcversion` asserted before each arm and
-each arm on its own clean boot (a SLUB report sets `TAINT_BAD_PAGE`, so the fixed module is
-never measured on a kernel the control already corrupted):
-
-| Arm | `BUG kmalloc-16: Object already free` over 3 runs | taint | test exit |
-|---|---|---|---|
-| `081`-`086`, no `087` | **6** | 4608 → **4640** | 0, 0, 0 |
-| `081`-`087` | **0** | 4608 → 4608 | 0, 0, 0 |
-
-Two reports per run in the control arm — the [two rejection sites that reach the `fail:`
-label](#submit-task-array-double-free-087-rocket-drv-fix-task-array-double-freepatch),
-where the mechanism, the report itself and how to reproduce it are set out.
-
-**The test exits 0 in both arms**, which is the trap worth carrying forward: a suite that
-drives rejection paths can be corrupting the kernel while passing, and `slub_debug` is the
-only thing that tells them apart. The RK3576 reaches the same defect and carries the same
-fix as `rk3576/npu` 0020.
-
 `088` is not a row either, and for the same reason: it changes nothing a passing job can
-see. Its A/B is on a **Turing RK1** (7.1.1, `081`-`087` built out of tree), driving thirty
+see. Its A/B is on a **Turing RK1** (7.1.1, the rest of the series built out of tree), driving thirty
 client-requested DMA faults per arm — `tests/uapi_regcmd_fault_rocket` in both its read and
 write modes, fifteen rounds each, over two independent rounds:
 
 | Arm | "NPU job timed out" | `Enable stall request timed out` | ctest | taint |
 |---|---|---|---|---|
-| `081`-`087`, no `088` | 30 | **60** (two per fault, one per MMU bank) | — | — |
-| `081`-`088` | 30 | **0** | 83/83 | unmoved |
+| the rest of the series, no `088` | 30 | **60** (two per fault, one per MMU bank) | — | — |
+| with `088` | 30 | **0** | 83/83 | unmoved |
 
 The `WARN` itself is intermittent — it needs the second handshake, the one behind the
 default domain, to fail as well — and it did not fire in either arm. What is measured is
@@ -377,89 +339,6 @@ is in force.
 **No ABI change and no behavior change on today's layouts** — `offsetofend(v1 tail)` equals
 `sizeof()` for both structs, so the accepted set is identical. Beyond the crash fix, its value
 is that the *next* uAPI addition does not break anyone. `086` is that addition.
-
-## Submit task-array double free (`087-rocket-drv-fix-task-array-double-free.patch`)
-
-Independent — applies to a pristine tree on its own.
-
-`rocket_copy_tasks()` allocates `rjob->tasks` and frees it again on its `fail:` path
-**without clearing the pointer**. Its only caller unwinds through `rocket_job_put()` →
-`rocket_job_cleanup()`, which frees `job->tasks` unconditionally. One allocation goes back
-to the allocator twice, and `struct rocket_task` is 16 bytes — so the object comes from
-**kmalloc-16**, one of the hottest caches in the kernel. The freelist then hands it to two
-owners and the damage surfaces in whatever allocates next rather than here. The fix gives
-the array a single owner: `rocket_job_cleanup()` already frees it on every path out of the
-ioctl, including the ones that never reach the hardware, so the `fail:` path only has to
-stop.
-
-`/dev/accel/accel0` is group `render`, so any member of that group reaches it with one
-`DRM_IOCTL_ROCKET_SUBMIT`. Exactly **two** of the five rejections a malformed submit can
-hit fall after the allocation, which is what fixes the report count at two per run:
-
-| Malformation | Where it is rejected | Reaches `fail:`? |
-|---|---|---|
-| `task_struct_size` below the v1 minimum | before the alloc | no |
-| `task_count == 0` | before the alloc | no |
-| unreadable `drm_rocket_job.tasks` pointer (with `085`, also a trailing field this kernel does not know) | the copy loop's `copy_from_user` | **yes** |
-| `drm_rocket_task.regcmd_count == 0` | the copy loop's own check | **yes** |
-| no such `in_bo` / `out_bo` handle | `drm_gem_objects_lookup()`, after the copy returns 0 | no |
-
-The `regcmd_count == 0` case is not hypothetical: **a userspace register-program generator
-that refuses a shape leaves `regcmd_count` at its zeroed value**, and a caller that submits
-anyway lands exactly there. That is how this was first reached.
-
-The A/B that establishes it is in [the compatibility
-matrix](#compatibility-matrix) — six reports over three runs without the patch, zero with
-it. The first of the six, trimmed:
-
-```
-BUG kmalloc-16 (Tainted: G        W  O       ): Object already free
-
-Allocated in rocket_ioctl_submit+0x2b4/0xe4c [rocket] age=0 cpu=2 pid=813
-Freed in kvfree+0x3c/0x4c age=0 cpu=2 pid=813
- kvfree+0x3c/0x4c
- rocket_ioctl_submit+0x3c4/0xe4c [rocket]        <-- the fail: label
-Object   ffff00010a789110: 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b 6b a5  kkkkkkkkkkkkkkk.
-
-WARNING: mm/slub.c:1220 at object_err+0x214/0x2f4, CPU#2: uapi_submit_err/813
-CPU: 2 UID: 1000 PID: 813 Comm: uapi_submit_err Tainted: G    B   W  O        7.1.1-1-arm64
-Hardware name: Turing Machines RK1 (DT)
-Call trace:
- kvfree+0x3c/0x4c
- rocket_job_cleanup+0x168/0x24c [rocket]         <-- the second free
- rocket_ioctl_submit+0x450/0xe4c [rocket]
-```
-
-Three things that pins which prose cannot: the allocation site and both frees are the
-three lines named above; the object is already SLUB-poisoned (`6b` = `POISON_FREE`) when
-the second `kvfree()` reaches it; and **`UID: 1000`** — an unprivileged user, via `render`
-group membership. `rocket_copy_tasks()` is `static` and inlined into
-`rocket_ioctl_submit()`, which is why both the allocation and the first free appear at
-offsets in that symbol rather than under their own name.
-
-To reproduce, with the driver's error paths driven by
-`rocket-userspace/tests/uapi_submit_errpath_rocket.c`:
-
-```sh
-# add `slub_debug=FZPU slab_nomerge` to the kernel command line, then reboot
-sudo rmmod rocket && sudo insmod /path/to/rocket.ko      # one arm per boot
-for r in 1 2 3; do ./build/uapi_submit_errpath_rocket; done
-sudo dmesg | grep -c "Object already free"
-cat /proc/sys/kernel/tainted
-```
-
-**One arm per boot.** A SLUB report sets `TAINT_BAD_PAGE`, so a fixed module measured
-after a control run is running on a kernel the control already corrupted. The gates are
-also slower under `slub_debug`, so restore the command line afterwards.
-
----
-
-# The rest of the series
-
-None of the three below is load-bearing for correctness. But `083` and `086` are the
-dispatch-floor pair and are what the userspace projects' published figures assume — skipping
-them does not get you a broken system, it gets you a slower one than anything documented.
-`082` is the only patch here that genuinely costs nothing to omit today.
 
 ## Reset before IOMMU detach (`088-rocket-drv-reset-before-iommu-detach.patch`)
 
@@ -679,43 +558,6 @@ so nothing else changes. `rk3576/npu` 0027 is the same change for that SoC, wher
 completion poll and the interrupt thread are separate contexts and make the two writers
 concurrent outright.
 
-## The `bos` allocation in `rocket_job_push()` (`092-rocket-drv-fix-job-push-null-and-overflow.patch`)
-
-`rocket_job_push()` builds a temporary array of every input and output GEM object:
-
-```c
-bos = kvmalloc_array(job->in_bo_count + job->out_bo_count, sizeof(void *),
-		     GFP_KERNEL);
-memcpy(bos, job->in_bos, job->in_bo_count * sizeof(void *));
-```
-
-Two things are wrong with it, and they are not equally reachable.
-
-**The missing NULL check is the one that matters.** `kvmalloc_array()` can fail under
-memory pressure at entirely ordinary BO counts, and the `memcpy()` on the next line then
-writes through NULL. An ordinary submit from either frontend oopses the kernel on a
-machine that is merely short of memory — no malformed input required, which is what
-separates this from the other reachability arguments on this page.
-
-**The unchecked sum is hardening.** `in_bo_count` and `out_bo_count` are both `u32` taken
-verbatim from the ioctl's `in_bo_handle_count` / `out_bo_handle_count` with no validation
-in between, so their sum is computed in `u32` and can wrap to a smaller allocation than
-the copies and `drm_gem_lock_reservations()` go on to use. Reaching that needs the two
-counts to sum past 2^32 while each survives its own `drm_gem_objects_lookup()`, which
-allocates `count` pointers and resolves every handle first — so the preceding allocations
-gate it in practice. `check_add_overflow()` fixes it anyway: the gate is incidental, not a
-guarantee.
-
-This is upstream `a85402bff218` ("accel/rocket: fix NULL dereference and integer overflow
-in rocket_job_push()", Muhammad Bilal, applied by Tomeu Vizoso, Cc: stable), carried here
-because it is in **no released kernel** — `drivers/accel/rocket` is byte-identical in v7.1
-and v7.2, and the fix sits in drm-next for v7.3. **Drop this patch when the kernel you
-build reaches 7.3**, where `git am --3way` would otherwise absorb it silently rather than
-reject it — the same trap `089` and `rk3576/npu` 0006 carry.
-
-Not represented in the compatibility matrix above: it is a correctness fix on an
-allocation-failure path, and no row on this page was measured with it applied.
-
 ## Pooling completion (`093-rocket-drv-ppu-completion.patch`)
 
 `rocket_job_hw_submit()` arms `INTERRUPT_MASK` with the DPU pair and
@@ -862,12 +704,12 @@ make unbinding one core out of several safe — an open client keeps an entity p
 scheduler of the core that went away and waits forever on a fence that never signals — but
 the NULL dereference is what belongs in a fix.
 
-Unlike `092`'s diff-context dependency, this one is a compile error: keep `096` out of any
+This is a compile error, not the diff-context kind ascending order alone settles: keep `096` out of any
 subset that omits `094`.
 
 ### What `094`–`096` were measured against
 
-Turing RK1, kernel 7.2.0-1-arm64, 2026-09-05, over the sixteen patches `081`–`096`. All of them apply to pristine mainline
+Turing RK1, kernel 7.2.0-1-arm64, 2026-09-05, over the series through `096`. All of it applies to pristine mainline
 `drivers/accel/rocket/` under strict `git am`, in ascending order; the module builds clean
 out of tree against `/lib/modules/7.2.0-1-arm64/build`, loads, all three cores bind and the
 driver reports `rocket 1.3.0`. The full RK3588 gate list of `rocket-userspace` passes with
@@ -937,12 +779,10 @@ git am --3way $P/083-rocket-drv-iommu-keepattach.patch         # recommended (di
 git am --3way $P/084-rocket-drv-fix-bo-mm-uaf.patch            # required (use-after-free fix)
 git am --3way $P/085-rocket-drv-uapi-extensible-structs.patch  # required (oops fix); needed by 086
 git am --3way $P/086-rocket-drv-batched-submit.patch           # recommended; needs 083 + 085
-git am --3way $P/087-rocket-drv-fix-task-array-double-free.patch  # required (double-free fix)
 git am --3way $P/088-rocket-drv-reset-before-iommu-detach.patch    # required (IOMMU stall/WARN); needs 083
 git am --3way $P/089-rocket-drv-clocks-by-name.patch           # required (driver holds the wrong clocks)
 git am --3way $P/090-rocket-drv-irq-under-job-lock.patch       # required (completion vs submit race)
 git am --3way $P/091-rocket-drv-irq-sync-before-reset.patch     # required (090's other half)
-git am --3way $P/092-rocket-drv-fix-job-push-null-and-overflow.patch  # required (NULL deref); drop at 7.3
 git am --3way $P/093-rocket-drv-ppu-completion.patch            # recommended (pooling completion); needs 086
 git am --3way $P/094-rocket-drv-find-core-all-slots.patch      # required (array overrun); needed by 096
 git am --3way $P/095-rocket-drv-core-hw-index.patch            # required (wrong core number -> wrong output)

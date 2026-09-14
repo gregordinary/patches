@@ -51,10 +51,10 @@ onto this series.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- drivers/accel/rocket/rocket_core.c | 14 ++++++-
- drivers/accel/rocket/rocket_core.h | 11 ++++++
- drivers/accel/rocket/rocket_job.c  | 63 ++++++++++++++++++++++++------
- 3 files changed, 76 insertions(+), 12 deletions(-)
+ drivers/accel/rocket/rocket_core.c | 14 ++++++++-
+ drivers/accel/rocket/rocket_core.h | 11 +++++++
+ drivers/accel/rocket/rocket_job.c  | 50 +++++++++++++++++++++++++++---
+ 3 files changed, 69 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
 index 2540e5e3a..9b4cf979e 100644
@@ -120,30 +120,24 @@ index a5e49d2a1..231c38720 100644
  	struct mutex job_lock;
  	struct rocket_job *in_flight_job;
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index f7223d1c6..e092f56ea 100644
+index a5dc88644..8142dc5f3 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -10,6 +10,7 @@
- #include <linux/hrtimer.h>
+@@ -11,6 +11,7 @@
  #include <linux/interrupt.h>
+ #include <linux/overflow.h>
  #include <linux/iommu.h>
 +#include <linux/kref.h>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
  
-@@ -382,15 +383,46 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
- 		goto err_unstarted;
- 	}
+@@ -382,9 +383,39 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+ 	if (ret < 0)
+ 		goto err_put_fences;
  
 -	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
--	if (ret < 0) {
--		/*
--		 * core->in_flight_job is still NULL, so neither the completion
--		 * path nor the timeout path will drop this reference.
--		 */
--		pm_runtime_mark_last_busy(core->dev);
--		pm_runtime_put_autosuspend(core->dev);
--		goto err_unstarted;
+-	if (ret < 0)
+-		goto err_put_pm;
 +	/*
 +	 * Attach the job's IOMMU domain only when it differs from the one
 +	 * already attached.  Re-attaching per job toggles the rk_iommu
@@ -171,23 +165,16 @@ index f7223d1c6..e092f56ea 100644
 +		}
 +
 +		ret = iommu_attach_group(job->domain->domain, core->iommu_group);
-+		if (ret < 0) {
-+			/*
-+			 * core->in_flight_job is still NULL, so neither the
-+			 * completion path nor the timeout path will drop this
-+			 * reference.
-+			 */
-+			pm_runtime_mark_last_busy(core->dev);
-+			pm_runtime_put_autosuspend(core->dev);
-+			goto err_unstarted;
-+		}
++		if (ret < 0)
++			goto err_put_pm;
 +
 +		kref_get(&job->domain->kref);
 +		core->attached_domain = job->domain;
- 	}
++	}
  
  	scoped_guard(mutex, &core->job_lock) {
-@@ -471,7 +503,6 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+ 		core->in_flight_job = job;
+@@ -459,7 +490,6 @@ static void rocket_job_handle_irq(struct rocket_core *core)
  				return;
  			}
  
@@ -195,7 +182,7 @@ index f7223d1c6..e092f56ea 100644
  			dma_fence_signal(core->in_flight_job->done_fence);
  			pm_runtime_put_autosuspend(core->dev);
  			core->in_flight_job = NULL;
-@@ -501,7 +532,17 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+@@ -489,7 +519,17 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  		if (core->in_flight_job)
  			pm_runtime_put_noidle(core->dev);
  

@@ -77,7 +77,7 @@ index 3d9369a8a..5c2df4fdf 100644
  	struct drm_gpu_scheduler sched;
  	u64 fence_context;
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index a96944e91..39eeef833 100644
+index 18b1d6bd7..794eafdb3 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -163,6 +163,7 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
@@ -98,10 +98,10 @@ index a96944e91..39eeef833 100644
  	.open			= rocket_open,
  	.postclose		= rocket_postclose,
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 385a8756c..ae34177ef 100644
+index e98969700..0bf328add 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -45,6 +45,34 @@ module_param_named(dpu_grace_us, rocket_dpu_grace_us, uint, 0644);
+@@ -46,6 +46,34 @@ module_param_named(dpu_grace_us, rocket_dpu_grace_us, uint, 0644);
  MODULE_PARM_DESC(dpu_grace_us,
  		 "RK3576: how long to wait past PC_DONE for the DPU's own completion, in microseconds (default 500)");
  
@@ -136,7 +136,7 @@ index 385a8756c..ae34177ef 100644
  static inline ktime_t rocket_poll_period(void)
  {
  	unsigned int us = READ_ONCE(rocket_poll_interval_us);
-@@ -275,6 +303,13 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -277,6 +305,13 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  
  	if (core->soc->poll_completion) {
  		core->poll_pc_done_at = 0;
@@ -150,7 +150,7 @@ index 385a8756c..ae34177ef 100644
  		atomic_set(&core->poll_active, 1);
  		hrtimer_start(&core->poll_timer, rocket_poll_period(),
  			      HRTIMER_MODE_REL);
-@@ -563,7 +598,7 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
+@@ -550,7 +585,7 @@ static enum hrtimer_restart rocket_poll_timer_fn(struct hrtimer *timer)
  		if (!core->poll_pc_done_at)
  			core->poll_pc_done_at = ktime_get();
  		else if (ktime_us_delta(ktime_get(), core->poll_pc_done_at) >=
@@ -159,7 +159,7 @@ index 385a8756c..ae34177ef 100644
  			goto complete;
  	}
  
-@@ -861,7 +896,7 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+@@ -850,7 +885,7 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
  		return -EINVAL;
  
  	/* Reject unknown flag bits so a future flag cannot be silently ignored. */
@@ -168,7 +168,7 @@ index 385a8756c..ae34177ef 100644
  		drm_dbg(dev, "Unknown bits set in drm_rocket_job.flags (0x%x).\n",
  			job->flags);
  		return -EINVAL;
-@@ -888,6 +923,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+@@ -878,6 +913,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
  	 */
  	rjob->want_batched = !!(job->flags & DRM_ROCKET_JOB_BATCHED);
  
@@ -179,9 +179,9 @@ index 385a8756c..ae34177ef 100644
 +	 */
 +	rjob->no_dpu_done = !!(job->flags & DRM_ROCKET_JOB_NO_DPU_DONE);
 +
- 	/*
- 	 * Take the IOMMU domain reference here, while the job is still empty.
- 	 * rocket_job_cleanup() puts it unconditionally, and every rejection
+ 	ret = drm_sched_job_init(&rjob->base,
+ 				 &file_priv->sched_entity,
+ 				 1, NULL, file->client_id);
 diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
 index 02d3be8e5..148751f36 100644
 --- a/drivers/accel/rocket/rocket_job.h

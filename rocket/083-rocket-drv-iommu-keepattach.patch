@@ -103,24 +103,24 @@ index 10e89621f..0abfe2c39 100644
  	struct mutex job_lock;
  	struct rocket_job *in_flight_job;
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index ac51bff39..d01b74682 100644
+index 3141f210f..0ea405245 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -9,6 +9,7 @@
- #include <drm/rocket_accel.h>
+@@ -10,6 +10,7 @@
  #include <linux/interrupt.h>
+ #include <linux/overflow.h>
  #include <linux/iommu.h>
 +#include <linux/kref.h>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
  
-@@ -314,9 +315,34 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+@@ -321,9 +322,34 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
  	if (ret < 0)
- 		return fence;
+ 		goto err_put_fences;
  
 -	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
 -	if (ret < 0)
--		return fence;
+-		goto err_put_pm;
 +	/*
 +	 * Attach the job's IOMMU domain only when it differs from the one
 +	 * already attached. Re-attaching per job toggles the rk_iommu
@@ -144,7 +144,7 @@ index ac51bff39..d01b74682 100644
 +
 +		ret = iommu_attach_group(job->domain->domain, core->iommu_group);
 +		if (ret < 0)
-+			return fence;
++			goto err_put_pm;
 +
 +		kref_get(&job->domain->kref);
 +		core->attached_domain = job->domain;
@@ -152,7 +152,7 @@ index ac51bff39..d01b74682 100644
  
  	scoped_guard(mutex, &core->job_lock) {
  		core->in_flight_job = job;
-@@ -340,7 +366,6 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+@@ -355,7 +381,6 @@ static void rocket_job_handle_irq(struct rocket_core *core)
  				return;
  			}
  
@@ -160,7 +160,7 @@ index ac51bff39..d01b74682 100644
  			dma_fence_signal(core->in_flight_job->done_fence);
  			pm_runtime_put_autosuspend(core->dev);
  			core->in_flight_job = NULL;
-@@ -364,7 +389,16 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+@@ -379,7 +404,16 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  		if (core->in_flight_job)
  			pm_runtime_put_noidle(core->dev);
  

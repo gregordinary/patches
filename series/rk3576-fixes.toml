@@ -11,7 +11,7 @@
 # here reads the same on both generations -- 7.2 moves nothing under them -- so the
 # list carries no per-patch range. The ceiling is 7.3 because 7.2 is the newest
 # generation the series has been dry-run against, not because 7.3 is known to break it.
-applies_to_kernel = ">=7.1, <7.3"
+applies_to_kernel = ">=7.2.4, <7.3"
 
 # Kernel tree: the RK3576 GPU power domain is supplied by an external regulator
 # (vdd_gpu_s0 on the RK806), but -- unlike the RK3588 GPU domain -- it was never

@@ -141,7 +141,7 @@ index 2ecb953f8..f17ca0d77 100644
  /*
   * Reference read caches, in the "cache" reg region. Three identical banks
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.c b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
-index 5a4faf958..897252c5f 100644
+index ca5584ce0..4527375be 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
 @@ -11,9 +11,12 @@
@@ -331,8 +331,8 @@ index 5a4faf958..897252c5f 100644
  	.num_coded_fmts = ARRAY_SIZE(vdpu383_coded_fmts),
  	.rcb_sizes = vdpu383_rcb_sizes,
 @@ -1871,6 +2026,8 @@ static int rkvdec_probe(struct platform_device *pdev)
- 	if (irq <= 0)
- 		return -ENXIO;
+ 	if (irq < 0)
+ 		return irq;
  
 +	rkvdec->irq = irq;
 +

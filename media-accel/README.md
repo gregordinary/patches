@@ -19,12 +19,10 @@ support-matrix` is the authority, not this file.
 | `043-v4l2-export-max-parallel-jobs.patch` | Exports the symbol `045` calls | rkvdec multi-core v2 3/5; placeholder, retires with `030` |
 | `044-rkvdec-split-core-and-master.patch` | Splits rkvdec into core and master platform drivers on the component framework | rkvdec multi-core v2 4/5; the restructure `rk3576/104` collides with |
 | `045-rkvdec-multicore.patch` | Both VDPU381 **decode** cores behind one `/dev/video0` | rkvdec multi-core v2 5/5; N streams over N cores, no single-stream gain |
-| `050-av1-iommu-v14-curated.patch` | AV1 **decode** (AV1 helper lib) + Verisilicon IOMMU | curated v14; kernels `<7.2` — upstream carries the driver from 7.2, but not its defconfig line |
 | `060-vepu580-rcawston-v3.patch` | VEPU580 H.264/HEVC hardware **encode** | rcawston OOT driver (MPP framework), RK3588; author "not for upstream" |
 | `070-rga-multicore-vendor-oot.patch` | RGA 2D **scale / CSC / blend** via `/dev/rga` | vendor multicore OOT driver (3 cores); the ABI `librga.so` speaks |
 | `071-rga-multicore-fixups.patch` | Builds `070` against a mainline kernel | hrtimer_setup, MODULE_IMPORT_NS string, version.h includes, strscpy_pad |
-| `072-rk3588-rga-dts-7.1.patch` | RK3588 DT nodes for the three RGA cores | kernels `<7.2`; 7.1 describes only the RGA2 core |
-| `072-rk3588-rga-dts-7.2.patch` | Retargets 7.2's own RGA nodes at `070` | kernels `>=7.2`; compatibles + 4 KiB windows |
+| `072-rk3588-rga-dts-7.2.patch` | Retargets the kernel's own RGA nodes at `070` | compatibles + 4 KiB windows |
 | `073-rkvdec-hevc-bound-tile-counts.patch` | Bounds the HEVC tile counts a stream can ask for | our own; all three rkvdec HEVC backends; shared with `rk3576-fixes` |
 | `074-rkvdec-av1-bound-tile-counts.patch` | The AV1 half of `073`, in Hantro/VPU981 | our own; per-dimension caps are the AV1 maxima, total cap is this core's scratch |
 | `075-hantro-fix-run-fail-cleanup.patch` | Makes a failed hantro `->run()` clean up once | upstream rk3588-jpegdec 1/7, unmerged; what `074`'s rejection path rides |

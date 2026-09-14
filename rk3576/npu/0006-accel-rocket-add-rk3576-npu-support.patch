@@ -56,12 +56,12 @@ Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
  reference across the timeout dump with pm_runtime_get_if_active()
  rather than testing pm_runtime_active()]
 ---
- drivers/accel/rocket/rocket_core.c   | 36 ++++++++++++++++++++++++++++++++++--
- drivers/accel/rocket/rocket_core.h   | 22 +++++++++++++++++++++-
- drivers/accel/rocket/rocket_device.c |  9 ++++++++-
- drivers/accel/rocket/rocket_drv.c    | 40 ++++++++++++++++++++++++++++++++++------
- drivers/accel/rocket/rocket_drv.h    |  2 ++
- drivers/accel/rocket/rocket_job.c    | 129 ++++++++++++++++++++++++++++++++++++++--
+ drivers/accel/rocket/rocket_core.c   |  36 +++++++-
+ drivers/accel/rocket/rocket_core.h   |  22 ++++-
+ drivers/accel/rocket/rocket_device.c |   9 +-
+ drivers/accel/rocket/rocket_drv.c    |  40 +++++++--
+ drivers/accel/rocket/rocket_drv.h    |   2 +
+ drivers/accel/rocket/rocket_job.c    | 129 +++++++++++++++++++++++++--
  6 files changed, 220 insertions(+), 18 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_core.c b/drivers/accel/rocket/rocket_core.c
@@ -218,12 +218,10 @@ index 46e6ee1e7..4c47fc9b9 100644
  			num_cores++;
  
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 8bbbce594..f5490b7c5 100644
+index 8bbbce594..033a2bf4f 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
-@@ -157,10 +157,24 @@ static const struct drm_driver rocket_drm_driver = {
- 	.desc			= "rocket DRM",
- };
+@@ -159,8 +159,22 @@ static const struct drm_driver rocket_drm_driver = {
  
  static int rocket_probe(struct platform_device *pdev)
  {
@@ -327,7 +325,7 @@ index 2c673bb99..0096c4ab1 100644
  struct rocket_iommu_domain {
  	struct iommu_domain *domain;
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index ac51bff39..64e675973 100644
+index 3141f210f..b1df1d76a 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
 @@ -7,6 +7,7 @@
@@ -336,9 +334,9 @@ index ac51bff39..64e675973 100644
  #include <drm/rocket_accel.h>
 +#include <linux/hrtimer.h>
  #include <linux/interrupt.h>
+ #include <linux/overflow.h>
  #include <linux/iommu.h>
- #include <linux/platform_device.h>
-@@ -20,6 +21,16 @@
+@@ -21,6 +22,16 @@
  
  #define JOB_TIMEOUT_MS 500
  
@@ -355,7 +353,7 @@ index ac51bff39..64e675973 100644
  static struct rocket_job *
  to_rocket_job(struct drm_sched_job *sched_job)
  {
-@@ -137,8 +148,24 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -139,8 +150,24 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  	rocket_pc_writel(core, REGISTER_AMOUNTS,
  			 PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT((task->regcmd_count + 1) / 2 - 1));
  
@@ -382,7 +380,7 @@ index ac51bff39..64e675973 100644
  
  	rocket_pc_writel(core, TASK_CON, PC_TASK_CON_RESERVED_0(1) |
  					 PC_TASK_CON_TASK_COUNT_CLEAR(1) |
-@@ -149,7 +176,14 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -151,7 +178,14 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  
  	rocket_pc_writel(core, OPERATION_ENABLE, PC_OPERATION_ENABLE_OP_EN(1));
  
@@ -398,8 +396,8 @@ index ac51bff39..64e675973 100644
  }
  
  static int rocket_acquire_object_fences(struct drm_gem_object **bos,
-@@ -326,12 +360,55 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
- 	return fence;
+@@ -341,12 +375,55 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+ 	return ERR_PTR(ret);
  }
  
 +static void rocket_job_handle_irq(struct rocket_core *core);
@@ -455,7 +453,7 @@ index ac51bff39..64e675973 100644
  
  	scoped_guard(mutex, &core->job_lock)
  		if (core->in_flight_job) {
-@@ -353,6 +430,12 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+@@ -368,6 +445,12 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  	if (!atomic_read(&core->reset.pending))
  		return;
  
@@ -468,7 +466,7 @@ index ac51bff39..64e675973 100644
  	drm_sched_stop(&core->sched, bad);
  
  	/*
-@@ -385,7 +468,16 @@ static enum drm_gpu_sched_stat rocket_job_timedout(struct drm_sched_job *sched_j
+@@ -400,7 +483,16 @@ static enum drm_gpu_sched_stat rocket_job_timedout(struct drm_sched_job *sched_j
  	struct rocket_device *rdev = job->rdev;
  	struct rocket_core *core = sched_to_core(rdev, sched_job->sched);
  
@@ -486,7 +484,7 @@ index ac51bff39..64e675973 100644
  
  	atomic_set(&core->reset.pending, 1);
  	rocket_reset(core, sched_job);
-@@ -424,9 +516,22 @@ static irqreturn_t rocket_job_irq_handler(int irq, void *data)
+@@ -439,9 +531,22 @@ static irqreturn_t rocket_job_irq_handler(int irq, void *data)
  	WARN_ON(raw_status & PC_INTERRUPT_RAW_STATUS_DMA_READ_ERROR);
  	WARN_ON(raw_status & PC_INTERRUPT_RAW_STATUS_DMA_WRITE_ERROR);
  
@@ -512,7 +510,7 @@ index ac51bff39..64e675973 100644
  
  	rocket_pc_writel(core, INTERRUPT_MASK, 0x0);
  
-@@ -446,6 +551,10 @@ int rocket_job_init(struct rocket_core *core)
+@@ -461,6 +566,10 @@ int rocket_job_init(struct rocket_core *core)
  	int ret;
  
  	INIT_WORK(&core->reset.work, rocket_reset_work);
@@ -523,7 +521,7 @@ index ac51bff39..64e675973 100644
  	spin_lock_init(&core->fence_lock);
  	mutex_init(&core->job_lock);
  
-@@ -487,6 +596,10 @@ int rocket_job_init(struct rocket_core *core)
+@@ -502,6 +611,10 @@ int rocket_job_init(struct rocket_core *core)
  
  void rocket_job_fini(struct rocket_core *core)
  {

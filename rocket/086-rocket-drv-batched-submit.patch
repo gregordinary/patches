@@ -91,7 +91,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  4 files changed, 121 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_drv.c b/drivers/accel/rocket/rocket_drv.c
-index 728e7a0..3d978f3 100644
+index 728e7a0d1..3d978f32a 100644
 --- a/drivers/accel/rocket/rocket_drv.c
 +++ b/drivers/accel/rocket/rocket_drv.c
 @@ -256,10 +256,15 @@ DEFINE_DRM_ACCEL_FOPS(rocket_accel_driver_fops);
@@ -112,18 +112,18 @@ index 728e7a0..3d978f3 100644
  	.open			= rocket_open,
  	.postclose		= rocket_postclose,
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index cbc90da..93b9949 100644
+index e12bc0829..09cb54dae 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -10,6 +10,7 @@
- #include <linux/interrupt.h>
+@@ -11,6 +11,7 @@
+ #include <linux/overflow.h>
  #include <linux/iommu.h>
  #include <linux/kref.h>
 +#include <linux/moduleparam.h>
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
  #include <linux/stddef.h>
-@@ -47,6 +48,28 @@
+@@ -48,6 +49,28 @@
  #define ROCKET_JOB_V1_SIZE   offsetofend(struct drm_rocket_job, out_bo_handle_count)
  #define ROCKET_TASK_V1_SIZE  offsetofend(struct drm_rocket_task, regcmd_count)
  
@@ -152,7 +152,7 @@ index cbc90da..93b9949 100644
  static struct rocket_job *
  to_rocket_job(struct drm_sched_job *sched_job)
  {
-@@ -145,7 +168,16 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -147,7 +170,16 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  	/* GO ! */
  
  	task = &job->tasks[job->next_task_idx];
@@ -170,7 +170,7 @@ index cbc90da..93b9949 100644
  
  	rocket_pc_writel(core, BASE_ADDRESS, 0x1);
  
-@@ -170,7 +202,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
+@@ -172,7 +204,7 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
  
  	rocket_pc_writel(core, TASK_CON, PC_TASK_CON_RESERVED_0(1) |
  					 PC_TASK_CON_TASK_COUNT_CLEAR(1) |
@@ -179,7 +179,7 @@ index cbc90da..93b9949 100644
  					 PC_TASK_CON_TASK_PP_EN(1));
  
  	rocket_pc_writel(core, TASK_DMA_BASE_ADDR, PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
-@@ -371,6 +403,17 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
+@@ -378,6 +410,17 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
  		core->attached_domain = job->domain;
  	}
  
@@ -197,7 +197,7 @@ index cbc90da..93b9949 100644
  	scoped_guard(mutex, &core->job_lock) {
  		core->in_flight_job = job;
  		rocket_job_hw_submit(core, job);
-@@ -388,6 +431,12 @@ static void rocket_job_handle_irq(struct rocket_core *core)
+@@ -403,6 +446,12 @@ static void rocket_job_handle_irq(struct rocket_core *core)
  
  	scoped_guard(mutex, &core->job_lock)
  		if (core->in_flight_job) {
@@ -210,7 +210,7 @@ index cbc90da..93b9949 100644
  			if (core->in_flight_job->next_task_idx < core->in_flight_job->task_count) {
  				rocket_job_hw_submit(core, core->in_flight_job);
  				return;
-@@ -603,6 +652,19 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
+@@ -618,6 +667,19 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
  	if (job->task_count == 0)
  		return -EINVAL;
  
@@ -230,9 +230,9 @@ index cbc90da..93b9949 100644
  	rjob = kzalloc_obj(*rjob);
  	if (!rjob)
  		return -ENOMEM;
-@@ -611,6 +673,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
- 
+@@ -627,6 +689,13 @@ static int rocket_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
  	rjob->rdev = rdev;
+ 	rjob->domain = rocket_iommu_domain_get(file_priv);
  
 +	/*
 +	 * Userspace's per-job chained-submit request. rocket_job_run ANDs this
@@ -245,7 +245,7 @@ index cbc90da..93b9949 100644
  				 &file_priv->sched_entity,
  				 1, NULL, file->client_id);
 diff --git a/drivers/accel/rocket/rocket_job.h b/drivers/accel/rocket/rocket_job.h
-index 4ae00fe..43bee21 100644
+index 4ae00feec..43bee21ba 100644
 --- a/drivers/accel/rocket/rocket_job.h
 +++ b/drivers/accel/rocket/rocket_job.h
 @@ -30,6 +30,20 @@ struct rocket_job {
@@ -270,7 +270,7 @@ index 4ae00fe..43bee21 100644
  	struct dma_fence *inference_done_fence;
  
 diff --git a/include/uapi/drm/rocket_accel.h b/include/uapi/drm/rocket_accel.h
-index d0685e3..e75db56 100644
+index d0685e372..e75db56cc 100644
 --- a/include/uapi/drm/rocket_accel.h
 +++ b/include/uapi/drm/rocket_accel.h
 @@ -21,6 +21,22 @@ extern "C" {
