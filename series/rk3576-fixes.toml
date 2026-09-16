@@ -30,6 +30,20 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # clusters and agree with rk3399-base.dtsi, which carries the same A72 and A53
 # cores. Also upstream-destined.
 #
+# 111 gives the five GPIO controllers gpio0-gpio4 aliases, which rk3576.dtsi lacks
+# and rk3588-base.dtsi and rk356x-base.dtsi carry. The alias is what binds a
+# controller node to its pin bank: rockchip_gpio_probe() looks it up, and a node
+# without one takes the next value of a static counter, so which bank a controller
+# registers as depends on probe order rather than on the node. The bank decides the
+# chip's label and which chip the pin controller writes a pad's output level and
+# input enable through. A probe that defers after taking a number takes another on
+# retry, which lands on a sibling's bank or, past gpio4, on none, and the probe
+# fails. On the H96 MAX M9 the five probe in device-tree order, so the numbers
+# drawn there are right; the aliases make the binding a property of the device
+# tree instead of the probe order. /dev/gpiochipN numbering is registration order
+# either way. It is Alexey Charkov's patch, posted to linux-rockchip and carried as
+# posted, and it retires when a kernel carrying it arrives.
+#
 # 103 makes `rockchip,sai-tx-route` take effect at all. The SAI driver programs
 # SAI_PATH_SEL once from probe, and the value does not survive to the running
 # device -- the register reads its reset mapping no matter what the property says,
@@ -151,6 +165,7 @@ kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
     "rk3576/kernel/102-arm64-dts-rk3576-cpu-caches.patch",
+    "rk3576/kernel/111-arm64-dts-rk3576-gpio-aliases.patch",
     "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
     "rk3576/kernel/104-media-rkvdec-vdpu383-read-cache.patch",
     "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
