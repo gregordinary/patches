@@ -13,10 +13,10 @@ support-matrix` is the authority, not this file.
 
 | Patch | What it enables | Target / notes |
 |-------|-----------------|----------------|
-| `030-v4l2-mem2mem-parallel-jobs.patch` | `v4l2_m2m_set_max_parallel_jobs()`, so one m2m device can run N jobs | Pengutronix RGA series 05/17, unmerged; core change, every m2m driver |
+| `030-v4l2-mem2mem-drop-curr-ctx.patch` | Tracks the running context by its `TRANS_RUNNING` flag instead of a single `curr_ctx` pointer | Pengutronix RGA v2 06/17, unmerged; core change, every m2m driver |
+| `031-v4l2-mem2mem-parallel-jobs.patch` | `v4l2_m2m_set_max_parallel_jobs()`, so one m2m device can run N jobs | Pengutronix RGA v2 07/17, unmerged; core change, every m2m driver |
 | `041-rkvdec-rcb-correct-size.patch` | Re-sizes the RCB buffer per run, so a resolution change cannot overflow it | rkvdec multi-core v2 1/5 |
 | `042-rkvdec-remove-unused-need-reset.patch` | Drops a dead `need_reset` check | rkvdec multi-core v2 2/5 |
-| `043-v4l2-export-max-parallel-jobs.patch` | Exports the symbol `045` calls | rkvdec multi-core v2 3/5; placeholder, retires with `030` |
 | `044-rkvdec-split-core-and-master.patch` | Splits rkvdec into core and master platform drivers on the component framework | rkvdec multi-core v2 4/5; the restructure `rk3576/104` collides with |
 | `045-rkvdec-multicore.patch` | Both VDPU381 **decode** cores behind one `/dev/video0` | rkvdec multi-core v2 5/5; N streams over N cores, no single-stream gain |
 | `060-vepu580-rcawston-v3.patch` | VEPU580 H.264/HEVC hardware **encode** | rcawston OOT driver (MPP framework), RK3588; author "not for upstream" |

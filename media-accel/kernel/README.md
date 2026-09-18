@@ -8,10 +8,10 @@ series fits together.
 
 ## Series (apply order)
 
-1. `030-v4l2-mem2mem-parallel-jobs.patch`
-2. `041-rkvdec-rcb-correct-size.patch`
-3. `042-rkvdec-remove-unused-need-reset.patch`
-4. `043-v4l2-export-max-parallel-jobs.patch`
+1. `030-v4l2-mem2mem-drop-curr-ctx.patch`
+2. `031-v4l2-mem2mem-parallel-jobs.patch`
+3. `041-rkvdec-rcb-correct-size.patch`
+4. `042-rkvdec-remove-unused-need-reset.patch`
 5. `044-rkvdec-split-core-and-master.patch`
 6. `045-rkvdec-multicore.patch`
 7. `060-vepu580-rcawston-v3.patch`
@@ -40,16 +40,16 @@ in without renumbering a committed series.
 
 The patches here come from different places, and they age differently:
 
-- **`030` / `041`–`045` — two unmerged upstream series, vendored whole.** `041`–`045` are
-  Detlev Casanova's rkvdec multi-core v2 series, one file per posted patch, and `030` is
-  the one patch of Pengutronix's RGA multi-core series they depend on:
-  `v4l2_m2m_set_max_parallel_jobs()`, which no released kernel has. Each file names its
-  patchwork series and msgid in the region after `---`. The pair retires as a pair — when
+- **`030`/`031` and `041`–`045` — two unmerged upstream series, vendored whole.** `041`,
+  `042`, `044` and `045` are Detlev Casanova's rkvdec multi-core v2 series, one file per
+  posted patch; `030` and `031` are the two patches of Pengutronix's RGA multi-core v2
+  series they depend on, which introduce and export
+  `v4l2_m2m_set_max_parallel_jobs()` — a symbol no released kernel has. Each file names
+  its patchwork series and msgid in the region after `---`. They retire as one — when
   a kernel arrives carrying the merged rkvdec series, all six are deleted rather than
-  rebased, because `030` and `043` exist only for as long as the symbol is unexported.
-  `030` is the one with reach beyond this driver: it rewrites five functions in
-  `v4l2-mem2mem.c` for every m2m driver in the image, defaulting them to the
-  one-job-at-a-time behaviour they have today.
+  rebased. `030` and `031` are the ones with reach beyond this driver: between them they
+  rewrite five functions in `v4l2-mem2mem.c` for every m2m driver in the image,
+  defaulting them to the one-job-at-a-time behaviour they have today.
 - **`050` — absorbed by mainline at 7.2.** The AV1 helper library and the Verisilicon
   IOMMU, taken from an upstream posting series and curated to apply as one. 7.2 carries
   the binding, the driver, the RK3588 DT node and the MAINTAINERS entry, so the patch is
