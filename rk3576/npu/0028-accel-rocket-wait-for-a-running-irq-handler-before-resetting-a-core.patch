@@ -55,13 +55,28 @@ disables runtime PM before it turns the clocks off, and
 rocket_core_fini() suspends the core and disables before it cancels the
 timeout worker.  Either would put these writes on a powered-down block.
 
-It has to go before the scoped_guard(mutex, &core->job_lock) rather than
-inside it.  rocket_job_handle_irq() takes job_lock -- 0027 moved the
-register writes under it, so it now holds that lock for the whole
-handler -- and waiting for the handler while holding the lock it wants
-would deadlock instead of fencing anything.  Nothing is held at that
-point, and both callers, rocket_job_timedout() and rocket_reset_work(),
-run in process context, so sleeping there is allowed.
+Those two writes go under job_lock, though the sync does not.
+rocket_job_hw_submit() arms the same register and always runs under that
+lock, while reset.pending is set here without it and read there with it,
+so a submit that has already passed its check can re-arm the mask after
+this clears it.  The block is then left running a task with its interrupt
+live while synchronize_irq() fences a handler that has already finished,
+which is the same shape of race 0027 closes for OPERATION_ENABLE, on the
+other register.  It takes a multi-task job to reach: only then does
+rocket_job_hw_submit() run from the IRQ thread rather than the scheduler
+thread, where drm_sched_stop() does not fence it.
+pm_runtime_get_if_active() takes a reference on an already-active device
+without invoking a callback, and pm_runtime_put_autosuspend() is
+asynchronous, so holding job_lock across them cannot re-enter this
+driver's runtime PM callbacks.
+
+The sync itself stays outside job_lock.  rocket_job_handle_irq() takes
+that lock -- 0027 moved the register writes under it, so it now holds the
+lock for the whole handler -- and waiting for the handler while holding
+the lock it wants would deadlock instead of fencing anything.  Nothing is
+held at that point, and both callers, rocket_job_timedout() and
+rocket_reset_work(), run in process context, so sleeping there is
+allowed.
 
 The other way into rocket_job_handle_irq() on this SoC is the completion
 poll work, which the hrtimer_cancel()/cancel_work_sync() pair above
@@ -74,22 +89,22 @@ needs the check and the register writes to be one step under the lock,
 which is what 0027 does; the two are complementary.
 
 From this series -- Jiaxing Hu's patch, suggested by Igor Paunovic,
-tracked at its v12 posting, where the raw-status clear was added.  The
-function is shared with the RK3588, which carries the same fix as
-rocket/091.
+tracked at its v13 posting, which is where the two writes moved under the
+lock.  The function is shared with the RK3588, which carries the same fix
+as rocket/091.
 
-  https://lore.kernel.org/linux-rockchip/20260817113603.1436067-3-gahing@gahingwoo.com/
+  https://lore.kernel.org/linux-rockchip/20260915104328.45901-4-gahing@gahingwoo.com/
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- drivers/accel/rocket/rocket_job.c | 59 ++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 56 insertions(+), 3 deletions(-)
+ drivers/accel/rocket/rocket_job.c | 75 +++++++++++++++++++++++++++++--
+ 1 file changed, 72 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 4ce6564c9..7a5a60c1f 100644
+index 43ce1856b..2b6ac21b6 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -787,9 +787,62 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+@@ -770,9 +770,78 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  	drm_sched_stop(&core->sched, bad);
  
  	/*
@@ -124,17 +139,33 @@ index 4ce6564c9..7a5a60c1f 100644
 +	 * the completion poll reads those bits out of INTERRUPT_RAW_STATUS
 +	 * directly, so a bit left standing across a reset is a completion the
 +	 * next job's first poll tick can read as its own.
++	 *
++	 * Under job_lock, because rocket_job_hw_submit() arms this same
++	 * register and always runs under that lock.  reset.pending is set in
++	 * rocket_job_timedout() without the lock and read in hw_submit() with
++	 * it, so a submit that has already passed its check can re-arm the mask
++	 * after this clears it: the block is then left running a task with its
++	 * interrupt live, while the sync below fences a handler that has
++	 * already finished.  That is the race 0027 closed on OPERATION_ENABLE,
++	 * on the other register.
++	 *
++	 * pm_runtime_get_if_active() takes a reference on an already-active
++	 * device without invoking a callback, and pm_runtime_put_autosuspend()
++	 * is asynchronous, so holding job_lock across them cannot re-enter this
++	 * driver's runtime PM callbacks.
 +	 */
-+	if (pm_runtime_get_if_active(core->dev) > 0) {
-+		u32 clear = 0x1ffff;
++	scoped_guard(mutex, &core->job_lock) {
++		if (pm_runtime_get_if_active(core->dev) > 0) {
++			u32 clear = 0x1ffff;
 +
-+		if (core->soc->poll_completion)
-+			clear |= PC_INTERRUPT_MASK_RK3576_PC_DONE_0 |
-+				 PC_INTERRUPT_MASK_RK3576_PC_DONE_1;
++			if (core->soc->poll_completion)
++				clear |= PC_INTERRUPT_MASK_RK3576_PC_DONE_0 |
++					 PC_INTERRUPT_MASK_RK3576_PC_DONE_1;
 +
-+		rocket_pc_writel(core, INTERRUPT_MASK, 0x0);
-+		rocket_pc_writel(core, INTERRUPT_CLEAR, clear);
-+		pm_runtime_put_autosuspend(core->dev);
++			rocket_pc_writel(core, INTERRUPT_MASK, 0x0);
++			rocket_pc_writel(core, INTERRUPT_CLEAR, clear);
++			pm_runtime_put_autosuspend(core->dev);
++		}
 +	}
 +
 +	/*

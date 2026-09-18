@@ -260,6 +260,16 @@ runtime PM reference of its own, so they go under `pm_runtime_get_if_active()`, 
 one, and this driver makes that state in both `pm_runtime_force_suspend()` and
 `rocket_core_fini()`.
 
+They also go **under `job_lock`**, which the `synchronize_irq()` does not.
+`rocket_job_hw_submit()` arms `INTERRUPT_MASK` and always runs under that lock, while
+`reset.pending` is set in `rocket_job_timedout()` without it and read in `hw_submit()`
+with it, so a submit that has already passed its check can re-arm the mask after the
+reset clears it -- leaving the block running a task with its interrupt live while the
+wait fences a handler that has already finished. That is 0027's race on the other
+register. `pm_runtime_get_if_active()` invokes no callback and
+`pm_runtime_put_autosuspend()` is asynchronous, so holding the lock across them cannot
+re-enter this driver's runtime PM callbacks.
+
 Waiting is only half of it, so the mask goes first. `rocket_job_hw_submit()` arms
 `INTERRUPT_MASK` on every submit -- the DMA-error pair here, the DPU pair on the
 RK3588 -- and only the hardirq clears it, so on an ordinary timeout the mask is still
@@ -864,7 +874,7 @@ RK3588 geometry does not run here; a userspace needs its own RK3576 encoder. Wit
 that in hand the kernel side runs: an int8 convolution encoded for this part is
 bit-exact against a CPU model on real silicon (H96 MAX M9), and multi-task
 row-windowed programs are bit-exact submitted back to back with no gap. Carried from
-the upstream series at **v12**; re-sync from a later revision by re-splitting it into
+the upstream series at **v13**; re-sync from a later revision by re-splitting it into
 this directory and updating `series/rk3576-npu.toml`.
 
 **0026 to 0034 have not been on hardware here.** They are reasoned from the source and
@@ -883,10 +893,10 @@ with a job in flight, and `dtbs_check` clean on `rk3576.dtsi`.
 0007, 0031 and 0032, and four of those changes are behavioural rather than editorial:
 `RK3576_PD_NPU` carries `need_regulator`, the MMU nodes carry a new compatible string,
 0006 refuses a device with no match data, and 0028 clears the raw interrupt status
-beside the mask. None has been booted here. The MMU change is inert for the driver,
-which matches the `rockchip,rk3568-iommu` fallback; the regulator flag takes the dummy
-regulator on a board with no `domain-supply` on `pd_npu`, which is every board in this
-tree today; the match-data check is on a path no devicetree-bound core takes; and the
-status clear is on the timeout path. The checks that would close it are a boot with the
-NPU enabled, `dtbs_check` clean on `rk3576.dtsi`, and `bash tools/gates-rk3576.sh` in
-`rocket-userspace`.
+beside the mask and takes both writes under `job_lock`. None has been booted here. The
+MMU change is inert for the driver, which matches the `rockchip,rk3568-iommu` fallback;
+the regulator flag takes the dummy regulator on a board with no `domain-supply` on
+`pd_npu`, which is every board in this tree today; the match-data check is on a path no
+devicetree-bound core takes; and the status clear and its lock scope are on the timeout
+path. The checks that would close it are a boot with the NPU enabled, `dtbs_check` clean
+on `rk3576.dtsi`, and `bash tools/gates-rk3576.sh` in `rocket-userspace`.
