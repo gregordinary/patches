@@ -23,9 +23,7 @@ support-matrix` is the authority, not this file.
 | `070-rga-multicore-vendor-oot.patch` | RGA 2D **scale / CSC / blend** via `/dev/rga` | vendor multicore OOT driver (3 cores); the ABI `librga.so` speaks |
 | `071-rga-multicore-fixups.patch` | Builds `070` against a mainline kernel | hrtimer_setup, MODULE_IMPORT_NS string, version.h includes, strscpy_pad |
 | `072-rk3588-rga-dts-7.2.patch` | Retargets the kernel's own RGA nodes at `070` | compatibles + 4 KiB windows |
-| `073-rkvdec-hevc-bound-tile-counts.patch` | Bounds the HEVC tile counts a stream can ask for | our own; all three rkvdec HEVC backends; shared with `rk3576-fixes` |
-| `074-rkvdec-av1-bound-tile-counts.patch` | The AV1 half of `073`, in Hantro/VPU981 | our own; per-dimension caps are the AV1 maxima, total cap is this core's scratch |
-| `075-hantro-fix-run-fail-cleanup.patch` | Makes a failed hantro `->run()` clean up once | upstream rk3588-jpegdec 1/7, unmerged; what `074`'s rejection path rides |
+| `075-hantro-fix-run-fail-cleanup.patch` | Makes a failed hantro `->run()` clean up once | upstream rk3588-jpegdec 1/7, unmerged; what the kernel's AV1 tile-count rejection rides |
 | `076-rkvdec-align-10bit-bytesperline-64.patch` | Pads the 10-bit stride so **RGA can blit `NV15`/`NV20`** | our own; no-op for 8-bit; without it no HW filter path below width 256-multiples |
 | `077-rkvdec-vp9-rename-get-ref-buf.patch` | VP9 series 1/4 — rename | upstream VP9-on-VDPU381 v1, unmerged |
 | `078-rkvdec-vp9-move-to-common-file.patch` | VP9 series 2/4 — shared helpers | upstream VP9-on-VDPU381 v1, unmerged |

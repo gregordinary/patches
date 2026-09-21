@@ -7,9 +7,8 @@ that lets 10-bit frames leave the decoder (`rk3576-media`), and out-of-tree u-bo
 (recovery/USB-flash, USB host, HDMI display).
 
 Two series take files from elsewhere in this repo rather than duplicating them.
-`rk3576-fixes` ends with `media-accel/kernel/073` (HEVC tile-count bounds) and
-`media-accel/kernel/083` (SPS RPS bounds), both shared verbatim, so each retires from
-both SoCs at once when an upstream equivalent lands. `rk3576-media` is entirely
+`rk3576-fixes` takes `media-accel/kernel/083` (SPS RPS bounds), shared verbatim, so it
+retires from both SoCs at once when an upstream equivalent lands. `rk3576-media` is entirely
 cross-series: it carries no files of its own, taking `media-accel/ffmpeg` `0001`, `0002`,
 `0005`, `0013` and `0016` — see [`media-accel/ffmpeg/`](../media-accel/ffmpeg/README.md).
 `media-accel/kernel/082` is the one candidate that **cannot** be shared: its context

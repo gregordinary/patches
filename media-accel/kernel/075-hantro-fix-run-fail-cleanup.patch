@@ -68,14 +68,14 @@ fails", patch 1/7 of the rk3588-jpegdec series, posted 2026-08-19, state `New`
 as of 2026-08-20:
 https://patchwork.kernel.org/project/linux-rockchip/list/?series=1148425
 
-Carried unmodified, applied on top of 074 against this series' base, v7.1.7
-(c7ba9d6d). It is the codec-agnostic core fix the rest of that series (a VPU720
-JPEG decoder we do not build) sits on: it gives hantro_end_prepare_run() an
-error argument so a failed ->run() completes the media request without
+Carried unmodified. It is the codec-agnostic core fix the rest of that series (a
+VPU720 JPEG decoder we do not build) sits on: it gives hantro_end_prepare_run()
+an error argument so a failed ->run() completes the media request without
 double-finishing the job or arming the watchdog for a job that never starts.
-074's rejection path rides exactly this, so the two belong together -- without
-it, a rejected AV1 tile count throws a WARN and mis-arms the watchdog to abort
-an unrelated concurrent decode. Drop this when the fix lands upstream.
+The kernel's AV1 tile-count rejection in rockchip_vpu981_av1_dec_prepare_run()
+rides exactly this path -- without this fix, a rejected AV1 tile count throws a
+WARN and mis-arms the watchdog to abort an unrelated concurrent decode. Drop
+this when the fix lands upstream.
 
  .../media/platform/verisilicon/hantro_drv.c   | 32 ++++++++++++++++---
  .../platform/verisilicon/hantro_g1_h264_dec.c |  2 +-
@@ -199,10 +199,10 @@ index 851eb67f1..eb43b2fc1 100644
  	vdpu_write(vpu, G1_REG_INTERRUPT_DEC_E, G1_REG_INTERRUPT);
  
 diff --git a/drivers/media/platform/verisilicon/hantro_g2_hevc_dec.c b/drivers/media/platform/verisilicon/hantro_g2_hevc_dec.c
-index e8c2e8337..d76d03eea 100644
+index e7a7c7a42..aef06c269 100644
 --- a/drivers/media/platform/verisilicon/hantro_g2_hevc_dec.c
 +++ b/drivers/media/platform/verisilicon/hantro_g2_hevc_dec.c
-@@ -611,7 +611,7 @@ int hantro_g2_hevc_dec_run(struct hantro_ctx *ctx)
+@@ -613,7 +613,7 @@ int hantro_g2_hevc_dec_run(struct hantro_ctx *ctx)
  
  	prepare_scaling_list_buffer(ctx);
  
@@ -247,10 +247,10 @@ index 86cc1a070..78f51e92f 100644
  	vepu_write(vpu, reg, H1_REG_ENC_CTRL);
  
 diff --git a/drivers/media/platform/verisilicon/hantro_hw.h b/drivers/media/platform/verisilicon/hantro_hw.h
-index 5f2011529..da2d582b0 100644
+index 13e573f1f..9754672a3 100644
 --- a/drivers/media/platform/verisilicon/hantro_hw.h
 +++ b/drivers/media/platform/verisilicon/hantro_hw.h
-@@ -431,7 +431,7 @@ void hantro_run(struct hantro_ctx *ctx);
+@@ -430,7 +430,7 @@ void hantro_watchdog(struct work_struct *work);
  void hantro_irq_done(struct hantro_dev *vpu,
  		     enum vb2_buffer_state result);
  void hantro_start_prepare_run(struct hantro_ctx *ctx);
@@ -312,10 +312,10 @@ index d07907544..6568e2aee 100644
  	hantro_reg_write(vpu, &vp8_dec_start_dec, 1);
  
 diff --git a/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c b/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c
-index 74601ac09..383d06c8f 100644
+index 00aa566a4..d1b7a21d2 100644
 --- a/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c
 +++ b/drivers/media/platform/verisilicon/rockchip_vpu981_hw_av1_dec.c
-@@ -2223,15 +2223,14 @@ int rockchip_vpu981_av1_dec_run(struct hantro_ctx *ctx)
+@@ -2224,15 +2224,14 @@ int rockchip_vpu981_av1_dec_run(struct hantro_ctx *ctx)
  	rockchip_vpu981_av1_dec_set_output_buffer(ctx);
  	rockchip_vpu981_av1_dec_set_input_buffer(ctx, vb2_src);
  

@@ -18,19 +18,17 @@ series fits together.
 8. `070-rga-multicore-vendor-oot.patch`
 9. `071-rga-multicore-fixups.patch`
 10. `072-rk3588-rga-dts-7.2.patch`
-11. `073-rkvdec-hevc-bound-tile-counts.patch`
-12. `074-rkvdec-av1-bound-tile-counts.patch`
-13. `075-hantro-fix-run-fail-cleanup.patch`
-14. `076-rkvdec-align-10bit-bytesperline-64.patch`
-15. `077-rkvdec-vp9-rename-get-ref-buf.patch`
-16. `078-rkvdec-vp9-move-to-common-file.patch`
-17. `079-rkvdec-vdpu381-vp9.patch`
-18. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
-19. `081-hantro-align-nv15-bytesperline-64.patch`
-20. `082-rkvdec-rcb-map-sram-through-dma-api.patch`
-21. `083-rkvdec-bound-sps-rps-tables.patch`
-22. `084-hantro-raise-vpu981-av1-frame-size.patch`
-23. `085-hantro-jpeg-enc-max-frame-size.patch`
+11. `075-hantro-fix-run-fail-cleanup.patch`
+12. `076-rkvdec-align-10bit-bytesperline-64.patch`
+13. `077-rkvdec-vp9-rename-get-ref-buf.patch`
+14. `078-rkvdec-vp9-move-to-common-file.patch`
+15. `079-rkvdec-vdpu381-vp9.patch`
+16. `080-rkvdec-vdpu381-vp9-multicore-fixups.patch`
+17. `081-hantro-align-nv15-bytesperline-64.patch`
+18. `082-rkvdec-rcb-map-sram-through-dma-api.patch`
+19. `083-rkvdec-bound-sps-rps-tables.patch`
+20. `084-hantro-raise-vpu981-av1-frame-size.patch`
+21. `085-hantro-jpeg-enc-max-frame-size.patch`
 
 The order is the series' list, not the filename prefixes; the prefixes only make the
 directory read the same way. The gaps between them are deliberate room to slot a patch
@@ -73,26 +71,14 @@ The patches here come from different places, and they age differently:
   the nodes where they are and changes two properties each: the compatible, which selects
   this driver and distinguishes the two RGA3 cores, and the register window, which has to
   span the 4 KiB the driver needs to reach the core's IOMMU block at `+0xf00`.
-- **`073` — our own defect fix, upstream-shaped.** A missing bound on the HEVC tile
-  counts, which index fixed-size arrays in all three rkvdec HEVC backends and are not
-  range-checked by the V4L2 core. It is not Rockchip-configuration work and carries no
-  vendor code, so unlike everything above it is offerable to mainline as-is; it retires
-  when an equivalent bound lands there. See the patch header for the reachability
-  argument.
-- **`074` — the AV1 half of `073`.** The same missing bound in the Hantro/VPU981 stateless
-  AV1 decoder: unchecked u8 tile counts index fixed-size arrays, divide
-  `context_update_tile_id`, and overflow a 128-record scratch buffer, none of it caught by
-  the V4L2 core. Same offer-to-mainline status as `073`, and it maps onto patches 6-7 of
-  upstream's "bound stateless HEVC/AV1 tile counts" series. One bound differs in kind from
-  `073`: the per-tile-count caps are the AV1 maxima and refuse nothing conforming, but the
-  total-tile cap is this hardware's scratch size (128), below the uAPI's 512, so a
-  conforming >128-tile frame this core cannot decode is refused. See the patch header.
-- **`075` — upstream core fix, carried for `074`.** Sascha Hauer's fix for the hantro
+- **`075` — upstream core fix.** Sascha Hauer's fix for the hantro
   `->run()` error paths (patch 1/7 of the unmerged rk3588-jpegdec series). The base
-  kernel double-finishes a failed decode and mis-arms the watchdog, which `074`'s rejection
-  path rides; `075` gives `hantro_end_prepare_run()` an error argument so the rejection is
-  clean. Carried unmodified and retires when it merges. The JPEG decoder the rest of that
-  series adds is not carried — nothing in our userspace can drive a hardware JPEG decoder.
+  kernel double-finishes a failed decode and mis-arms the watchdog, and the kernel's own
+  AV1 tile-count rejection in `rockchip_vpu981_av1_dec_prepare_run()` rides that path, so
+  a crafted tile count reaches it; `075` gives `hantro_end_prepare_run()` an error
+  argument so the rejection is clean. Carried unmodified and retires when it merges. The
+  JPEG decoder the rest of that series adds is not carried — nothing in our userspace
+  can drive a hardware JPEG decoder.
 
 - **`076` — our own patch, for a consumer upstream does not have.** The packed 10-bit
   capture formats carry five bytes per four samples, so NV15 and NV20 get a stride of
@@ -161,7 +147,7 @@ The patches here come from different places, and they age differently:
   *inclusively* by the prediction path through two 16-byte stack arrays.
   `delta_idx_minus1` names the set to predict from as an offset back from the current
   one, and the subtraction is done in `u8`, so a value past the current index wraps
-  instead of going negative. Bounded the way `073` and `074` bound tile counts —
+  instead of going negative. Bounded the way the kernel bounds tile counts —
   against the limits the field macros already state, rejecting rather than clamping,
   and refusing nothing conforming, since HEVC caps the three at 64, 32 and 15. A set
   derived by prediction holds up to one delta POC more than the set it predicts from,
@@ -178,7 +164,7 @@ The patches here come from different places, and they age differently:
   holds, so raising only the decoder's own `NV12_4L4`/`NV15_4L4` entries would accept
   an 8K stream on the coded queue and hand back a 4096x2304 frame with no error
   anywhere — the postprocessor's `NV12`/`NV15`/`P010` entries are what a consumer
-  actually receives. `074`'s tile bounds are counts rather than dimensions and are
+  actually receives. The kernel's AV1 tile bounds are counts rather than dimensions and are
   unchanged — an 8K frame needs at least four tiles, against the 128 the `tile_info`
   scratch holds.
 - **`085` — the JPEG encoder's advertised maximum is one macroblock too high.** A

@@ -5,9 +5,10 @@
 # 7.1 or 7.2 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
 # (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
 #
-# A series is owned by a kernel definition, not a device. It targets 7.2.4 and later,
-# where the rocket driver carries the job-push and task-array fixes this series used to,
-# and every entry applies unconditionally. Each list is the
+# A series is owned by a kernel definition, not a device. It targets 7.2.7 and later,
+# where the rocket driver carries the job-push and task-array fixes and the V4L2 core
+# and the VPU981 driver bound the HEVC and AV1 tile counts, so none of those is a patch
+# here, and every entry applies unconditionally. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
 # tree's list may span scopes (the kernel tree interleaves the media-accel,
 # rocket and crypto scopes). Paths are relative to this repo's root.
@@ -24,7 +25,7 @@
 #
 # The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
 # against, not because 7.3 is known to break it.
-applies_to_kernel = ">=7.2.4, <7.3"
+applies_to_kernel = ">=7.2.7, <7.3"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
 # in ascending numeric order satisfies the series' dependencies: npu-volt needs
@@ -99,62 +100,22 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # and colour conversion only, and has no 10-bit YUV -- so NV15, which is what a
 # 10-bit HEVC decode on this SoC produces, has no path through it.
 #
-# 073 bounds the HEVC tile counts. `num_tile_columns_minus1` and
-# `num_tile_rows_minus1` arrive from userspace as u8 and index fixed-size arrays --
-# the backends' own stack scratch and the control's own `column_width_minus1[20]` /
-# `row_height_minus1[22]` -- with no range check anywhere. The V4L2 core zeroes those
-# fields when TILES_ENABLED is clear but does not bound them when it is set, so
-# `compute_tiles_uniform()` loops to 256 writing a 20-entry stack array, and
-# `compute_tiles_non_uniform()` also reads past the control payload and writes what it
-# finds. Reachable by any local user in group `video`, and by anything feeding the
-# decoder controls parsed from an untrusted bitstream -- which is this project's
-# threat model, since a media server hands ffmpeg arbitrary files. The fix rejects in
-# `try_ctrl` rather than clamping, so a bad stream fails cleanly instead of decoding
-# wrong, and the bound is the uAPI array size, which is also the HEVC maximum -- no
-# conforming stream is refused. Not RK3588-specific: it fixes all three rkvdec HEVC
-# backends, so series/rk3576-fixes carries this same file, after its own 104 -- the
-# same sharing 070/071 have with series/rk3576-rga.
-#
-# 074 is the AV1 half of the same class, in the Hantro/VPU981 stateless decoder
-# (/dev/video3 on the RK1). tile_cols and tile_rows arrive from userspace in the AV1
-# frame control as u8 and reach fixed-size arrays with no range check anywhere:
-# validate_av1_frame() in the V4L2 core checks quantization, segmentation, loop filter,
-# cdef, loop restoration, the frame flags and superres_denom, but never the tile counts.
-# rockchip_vpu981_av1_dec_set_tile_info() then divides context_update_tile_id by
-# tile_cols (a zero count is a divide error), indexes width_in_sbs_minus_1[64] /
-# height_in_sbs_minus_1[64] by the counts, writes tile_cols * tile_rows records into a
-# 128-record scratch buffer, and indexes the 512-entry tile-group control by
-# tile1 * tile_cols + tile0 -- so a count of 255 overflows the scratch, reads two arrays
-# and the tile-group control out of bounds, and can divide by zero, all before the
-# hardware is touched. Same threat model as 073. The fix rejects in prepare_run, so the
-# buffer is failed with VB2_BUF_STATE_ERROR instead of the decode corrupting memory.
-# Unlike 073, the two bounds differ in kind: the per-dimension caps are the uAPI array
-# sizes, which are also the AV1 maxima, so they refuse nothing conforming; the product
-# cap is AV1_MAX_TILES (128), the size of the tile_info scratch this core fills, which
-# is below the uAPI's 512-tile ceiling -- so a conforming frame with more than 128 tiles
-# is refused, because this hardware cannot decode it regardless. Not RK3588-specific:
-# the VPU981 file is shared, so any SoC that binds HANTRO_AV1_DECODER gets the fix.
-# The divide-by-zero and the scratch overflow are also the two defects upstream's
-# "[PATCH v3 0/9] media: bound stateless HEVC/AV1 tile counts" 6-7 guard; if that series
-# merges, drop 074 rather than carry it, the same silent-absorption trap 073 has.
-# Note 074 rejects through rockchip_vpu981_av1_dec_run()'s prepare_error path, which is
-# buggy in the base kernel -- that is what 075 fixes; see below.
-#
 # 075 is Sascha Hauer's "media: verisilicon: Fix the cleanup when a codec ->run() fails",
 # patch 1/7 of the unmerged rk3588-jpegdec series (Pengutronix, 2026-08-19), carried
 # unmodified. The base kernel's ->run() error path is broken: rockchip_vpu981_av1_dec_run()
 # calls hantro_irq_done() and returns the error to device_run(), which finishes the job a
 # second time (a WARN_ON(!src) splat), and hantro_end_prepare_run() arms a watchdog for a
-# job that never starts, so it fires two seconds later and aborts an unrelated decode. 074
-# does not introduce this -- the -ENOMEM and vb2_src paths already hit it -- but it makes
-# it reliably reachable from a crafted tile count, so on a multi-stream box (an NVR, a
+# job that never starts, so it fires two seconds later and aborts an unrelated decode. The
+# -ENOMEM and vb2_src paths hit it, and so does the kernel's own AV1 tile-count check:
+# rockchip_vpu981_av1_dec_prepare_run() returns -EINVAL for a frame claiming more tiles
+# than userspace submitted or than the tile_info scratch holds, which makes the broken
+# path reliably reachable from a crafted tile count, so on a multi-stream box (an NVR, a
 # multi-client Jellyfin) a rejection can disrupt a concurrent decode. 075 gives
 # hantro_end_prepare_run() an error argument so a failed ->run() completes the media
-# request without the double finish or the watchdog mis-arm, which makes 074's rejection
+# request without the double finish or the watchdog mis-arm, which makes that rejection
 # fully clean. It is a codec-agnostic core change touching every hantro codec's ->run()
-# caller and hantro_end_prepare_run()'s signature, so it is carried as its own patch rather
-# than folded into 074, and it is dropped when it lands upstream -- the same silent
-# retirement 073 has. The rest of that series (the VPU720 JPEG decoder, patches
+# caller and hantro_end_prepare_run()'s signature, and it is dropped when it lands
+# upstream rather than rebased. The rest of that series (the VPU720 JPEG decoder, patches
 # 4-7) is deliberately NOT carried: no ffmpeg path drives a Rockchip hardware JPEG decoder,
 # so the driver would have no consumer here (see TODO.md section 4).
 #
@@ -184,8 +145,8 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # non-keyframe, 4:2:2 and 4:4:4 (profiles 1 and 3, which the hardware cannot do and
 # the control's menu_skip_mask refuses), and seven not yet root-caused. Patch 4/4 of
 # that posting is not taken; 076 makes that change on its own terms. This is the
-# only decode the stack was missing on this SoC, and it retires the way 073 does --
-# dropped when it merges, not rebased.
+# only decode the stack was missing on this SoC, and it retires when it merges --
+# dropped, not rebased.
 #
 # 080 is the delta that makes 079 build here, and it exists for the same reason 071
 # does: the vendored code is written against a tree this series has already changed.
@@ -234,9 +195,10 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # inclusively by the prediction path through two 16-byte stack arrays; and
 # delta_idx_minus1, which names the set to predict from as an offset back from the
 # current one, is subtracted in u8, so a value past the current index wraps rather
-# than going negative. Same shape as 073 and 074 -- bound against the limits the
-# hardware table already spells out, reject rather than clamp, and refuse nothing a
-# conforming stream can produce, since HEVC caps the three counts at 64, 32 and 15.
+# than going negative. Same shape as the kernel's tile-count bounds -- bound against
+# the limits the hardware table already spells out, reject rather than clamp, and
+# refuse nothing a conforming stream can produce, since HEVC caps the three counts at
+# 64, 32 and 15.
 # A set derived by prediction can hold one delta POC more than the set it predicts
 # from, so the chain is bounded where it is computed as well as at the control.
 #
@@ -249,8 +211,8 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # number: the deblocking, CDEF, superres and loop-restoration column buffers are
 # computed from the frame height and tile column count, the motion vector storage
 # from the superblock count, and the picture dimension registers are thirteen bits
-# of eight-pixel units, which spans far past 8K. 074's tile bounds are counts
-# rather than dimensions and stay as they are -- an 8K frame needs at least four
+# of eight-pixel units, which spans far past 8K. The kernel's AV1 tile bounds are counts
+# rather than dimensions and are unaffected -- an 8K frame needs at least four
 # tiles, against the 128 the scratch holds. What made this wait was 8K allocation
 # failing, which is 082's subject.
 #
@@ -473,8 +435,6 @@ kernel = [
     "media-accel/kernel/070-rga-multicore-vendor-oot.patch",
     "media-accel/kernel/071-rga-multicore-fixups.patch",
     "media-accel/kernel/072-rk3588-rga-dts-7.2.patch",
-    "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
-    "media-accel/kernel/074-rkvdec-av1-bound-tile-counts.patch",
     "media-accel/kernel/075-hantro-fix-run-fail-cleanup.patch",
     "media-accel/kernel/076-rkvdec-align-10bit-bytesperline-64.patch",
     "media-accel/kernel/077-rkvdec-vp9-rename-get-ref-buf.patch",

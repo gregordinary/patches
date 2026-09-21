@@ -53,10 +53,10 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  4 files changed, 102 insertions(+), 12 deletions(-)
 
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
-index 588fe23f7..6eb286a2c 100644
+index 2b8e04dd1..b9a0bfc46 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.c
-@@ -32,6 +32,56 @@ struct calculated_rps_st_set {
+@@ -33,6 +33,56 @@ struct calculated_rps_st_set {
  	s32 delta_poc_s1[16];
  };
  
@@ -110,10 +110,10 @@ index 588fe23f7..6eb286a2c 100644
 +	return 0;
 +}
 +
- /*
-  * The tile counts index fixed-size arrays: the caller's own column_width[] and
-  * row_height[] in compute_tiles_uniform()/compute_tiles_non_uniform(), and the
-@@ -218,8 +268,8 @@ static void rkvdec_hevc_assemble_hw_st_rps(struct rkvdec_hevc_run *run, struct r
+ void compute_tiles_uniform(struct rkvdec_hevc_run *run, u16 log2_min_cb_size,
+ 			   u16 width, u16 height, s32 pic_in_cts_width,
+ 			   s32 pic_in_cts_height, u16 *column_width, u16 *row_height)
+@@ -201,8 +251,8 @@ static void rkvdec_hevc_assemble_hw_st_rps(struct rkvdec_hevc_run *run, struct r
  /*
   * Compute the short term ref pic set parameters based on its reference short term ref pic
   */
@@ -124,7 +124,7 @@ index 588fe23f7..6eb286a2c 100644
  {
  	const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps_data = &run->ext_sps_st_rps[idx];
  	struct calculated_rps_st_set *st_rps = &calculated_rps_st_sets[idx];
-@@ -233,7 +283,7 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
+@@ -216,7 +266,7 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
  	int dPoc;
  
  	if ((unsigned int)rps_data->delta_idx_minus1 + 1 > idx)
@@ -133,7 +133,7 @@ index 588fe23f7..6eb286a2c 100644
  
  	ref_rps_idx = st_rps_idx - (rps_data->delta_idx_minus1 + 1); /* 7-59 */
  	delta_rps = (1 - 2 * rps_data->delta_rps_sign) *
-@@ -241,6 +291,16 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
+@@ -224,6 +274,16 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
  
  	ref_rps = &calculated_rps_st_sets[ref_rps_idx];
  
@@ -150,7 +150,7 @@ index 588fe23f7..6eb286a2c 100644
  	for (j = 0; j <= ref_rps->num_delta_pocs; j++) {
  		used_by_curr_pic_flag[j] = !!(rps_data->used_by_curr_pic & (1 << j));
  		use_delta_flag[j] = !!(rps_data->use_delta_flag & (1 << j));
-@@ -293,6 +353,8 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
+@@ -276,6 +336,8 @@ static void st_ref_pic_set_prediction(struct rkvdec_hevc_run *run, int idx,
  	st_rps->num_positive_pics = i;
  
  	st_rps->num_delta_pocs = st_rps->num_positive_pics + st_rps->num_negative_pics;
@@ -159,7 +159,7 @@ index 588fe23f7..6eb286a2c 100644
  }
  
  /*
-@@ -356,23 +418,29 @@ static void rkvdec_hevc_prepare_hw_st_rps(struct rkvdec_hevc_run *run, struct rk
+@@ -339,23 +401,29 @@ static void rkvdec_hevc_prepare_hw_st_rps(struct rkvdec_hevc_run *run, struct rk
  		return;
  
  	struct calculated_rps_st_set *calculated_rps_st_sets =
@@ -197,7 +197,7 @@ index 588fe23f7..6eb286a2c 100644
  
  void rkvdec_hevc_assemble_hw_rps(struct rkvdec_hevc_run *run, struct rkvdec_rps *rps,
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h
-index 9ae534616..76e4a6107 100644
+index 2a9b7719a..c37552487 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-hevc-common.h
 @@ -35,6 +35,18 @@
@@ -227,14 +227,14 @@ index 9ae534616..76e4a6107 100644
 +					const struct v4l2_ctrl *ctrl);
 +int rkvdec_hevc_validate_sps_rps_counts(struct rkvdec_ctx *ctx,
 +					const struct v4l2_ctrl_hevc_sps *sps);
- int rkvdec_hevc_validate_pps(struct rkvdec_ctx *ctx,
- 			     const struct v4l2_ctrl_hevc_pps *pps);
  void compute_tiles_uniform(struct rkvdec_hevc_run *run, u16 log2_min_cb_size,
+ 			   u16 width, u16 height, s32 pic_in_cts_width,
+ 			   s32 pic_in_cts_height, u16 *column_width, u16 *row_height);
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c
-index 4e4749924..ae1bc1160 100644
+index ab0dc282d..8bf51db2b 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c
-@@ -531,7 +531,7 @@ static int rkvdec_hevc_validate_sps(struct rkvdec_ctx *ctx,
+@@ -533,7 +533,7 @@ static int rkvdec_hevc_validate_sps(struct rkvdec_ctx *ctx,
  	    sps->pic_height_in_luma_samples > ctx->coded_fmt.fmt.pix_mp.height)
  		return -EINVAL;
  
@@ -243,9 +243,9 @@ index 4e4749924..ae1bc1160 100644
  }
  
  static int rkvdec_hevc_start(struct rkvdec_ctx *ctx)
-@@ -629,6 +629,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
- 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_PPS)
- 		return rkvdec_hevc_validate_pps(ctx, ctrl->p_new.p_hevc_pps);
+@@ -628,6 +628,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+ 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_SPS)
+ 		return rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
  
 +	if (ctrl->id == V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS)
 +		return rkvdec_hevc_validate_ext_sps_st_rps(ctx, ctrl);
@@ -254,7 +254,7 @@ index 4e4749924..ae1bc1160 100644
  }
  
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
-index 10b9947e4..1bb680d29 100644
+index 2862231b1..f72e7019b 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu383-hevc.c
 @@ -481,7 +481,7 @@ static int rkvdec_hevc_validate_sps(struct rkvdec_ctx *ctx,
@@ -266,9 +266,9 @@ index 10b9947e4..1bb680d29 100644
  }
  
  static int rkvdec_hevc_start(struct rkvdec_ctx *ctx)
-@@ -584,6 +584,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
- 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_PPS)
- 		return rkvdec_hevc_validate_pps(ctx, ctrl->p_new.p_hevc_pps);
+@@ -581,6 +581,9 @@ static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+ 	if (ctrl->id == V4L2_CID_STATELESS_HEVC_SPS)
+ 		return rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
  
 +	if (ctrl->id == V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS)
 +		return rkvdec_hevc_validate_ext_sps_st_rps(ctx, ctrl);

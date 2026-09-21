@@ -11,7 +11,7 @@
 # here reads the same on both generations -- 7.2 moves nothing under them -- so the
 # list carries no per-patch range. The ceiling is 7.3 because 7.2 is the newest
 # generation the series has been dry-run against, not because 7.3 is known to break it.
-applies_to_kernel = ">=7.2.4, <7.3"
+applies_to_kernel = ">=7.2.7, <7.3"
 
 # Kernel tree: the RK3576 GPU power domain is supplied by an external regulator
 # (vdd_gpu_s0 on the RK806), but -- unlike the RK3588 GPU domain -- it was never
@@ -65,27 +65,13 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # like the rest -- offered to the mainline maintainers, not merged, so unlike
 # 100-102 there is no landed commit to retire it against yet.
 #
-# 073 bounds the HEVC tile counts, and is shared verbatim with the RK3588 series
-# (series/rk3588-accel), where its full rationale lives. num_tile_columns_minus1
-# and num_tile_rows_minus1 arrive from userspace as u8 and index fixed-size
-# arrays -- the backends' own stack scratch and the control's own
-# column_width_minus1[20] / row_height_minus1[22] -- with no range check in the
-# driver or the V4L2 core, so a hostile count writes past a 40-byte stack array.
-# The fix rejects out-of-range counts in try_ctrl for all three rkvdec HEVC
-# backends, and the VDPU383 is one of them: this SoC's decoder parses the same
-# controls and overflows the same stack, and it is the SoC layer's decoder, so
-# the base image is exposed, not just media-accel. The bound is the uAPI array
-# size, which is also the HEVC maximum (20 columns, 22 rows), so no conforming
-# stream is refused. It sits after 104 because both patches touch
-# rkvdec-vdpu383-hevc.c -- 104 in the run path, 073 in try_ctrl -- and 073
-# applies strictly (no 3-way) on top; a re-curation of the shared file for
-# either series has to keep applying in the other, which the builder's
-# verify-applies gate enforces. Retires when a kernel arrives carrying an
-# upstream equivalent, from both series at once.
-#
-# 083 is shared with series/rk3588-accel on the same terms as 073: one rkvdec
-# defect, reached through the VDPU383 this SoC carries, so the fix is the same file
-# in both series rather than a second copy of it. 105 is the same defect as that
+# 083 is shared verbatim with series/rk3588-accel, where its full rationale lives:
+# one rkvdec defect, reached through the VDPU383 this SoC carries, so the fix is the
+# same file in both series rather than a second copy of it. It sits after 104 because
+# both touch rkvdec-vdpu383-hevc.c -- 104 in the run path, 083 in the control
+# validation -- and 083 applies strictly (no 3-way) on top; a re-curation of the shared
+# file for either series has to keep applying in the other, which the builder's
+# verify-applies gate enforces. 105 is the same defect as that
 # series' 082 and carries the same commit message, but not the same file: the
 # RK3588 copy sits on the multicore split (044/045), where the RCB helpers take a
 # `rkvdec_dev` and a `rkvdec_core` and the mapping device is `main_core->dev`. This
@@ -160,7 +146,7 @@ applies_to_kernel = ">=7.2.4, <7.3"
 # status, which is what a soak greps for -- and that warning is load-bearing: a
 # job the block never completes leaves it unable to decode either codec for the
 # rest of the power cycle. Both sit last because they touch the same files as 104
-# and 073 and must not disturb their hunks.
+# and 083 and must not disturb their hunks.
 kernel = [
     "rk3576/kernel/100-pmdomain-rockchip-rk3576-gpu-regulator.patch",
     "rk3576/kernel/101-arm64-dts-rk3576-gpu-power-domain-label.patch",
@@ -168,7 +154,6 @@ kernel = [
     "rk3576/kernel/111-arm64-dts-rk3576-gpio-aliases.patch",
     "rk3576/kernel/103-asoc-rockchip-sai-reapply-routing-on-resume.patch",
     "rk3576/kernel/104-media-rkvdec-vdpu383-read-cache.patch",
-    "media-accel/kernel/073-rkvdec-hevc-bound-tile-counts.patch",
     "rk3576/kernel/105-media-rkvdec-map-rcb-sram-through-dma-api.patch",
     "media-accel/kernel/083-rkvdec-bound-sps-rps-tables.patch",
     "rk3576/kernel/108-media-rkvdec-guard-null-context-in-irq-handler.patch",
