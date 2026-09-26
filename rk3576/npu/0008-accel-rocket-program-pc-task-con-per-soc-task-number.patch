@@ -28,11 +28,11 @@ which is 0x7001.
 On RK3576 TASK_NUMBER is 16 bits wide (the vendor rknpu driver carries it
 as pc_task_number_bits, 12 for RK3588 and RK356x, 16 for RK3576, RV1106,
 RK3562 and RV1126B).  The same word therefore programs a task count of
-28673, with every control bit landing above the register's defined
-fields.  The PC starts a 28673-task program, runs the task it was given
-and is left mid-stream: the first submit of each NPU power session
-computes, and every later submit in that session leaves its output buffer
-untouched.  A gap past the runtime-PM autosuspend delay hides it, because
+28673: all three control bits land inside the sixteen-bit TASK_NUMBER,
+so the count clear inflates the count instead of clearing it.  The PC
+starts a 28673-task program, runs the task it was given and is left
+mid-stream: the first submit of each NPU power session computes, and
+every later submit in that session leaves its output buffer untouched.  A gap past the runtime-PM autosuspend delay hides it, because
 the power cycle resets the PC.
 
 Carry the width in rocket_soc_data and build the word from it.  RK3588

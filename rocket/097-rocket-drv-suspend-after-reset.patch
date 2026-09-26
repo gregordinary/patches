@@ -23,9 +23,9 @@ comes up -- on RK3576 a bus interface reset -- where a core that never
 suspends never gets that work and the job after a timeout comes back as
 the output zero point with rk_iommu reporting MMU_DTE_ADDR not
 functioning, 0 of 128 channels against 128 of 128 with the single line
-changed.  Igor Paunovic ran the differential here: 45 induced resets
-across three cores, with and without, and the domain dropped every time
-with no MMU message on either kernel.  So on this part the change is that
+changed.  Igor Paunovic ran the differential here: 45 induced resets,
+all on core 0 with the other two cores bound but idle, with and without,
+and the domain dropped every time with no MMU message on either kernel.  So on this part the change is that
 the driver stops producing a state it produces nowhere else, and stops
 holding a core resumed after a job it has already given up on.
 

@@ -1,16 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jiaxing Hu <gahing@gahingwoo.com>
-Date: Mon, 17 Aug 2026 23:35:55 +1200
+Date: Thu, 24 Sep 2026 22:21:26 +1200
 Subject: [PATCH] dt-bindings: npu: rockchip: add rockchip,rk3576-rknn-core
 
-The RK3576 NPU has two cores of the same RKNN block the RK3588 binding
-already describes, but it wires them up differently: two extra CBUF
-clocks, two power domains per core, and a single reset instead of two.
-It also has no NPU SRAM supply.
-
-Widen the property ranges to cover both, then pin each SoC back to its
-own shape in allOf so nothing loosens for RK3588, and keep sram-supply
-required for rockchip,rk3588-rknn-core only.
+The RK3576 NPU has two cores of the RKNN block this binding describes, with
+two extra CBUF clocks, two power domains per core, one reset instead of
+two, and no SRAM supply. Widen the properties and pin each SoC to its own
+shape in allOf; sram-supply stays required for RK3588.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
 Reviewed-by: Krzysztof Kozlowski <krzysztof.kozlowski@oss.qualcomm.com>

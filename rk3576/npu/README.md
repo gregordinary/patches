@@ -6,21 +6,22 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 0008 to 0030 and 0033 are ours; 0001-0007, 0031, 0032 and 0034 come from the
-linux-rockchip series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
-(`gahing@gahingwoo.com`), tracked at its **v12** posting, with their upstream commit
-messages, `Signed-off-by` and `Reviewed-by` lines intact. They compose after
+Patches 0008 to 0030 and 0033 are ours; 0001-0007, 0031, 0032, 0034 and 0035 come from
+the linux-rockchip series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
+(`gahing@gahingwoo.com`), tracked at its **v14** posting (patchwork series 1172991), with
+their upstream commit messages and review tags intact. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
 
 | file | upstream subject |
 |------|------------------|
 | 0001 | dt-bindings: npu: rockchip: add `rockchip,rk3576-rknn-core` |
-| 0002 | pmdomain/rockchip: add optional per-domain power-on settle delay |
-| 0003 | pmdomain/rockchip: cycle optional power-domain resets on power-on |
+| 0002 | pmdomain: rockchip: add optional per-domain power-on settle delay |
+| 0003 | pmdomain: rockchip: cycle an optional power-domain reset on power-on |
 | 0004 | iommu/rockchip: take all DT clocks |
 | 0005 | iommu/rockchip: clear stale page faults before enabling stall |
 | 0006 | accel/rocket: add RK3576 NPU (RKNN) support |
-| 0007 | arm64: dts: rockchip: rk3576: add NPU (RKNN) nodes |
+| 0035 | arm64: dts: rockchip: add NPU core domain clocks and resets to rk3576 |
+| 0007 | arm64: dts: rockchip: add NPU (RKNN) nodes to rk3576 |
 | 0008 | accel/rocket: program PC_TASK_CON with the per-SoC TASK_NUMBER width (ours) |
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
 | 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
@@ -46,9 +47,11 @@ messages, `Signed-off-by` and `Reviewed-by` lines intact. They compose after
 | 0033 | dt-bindings: npu: rockchip: describe the RK3576 DPU register banks (ours) |
 | 0034 | accel/rocket: let the core suspend after a reset |
 
-Four of the carried patches have local changes; the rest are verbatim. 0031 to 0033
-sit near the end because `Documentation/` has no apply-order dependency on anything
-else here, and 0034 after them because it was taken later.
+Three of the carried patches have local changes -- 0002, 0006 and 0007 -- and 0034 is
+upstream's change on the context 0011 leaves; the rest are verbatim. The table is in
+apply order. 0035 comes before 0007 because upstream orders the two halves that way,
+0031 to 0033 sit near the end because `Documentation/` has no apply-order dependency on
+anything else here, and 0034 comes after them.
 
 **0001 describes the RK3576 node shape.** The upstream schema is written for the
 RK3588 and constrains every countable property to the RK3588's count, so the RK3576
@@ -94,11 +97,18 @@ the top of `rocket_probe()` and a `NULL` fails the probe before anything is allo
 `rocket_core_init()` is the first -- and a device bound by name rather than by
 compatible has no `of_node`, so the walk above never counted it and the slot this probe
 would write is past the end of `rdev->cores[]`. Upstream carries the same check as
-11/14 of the v12 posting.
+11/15 of the v14 posting.
 
-**0003 takes the power domain's resets with `dev_err_probe()`** rather than
-`dev_err()`, so a reset controller that has not probed yet produces a `-EPROBE_DEFER`
-retry instead of a logged failure. It stays verbatim.
+**0003 cycles one reset, before the settle delay.** The binding allows a power domain
+one reset, and 0035 gives each NPU core domain its BIU reset, `SRST_A_RKNN0_BIU` or
+`SRST_A_RKNN1_BIU`. The pulse comes before 0002's 15 us rather than after it, so the
+settle sits between the deassert and the QoS writes `rockchip_pmu_restore_qos()` makes
+through that bus interface. The reset is taken with `dev_err_probe()`, so a reset
+controller that has not probed yet produces a `-EPROBE_DEFER` retry instead of a logged
+failure. On removal the pointer is cleared under `pmu->mutex` before the reset is put,
+the protection `num_clks` already has: `rockchip_pm_domain_cleanup()` runs on the probe
+error path, a domain `pm_genpd_remove()` cannot take down stays live, and
+`rockchip_pd_power()` reads the pointer under that mutex. It is verbatim.
 
 **0002 is rebased over `rk3576-fixes`.** That series and this one both extend
 `drivers/pmdomain/rockchip/pm-domains.c` (the `DOMAIN_RK3576` macro signature and
@@ -112,12 +122,14 @@ so that spelling is not needed here and `RK3576_PD_NPU` passes its argument dire
 The macro rename to `DOMAIN_M_O_R_G_W` is carried, which makes the merged macro
 signature-identical to upstream's. Re-derive it the same way on a future re-sync.
 
-**`RK3576_PD_NPU` now carries `need_regulator`.** A board that describes the NPU rail
+**`RK3576_PD_NPU` carries `need_regulator`.** A board that describes the NPU rail
 with `domain-supply` on the `pd_npu` node -- 0007 labels it -- has that rail enabled
-before the domain powers and disabled after it drops. A board that does not describe
-it takes the dummy regulator and is unchanged. `npu-supply` on the core node has no
-consumer anywhere in the tree; the binding requires it, and that is the only reason
-it is set.
+before the domain powers and disabled after it drops. Such a board leaves
+`regulator-always-on` off the rail: with it the rail stays up whatever the domain does,
+and a read at rest cannot tell whether the domain holds it. A board that does not
+describe it takes the dummy regulator and is unchanged. `npu-supply` on the core node
+has no consumer anywhere in the tree; the binding requires it, and that is the only
+reason it is set.
 
 **0007 clocks the NPU inside the voltage its rail is given.** `CLK_RKNN_DSU0` clocks
 both cores and the CBUF they share; nothing else in mainline sets its rate, so the block
@@ -128,17 +140,9 @@ nodes ask for 594 MHz instead, a GPLL divider between that table's 500 and 600 M
 both of which ask 725 mV at every bin.
 
 What names that number is an upstream measurement on a ROCK 4D with both cores enabled
-and the rail at the 750 mV its PMIC boots with: two jobs in flight at once make the
-second core write single words of its output wrong -- the right value with a bit of the
-accumulator set, always the same position -- 13 to 20 rows of a 5400-row pass, where
-either core alone is exact. Four device trees over four passes each:
-
-| clock | rail | wrong rows per pass |
-|---|---|---|
-| 786 MHz | 750 mV | 13, 14, 17, 20 |
-| 594 MHz | 750 mV | 0, 0, 0, 0 |
-| 786 MHz | 800 mV | 0, 0, 0, 0 |
-| 786 MHz | 850 mV | 0, 0, 0, 0 |
+and the rail at the 750 mV its PMIC boots with: at 786 MHz two cores running together
+write wrong words, 11 to 25 in each pass of 5400 rows, where either core alone is exact.
+At 594 MHz the same passes are clean.
 
 The rate costs 4.0-4.2% of Llama-3.2-1B decode with both cores running and 23% with one,
 because on one core the clock is still the bottleneck. Every board in this tree enables a
@@ -150,17 +154,22 @@ exactly the 786 MHz / 750 mV point.
 
 **0007 carries one local change: the five register banks.** Each core node lists `pc`,
 `cna`, `core`, `dpu` and `dpu_rdma` rather than the upstream three, for the reason 0033
-gives. Everything else that used to be local here -- `rknn_core_1` at `0x27708000`, the
-two CBUF clocks on core 1, both NPU power domains on both core nodes -- is upstream now
-and is no longer a divergence. 0007 also emits the
-`rockchip,rk3576-npu-iommu` compatible that 0032 describes.
+gives. Everything else in it is upstream's, `rknn_core_1` at `0x27708000`, the two CBUF
+clocks on core 1 and both NPU power domains on both core nodes included. 0007 also emits
+the `rockchip,rk3576-npu-iommu` compatible that 0032 describes, and labels the outer
+power domain `pd_npu` so a board can give it the rail.
 
-**0034 carries one local change: what it says about the other put.** Upstream's
-message notes that the remaining put in `rocket_job_run()` is a plain
-`pm_runtime_put()` left for its own patch. The kernel now unwinds that function
-through `err_put_pm`/`err_put_fences` and returns `ERR_PTR`, so the reference and the
-scheduler credit both come back on their own. The paragraph says that instead, so the
-patch describes the tree it is in.
+**0035 is the domain half of the same change.** Upstream splits the devicetree work in
+two, and so does this directory. 0035 gives `PD_NPU0` and `PD_NPU1` the three clocks
+`PD_NPUTOP` already lists -- `CLK_RKNN_DSU0`, `ACLK_RKNN_CBUF` and `HCLK_RKNN_CBUF`, which
+belong to the block rather than to either core -- so a core domain switching state has
+the shared path's clocks running, and gives each the BIU reset 0003 cycles. It is
+verbatim.
+
+**0034 is upstream's change on the context 0011 leaves.** The line it changes and its
+message are upstream's. The lines after the put differ because 0011 keeps the IOMMU
+domain attached, so this tree's `rocket_reset()` carries a comment where upstream's
+detaches the group.
 
 **Core 1 sits at `0x27708000`.** The two cores are the two halves of one 64 KB `RKNN TOP`
 window: the RK3576 TRM v1.2 address map has `RKNN TOP` at `0x27700000` (64 KB) and the
@@ -334,12 +343,14 @@ boot with that single line as the variable -- bare put 0 of 128 channels with th
 still reading active and its rail up, `put_autosuspend()` 128 of 128 with it suspended
 and no IOMMU message, and a third run back on the bare put failing again.
 
-Igor Paunovic ran the differential on the RK3588 -- 45 induced resets across three
-cores, with and without the two patches before it upstream -- and the domain dropped
-every time on both kernels with no MMU message, so this is not rocket-wide and
-`rocket/` does not carry a counterpart. His protocol crosses a healthy block with a
-lowered timeout rather than a hung one, which he was careful to say it cannot settle;
-what it does settle is that the RK3588 shows nothing.
+Igor Paunovic ran the differential on the RK3588 -- 45 induced resets, all on core 0
+with the other two cores bound but idle, with and without the two patches before it
+upstream -- and the domain dropped every time on both kernels with no MMU message, so
+the failure is not rocket-wide. `rocket/097` carries the same change for the RK3588,
+where what it fixes is the state the reset leaves behind rather than an observed
+failure. His protocol crosses a healthy block with a lowered timeout rather than a hung
+one, which he was careful to say it cannot settle; what it does settle is that the
+RK3588 shows nothing.
 
 ## What 0014 fixes: a crash reachable from group `render`
 
@@ -796,7 +807,8 @@ take it together with the rest, not as a menu:
 | `&rknn_mmu_0` (`/soc/iommu@27702000`) | `status = "okay"` |
 | `&rknn_core_1` (`/soc/npu@27708000`) | none -- left `disabled`, see below |
 | `&rknn_mmu_1` (`/soc/iommu@2770a000`) | none -- left `disabled` |
-| `&vdd_npu_s0` (PMIC `dcdc-reg2` on this board) | `regulator-always-on` |
+| `&pd_npu` (`RK3576_PD_NPU`) | `domain-supply = <&vdd_npu_s0>` |
+| `&vdd_npu_s0` (PMIC `dcdc-reg2` on this board) | `regulator-boot-on`, no `regulator-always-on` |
 
 **Bind one core.** Two jobs in flight at once compute wrong answers on this part:
 96-100% of calls wrong, over as much as 94% of the surface, deltas spanning the whole
@@ -849,14 +861,25 @@ binding, where `dtbs_check` catches it and names the property.
 The IOMMUs need only their `status`: `rk_iommu` does no explicit attach, and one
 `power-domains` entry is what the hardware has.
 
-**The rail needs `regulator-always-on` *in addition to* `npu-supply`.** `vdd_npu_s0`
-boots enabled but has no consumer, so the regulator core disables it as unused late in
-boot (`vdd_npu_s0: disabling`, t~33 s) -- well after a successful probe at t~8 s, which
-is why this presents as a runtime failure rather than a boot failure. `npu-supply`
-alone does not hold it: mainline `rocket` has no regulator support at all (`rocket.ko`
-references no `regulator_*` symbol), so the property is inert and nothing claims the
-rail. Set both -- `npu-supply` so a regulator-aware driver can vary the voltage,
-`regulator-always-on` so the rail survives under this one.
+**The rail belongs to the power domain, through `domain-supply` on `pd_npu`.**
+`npu-supply` on the core node does not hold it: mainline `rocket` has no regulator
+support at all (`rocket.ko` references no `regulator_*` symbol), so that property is
+inert. A rail with no consumer is disabled as unused late in boot
+(`vdd_npu_s0: disabling`, t~33 s), well after a clean probe at t~8 s, so a board that
+wires only `npu-supply` presents a runtime failure rather than a boot failure. With
+`domain-supply`, 0002's `need_regulator` makes the domain the consumer: it enables the
+rail before `PD_NPU` powers and disables it after `PD_NPU` drops, so the rail is up
+whenever the NPU is and off while it is idle, and the late cleanup can only find it
+off with the domain.
+
+Leave `regulator-always-on` off `vdd_npu_s0`. With it the rail stays up whatever the
+domain does, and `regulator_summary` at rest reads enabled whether or not the domain
+took it. The domain-switched rail is the arrangement upstream runs: on a ROCK 4D, 536
+cold power-ons were clean with 0002's 15 us settle, and with the settle at 0 the first
+power-on took an async SError whether the rail followed the domain or was held
+always-on -- the fault needs only the domain. The H96 hands `vdd_gpu_s0` to `pd_gpu` the
+same way. Keep `npu-supply` too: the binding requires it, and a regulator-aware driver
+would vary the voltage through it.
 
 0008 is required for back-to-back submits, and 0006's commit message predates it:
 that message describes only the first operation per power session producing valid
@@ -874,7 +897,7 @@ RK3588 geometry does not run here; a userspace needs its own RK3576 encoder. Wit
 that in hand the kernel side runs: an int8 convolution encoded for this part is
 bit-exact against a CPU model on real silicon (H96 MAX M9), and multi-task
 row-windowed programs are bit-exact submitted back to back with no gap. Carried from
-the upstream series at **v13**; re-sync from a later revision by re-splitting it into
+the upstream series at **v14**; re-sync from a later revision by re-splitting it into
 this directory and updating `series/rk3576-npu.toml`.
 
 **0026 to 0034 have not been on hardware here.** They are reasoned from the source and
@@ -889,14 +912,17 @@ measurement above stands, but the H96 has not been through a run with them appli
 the checks that would close that are a submit sweep unchanged, an unbind and rebind
 with a job in flight, and `dtbs_check` clean on `rk3576.dtsi`.
 
-**Neither has the upstream re-sync.** What moved across it is 0001, 0002, 0003, 0006,
-0007, 0031 and 0032, and four of those changes are behavioural rather than editorial:
-`RK3576_PD_NPU` carries `need_regulator`, the MMU nodes carry a new compatible string,
-0006 refuses a device with no match data, and 0028 clears the raw interrupt status
-beside the mask and takes both writes under `job_lock`. None has been booted here. The
-MMU change is inert for the driver, which matches the `rockchip,rk3568-iommu` fallback;
-the regulator flag takes the dummy regulator on a board with no `domain-supply` on
-`pd_npu`, which is every board in this tree today; the match-data check is on a path no
-devicetree-bound core takes; and the status clear and its lock scope are on the timeout
-path. The checks that would close it are a boot with the NPU enabled, `dtbs_check` clean
-on `rk3576.dtsi`, and `bash tools/gates-rk3576.sh` in `rocket-userspace`.
+**Nor has the series at v14.** Five of its changes are behavioural rather than
+editorial, and none has been booted here. Two are on every NPU power-on: 0003 pulses the
+BIU reset before the settle delay rather than after it, and `RK3576_PD_NPU` carries
+`need_regulator`, which the H96's board `.dts` takes up by giving `pd_npu` its rail --
+so `vdd_npu_s0` follows the domain rather than staying up. The other three are narrower:
+the MMU nodes carry a new compatible string, which is inert for the driver since it
+matches the `rockchip,rk3568-iommu` fallback; 0006 refuses a device with no match data,
+on a path no devicetree-bound core takes; and 0028 clears the raw interrupt status beside
+the mask and takes both writes under `job_lock`, on the timeout path. 0007 also places
+the nodes in address order in `rk3576.dtsi`, which changes no property. The
+checks that would close it are a boot with the NPU enabled that runs jobs across
+autosuspend cycles, `/sys/kernel/debug/regulator/regulator_summary` reading `vdd_npu_s0`
+off with the NPU idle and on under a job, `dtbs_check` clean on `rk3576.dtsi`, and
+`bash tools/gates-rk3576.sh` in `rocket-userspace`.

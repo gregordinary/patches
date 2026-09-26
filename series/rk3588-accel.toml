@@ -273,7 +273,7 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # concurrent outright.
 #
 # 091 is 090's other half, from the RK3576 series -- Jiaxing Hu's patch, suggested by
-# Igor Paunovic, tracked at its v12 posting. rocket_reset() calls drm_sched_stop(), which stops
+# Igor Paunovic, tracked at its v14 posting. rocket_reset() calls drm_sched_stop(), which stops
 # the scheduler and returns; it does not wait for a threaded handler that is already
 # running, so the comment that followed it -- "Remaining interrupts have been handled"
 # -- stated an assumption rather than something the code arranged. A handler mid-flight
@@ -292,7 +292,10 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # pm_runtime_get_if_active(), which holds a reference rather than sampling one, and > 0
 # rather than != 0: that helper tests power.disable_depth before power.runtime_status, so
 # -EINVAL masks a suspended device rather than excluding one, and this driver makes that
-# state in both pm_runtime_force_suspend() and rocket_core_fini(). Beside the mask it
+# state in both pm_runtime_force_suspend() and rocket_core_fini(). The cost is the other
+# half of that ambiguity: a core still up with runtime PM disabled keeps its mask and its
+# latched bits, because writing to it would mean writing to the half that is down as
+# well. Beside the mask it
 # clears INTERRUPT_CLEAR, because masking ends nothing already raised: the hardirq decides
 # on INTERRUPT_RAW_STATUS alone and the line is IRQF_SHARED, so a latched completion bit
 # and another device's interrupt together wake the threaded handler again after the sync
@@ -379,8 +382,8 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # domain stays up for as long as the driver is bound. It also matches the put in the
 # completion path a few lines away. The measured failure behind it upstream is RK3576's,
 # where the power domain does a bus-interface reset on power-on that a core which never
-# suspends never gets; Igor Paunovic's RK3588 differential -- 45 induced resets across
-# three cores -- found the domain dropping either way on this part, so here the change is
+# suspends never gets; Igor Paunovic's RK3588 differential -- 45 induced resets, all on
+# core 0 -- found the domain dropping either way on this part, so here the change is
 # that the driver stops producing a state it produces nowhere else. It requires 091, and
 # not only for the comment it rewrites: 091's synchronize_irq() is what guarantees no
 # threaded handler is still running to touch the core this makes suspendable. The other

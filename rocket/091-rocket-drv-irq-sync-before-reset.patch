@@ -48,7 +48,12 @@ excluding one, and this driver makes that state twice:
 pm_runtime_force_suspend(), its own system sleep callback, disables
 runtime PM before it turns the clocks off, and rocket_core_fini()
 suspends the core and disables before it cancels the timeout worker.
-Either would put these writes on a powered-down block.
+Either would put these writes on a powered-down block.  What that costs
+is the other half of the ambiguity: a core still up with runtime PM
+disabled -- pm_runtime_force_suspend() before its callback has run, or
+CONFIG_PM=n under COMPILE_TEST -- keeps its mask and its latched bits,
+because writing to it would mean writing to the half that is down as
+well.
 
 Those two writes go under job_lock, though the sync does not.
 rocket_job_hw_submit() arms the same register and always runs under that
@@ -78,22 +83,22 @@ finishing its work on the job the reset is about to drop.  That window
 needs the check and the register writes to be one step under the lock,
 which is what 090 does; the two are complementary.
 
-From the v13 posting of the RK3576 series -- Jiaxing Hu's patch, suggested
+From the v14 posting of the RK3576 series -- Jiaxing Hu's patch, suggested
 by Igor Paunovic -- carried here because the function is the RK3588's own
 and the fix is not RK3576-specific.
 
-  https://lore.kernel.org/linux-rockchip/20260915104328.45901-4-gahing@gahingwoo.com/
+  https://lore.kernel.org/linux-rockchip/20260924102135.92217-4-gahing@gahingwoo.com/
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- drivers/accel/rocket/rocket_job.c | 67 +++++++++++++++++++++++++++++--
- 1 file changed, 64 insertions(+), 3 deletions(-)
+ drivers/accel/rocket/rocket_job.c | 73 +++++++++++++++++++++++++++++--
+ 1 file changed, 70 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/accel/rocket/rocket_job.c b/drivers/accel/rocket/rocket_job.c
-index 00611d31e..f61215a19 100644
+index 00611d31e..e4049499a 100644
 --- a/drivers/accel/rocket/rocket_job.c
 +++ b/drivers/accel/rocket/rocket_job.c
-@@ -478,9 +478,70 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
+@@ -478,9 +478,76 @@ rocket_reset(struct rocket_core *core, struct drm_sched_job *bad)
  	drm_sched_stop(&core->sched, bad);
  
  	/*
@@ -121,6 +126,12 @@ index 00611d31e..f61215a19 100644
 +	 * suspended device rather than excluding one, and this driver makes
 +	 * that state in both pm_runtime_force_suspend() and
 +	 * rocket_core_fini().
++	 *
++	 * The cost is the other half of that ambiguity.  A core that is still
++	 * up with runtime PM disabled -- pm_runtime_force_suspend() before its
++	 * callback has run, or CONFIG_PM=n under COMPILE_TEST -- keeps its mask
++	 * and its latched bits, because writing to it would mean writing to the
++	 * half that is down as well.
 +	 *
 +	 * Clear the raw status along with the mask.  Masking alone leaves the
 +	 * completion bit latched until rocket_core_reset(), and the hardirq

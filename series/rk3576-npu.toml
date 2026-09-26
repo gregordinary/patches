@@ -15,11 +15,13 @@
 # real silicon, including multi-task row-windowed programs submitted with no gap
 # between tasks.
 #
-# 0001-0007, 0031, 0032 and 0034 come from the linux-rockchip series "accel/rocket: RK3576
-# NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v12 posting; everything else is
-# ours, though 0027 and 0028 make the same changes as that series' 02/14 and 03/14 and
-# each patch says so. 0001, 0003, 0004, 0005, 0031 and 0032 are
-# verbatim; 0002, 0006, 0007 and 0034 carry local changes.
+# 0001-0007, 0031, 0032, 0034 and 0035 come from the linux-rockchip series "accel/rocket:
+# RK3576 NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v14 posting (patchwork series
+# 1172991); everything else is ours, though 0027 and 0028 make the same changes as that
+# series' 02/15 and 03/15 and each patch says so. 0001, 0003, 0004, 0005, 0031, 0032 and
+# 0035 are verbatim; 0002, 0006 and 0007 carry local changes, and 0034 is upstream's
+# change on the context 0011 leaves. 0035 is listed ahead of 0007 because upstream orders
+# the two that way: the domain clocks and resets, then the nodes.
 #
 # 0001 widens the binding to describe the RK3576 node and pins the exact shape per
 # compatible in an allOf, which is what makes a one-domain RK3576 core a dtbs_check
@@ -38,8 +40,15 @@
 # re-sync. 0002 also renames DOMAIN_M_O_R_G to DOMAIN_M_O_R_G_W, following upstream, so
 # that the merged macro is signature-identical to theirs.
 #
-# 0003 takes the domain's resets with dev_err_probe(), so a reset controller that has
-# not probed yet defers quietly instead of logging a failure.
+# 0003 takes the domain's one reset -- the binding allows one, which is what 0035 gives
+# each NPU core domain -- with dev_err_probe(), so a reset controller that has not
+# probed yet defers quietly instead of logging a failure. It pulses the reset before
+# 0002's settle delay rather than after, so the 15 us sits between the deassert and the
+# QoS writes rockchip_pmu_restore_qos() makes through the bus interface that reset
+# covers. And it clears the pointer under pmu->mutex before it puts the reset, the same
+# protection num_clks has: rockchip_pm_domain_cleanup() runs on the probe error path,
+# where a domain pm_genpd_remove() could not take down stays live, and
+# rockchip_pd_power() takes that mutex before it reads the pointer.
 #
 # 0006 attaches the power domains the node lists instead of deciding from the SoC it
 # matched, so the phandle count is a hardware description and not a driver-dispatch
@@ -53,7 +62,7 @@
 # core->soc is dereferenced unchecked by every one of its users, and a device bound by
 # name rather than by compatible has no of_node, so the walk that sizes rdev->cores[]
 # never counted it and the slot the probe would write is past the end. Upstream carries
-# the same check, as 11/14 of the v12 posting.
+# the same check, as 11/15 of the v14 posting.
 #
 # 0007 clocks the NPU inside the voltage its rail is given. CLK_RKNN_DSU0 clocks both
 # cores and the CBUF they share, nothing else in mainline sets its rate, and the block
@@ -62,25 +71,30 @@
 # step whose voltage it happens to boot with. The node asks for 594 MHz, a GPLL divider
 # between the table's 500 and 600 MHz steps, both of which ask 725 mV at every leakage
 # bin. Upstream measured the failure that names: on a ROCK 4D with both cores enabled and
-# the rail at the 750 mV its PMIC boots with, two jobs at once make the second core write
-# 13 to 20 single words of a 5400-row pass wrong, and 594 MHz, 800 mV or 850 mV each give
-# four clean passes. The rate costs 4.0-4.2% of decode with two cores and 23% with one,
-# which is what a board in this tree pays, since each of them enables a single core.
+# the rail at the 750 mV its PMIC boots with, two cores running together write 11 to 25
+# wrong words in each pass of 5400 rows at 786 MHz, and none at 594 MHz. The rate costs
+# 4.0-4.2% of decode with two cores and 23% with one, which is what a board in this tree
+# pays, since each of them enables a single core.
 #
 # 0007 carries one local change: each core takes five register banks rather than three,
 # because 0012 and its successors retire a job on the DPU's and the PPU's own
-# completions and need those banks mapped. The rest of what this file used to list as
-# local -- rknn_core_1 at 0x27708000, the CBUF clocks on core 1, both NPU power domains
-# on both core nodes -- is upstream now and is no longer a divergence. The board
-# patch (enable NPU on the Radxa ROCK 4D) is dropped: the board enable is
-# board-specific, and the H96 wires its own via its device `.dts`.
+# completions and need those banks mapped. Everything else in it is upstream's,
+# rknn_core_1 at 0x27708000 and both NPU power domains on both core nodes included.
+# 0035 is the other half of what upstream split in two: it gives PD_NPU0 and PD_NPU1 the
+# three clocks PD_NPUTOP already lists -- CLK_RKNN_DSU0 and the CBUF pair, which belong
+# to the block rather than to either core -- so a core domain switching state has the
+# shared path's clocks running, and gives each the BIU reset 0003 cycles. The series'
+# last patch, which enables the NPU on the Radxa ROCK 4D, is not carried: a board enable
+# is board-specific, and the H96 wires its own in its device `.dts`.
 #
 # One consequence to know before wiring a board: RK3576_PD_NPU carries
 # need_regulator, so a board that describes the NPU rail with domain-supply on the
 # pd_npu node (0007 labels it) has that rail enabled before the domain powers and
-# disabled after. A board that does not describe it takes the dummy regulator and is
-# unchanged. npu-supply on the core node has no consumer anywhere in the tree; the
-# binding requires it, and that is the only reason it is set.
+# disabled after. Such a board leaves regulator-always-on off the rail: with it the rail
+# stays up whatever the domain does, which is not the arrangement upstream tested. A
+# board that does not describe it takes the dummy regulator and is unchanged.
+# npu-supply on the core node has no consumer anywhere in the tree; the binding requires
+# it, and that is the only reason it is set.
 #
 # 0008 is ours and is required for back-to-back submits. It gives rocket_soc_data a
 # task_number_bits field, because PC_TASK_CON's TASK_NUMBER is 12 bits wide on the
@@ -230,7 +244,7 @@
 # than five ways the hardware is. 0026 resets with soc->num_resets, the count the
 # resets were acquired with, instead of ARRAY_SIZE: on this SoC that walked an entry
 # nothing asked for, which the reset core absorbs as a no-op against a NULL rstc and
-# which stops being harmless now that 0003 makes srst_h a real line the power domain
+# which stops being harmless once 0003 and 0035 make srst_h a line the power domain
 # drives. 0027 takes rocket_job_handle_irq()'s two register writes under job_lock.
 # rocket_job_hw_submit() writes OPERATION_ENABLE from inside that lock, so a
 # completion's zero landing after a submit's one stops a task that has only just
@@ -293,7 +307,7 @@
 # they are last only because Documentation/ has no apply-order dependency on anything.
 # Every DT they cover is rejected without them. 0031: pd-node carries no `resets`
 # property and is unevaluatedProperties: false at every nesting level, so the
-# SRST_A_RKNN0/1_BIU phandles 0007 puts on the NPU power domains do not validate.
+# SRST_A_RKNN0/1_BIU phandles 0035 puts on the NPU power domains do not validate.
 # 0032: rockchip,iommu pins `clocks` and `clock-names` at exactly the aclk/iface pair
 # and REQUIRES clock-names, so the five-clock MMU nodes fail on both counts -- and it
 # gives the RK3576 NPU MMUs a compatible of their own, rockchip,rk3576-npu-iommu, with
@@ -336,10 +350,11 @@ applies_to_kernel = ">=7.2.4, <7.3"
 kernel = [
     "rk3576/npu/0001-dt-bindings-npu-rockchip-add-rk3576-rknn-core.patch",
     "rk3576/npu/0002-pmdomain-rockchip-add-optional-power-on-settle-delay.patch",
-    "rk3576/npu/0003-pmdomain-rockchip-cycle-power-domain-resets-on-power-on.patch",
+    "rk3576/npu/0003-pmdomain-rockchip-cycle-an-optional-power-domain-reset-on-power-on.patch",
     "rk3576/npu/0004-iommu-rockchip-take-all-dt-clocks.patch",
     "rk3576/npu/0005-iommu-rockchip-clear-stale-page-faults-before-stall.patch",
     "rk3576/npu/0006-accel-rocket-add-rk3576-npu-support.patch",
+    "rk3576/npu/0035-arm64-dts-rockchip-add-npu-core-domain-clocks-and-resets-to-rk3576.patch",
     "rk3576/npu/0007-arm64-dts-rockchip-rk3576-add-npu-nodes.patch",
     "rk3576/npu/0008-accel-rocket-program-pc-task-con-per-soc-task-number.patch",
     "rk3576/npu/0009-accel-rocket-make-the-rk3576-completion-poll-period-tunable.patch",

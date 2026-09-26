@@ -1,14 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jiaxing Hu <gahing@gahingwoo.com>
-Date: Mon, 17 Aug 2026 23:35:56 +1200
+Date: Thu, 24 Sep 2026 22:21:27 +1200
 Subject: [PATCH] dt-bindings: power: rockchip: allow resets in a power
  domain node
 
-Some domains do not come up in a usable state on their own and need
-their resets cycled once power is on. The RK3576 NPU domains are one
-case: without it the first access after power-on takes an async SError.
+Some domains need a reset cycled once power is on. The RK3576 NPU domains
+are one: without it the first access after power-on takes an async SError.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
+Acked-by: Conor Dooley <conor.dooley@microchip.com>
+Reviewed-by: Heiko Stuebner <heiko@sntech.de>
 ---
  .../bindings/power/rockchip,power-controller.yaml         | 8 ++++++++
  1 file changed, 8 insertions(+)

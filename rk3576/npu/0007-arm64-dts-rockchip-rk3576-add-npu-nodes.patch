@@ -1,76 +1,30 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jiaxing Hu <gahing@gahingwoo.com>
-Date: Sat, 18 Jul 2026 15:11:45 +1200
-Subject: [PATCH] arm64: dts: rockchip: rk3576: add NPU (RKNN) nodes
+Date: Thu, 24 Sep 2026 22:21:34 +1200
+Subject: [PATCH] arm64: dts: rockchip: add NPU (RKNN) nodes to rk3576
 
-Add the two RKNN cores and their IOMMUs.  Both cores are disabled by
-default; boards enable what they wire up.
+Add the two RKNN cores and their IOMMUs, disabled, and label PD_NPU so a
+board can give it the NPU rail. Each core lists both core domains, its own
+first, as tested.
 
-PD_NPU0 and PD_NPU1 are siblings under PD_NPUTOP and hold one core each,
-but the convolution buffer and the DSU sit above them: ACLK_RKNN_CBUF,
-HCLK_RKNN_CBUF and CLK_RKNN_DSU0 belong to the block rather than to
-either core, and PD_NPUTOP already lists all three.  Add them to both
-core domains as well, so a core domain switching state has the clocks of
-the path it shares running, and give each core domain the BIU reset that
-the pmdomain driver now cycles once power is on.
-
-Each core lists both core domains, its own first, so that a core in use
-has the whole block powered.  Whether a single core can reach the shared
-path with the sibling domain off is not something this series
-establishes; listing both is the description that has been tested here.
-The IOMMU in front of each core lists that core's domain only.
-
-Label the outer PD_NPU node so a board can attach the NPU rail to the
-domain that gates the block.
-
-Clock the NPU inside the voltage its rail is given.  CLK_RKNN_DSU0 clocks
-both cores and the CBUF they share, nothing in mainline sets its rate, and
-the block comes up at 786.432 MHz.  Rockchip's OPP table for this NPU asks
-800 mV of its 800 MHz step at the worst leakage bins, and nothing in
-mainline sets the rail either, so a board that follows this DTS runs the
-NPU above the step whose voltage it happens to boot with.  594 MHz is a
-divider off GPLL and sits between that table's 500 and 600 MHz steps, both
-of which ask 725 mV at every leakage bin, so it is inside the voltage a
-board that describes no NPU rail already provides.
-
-Measured on a ROCK 4D with both cores enabled and vdd_npu_s0 at the 750 mV
-its PMIC comes up with: two jobs in flight at once make the second core
-write single words of its output wrong -- the right value with a bit of the
-accumulator set, always the same position in the array -- while either core
-alone is exact.  Four device trees, same board, kernel and userspace, four
-passes of 5400 rows each:
-
-  786 MHz, 750 mV    13 to 20 wrong rows a pass
-  594 MHz, 750 mV    0, 0, 0, 0
-  786 MHz, 800 mV    0, 0, 0, 0
-  786 MHz, 850 mV    0, 0, 0, 0
-
-What the rate costs is measured on the same board, medians of five runs an
-arm, arms alternating inside a boot: 192 MHz is 4.0 to 4.2% of Llama-3.2-1B
-decode with both cores running and 23% with one, because on one core the
-clock is still the bottleneck.  A board that enables a single core -- which
-is every board in this tree -- pays the larger share and gets an operating
-point its rail actually covers.  An OPP table with the rail attached is the
-proper answer and wants driver support this series does not have.
-
-The two cores are the halves of one 64 KB RKNN TOP window, so core 1 sits
-at 0x27708000 with a stride of 0x8000 rather than the RK3588's 0x10000;
-0x27710000 is the unrelated RKNN_NSP block, and a core pointed there binds,
-reads a plausible version word and times out on every job while writing PC
-registers into the NPU MCU subsystem.
+Assign CLK_RKNN_DSU0 594 MHz. Nothing in mainline sets its rate or the NPU
+rail, and at the 786 MHz it comes up at, on the 750 mV a ROCK 4D boots
+with, two cores running together write wrong words, 11 to 25 in each pass
+of 5400 rows. 594 MHz is clean, and Rockchip's OPP table asks only 725 mV
+of its 500 and 600 MHz steps.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
 [each core takes five register banks rather than three: this series drives
  the DPU's own completion, which needs the dpu and dpu_rdma banks mapped]
 ---
- arch/arm64/boot/dts/rockchip/rk3576.dtsi | 92 +++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 89 insertions(+), 3 deletions(-)
+ arch/arm64/boot/dts/rockchip/rk3576.dtsi | 78 +++++++++++++++++++++++-
+ 1 file changed, 77 insertions(+), 1 deletion(-)
 
 diff --git a/arch/arm64/boot/dts/rockchip/rk3576.dtsi b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
-index 7c34f8aab..72f33e0a8 100644
+index a8b65505c..f2a7650a1 100644
 --- a/arch/arm64/boot/dts/rockchip/rk3576.dtsi
 +++ b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
-@@ -1116,7 +1116,7 @@ power: power-controller {
+@@ -1121,7 +1121,7 @@ power: power-controller {
  				#address-cells = <1>;
  				#size-cells = <0>;
  
@@ -79,33 +33,8 @@ index 7c34f8aab..72f33e0a8 100644
  					reg = <RK3576_PD_NPU>;
  					#power-domain-cells = <1>;
  					#address-cells = <1>;
-@@ -1144,14 +1144,22 @@ power-domain@RK3576_PD_NPUTOP {
- 						power-domain@RK3576_PD_NPU0 {
- 							reg = <RK3576_PD_NPU0>;
- 							clocks = <&cru HCLK_RKNN_ROOT>,
--								 <&cru ACLK_RKNN0>;
-+								 <&cru ACLK_RKNN0>,
-+								 <&cru CLK_RKNN_DSU0>,
-+								 <&cru ACLK_RKNN_CBUF>,
-+								 <&cru HCLK_RKNN_CBUF>;
-+							resets = <&cru SRST_A_RKNN0_BIU>;
- 							pm_qos = <&qos_npu_m0>;
- 							#power-domain-cells = <0>;
- 						};
- 						power-domain@RK3576_PD_NPU1 {
- 							reg = <RK3576_PD_NPU1>;
- 							clocks = <&cru HCLK_RKNN_ROOT>,
--								 <&cru ACLK_RKNN1>;
-+								 <&cru ACLK_RKNN1>,
-+								 <&cru CLK_RKNN_DSU0>,
-+								 <&cru ACLK_RKNN_CBUF>,
-+								 <&cru HCLK_RKNN_CBUF>;
-+							resets = <&cru SRST_A_RKNN1_BIU>;
- 							pm_qos = <&qos_npu_m1>;
- 							#power-domain-cells = <0>;
- 						};
-@@ -1878,6 +1886,84 @@ qos_npu_m1ro: qos@27f22100 {
- 			reg = <0x0 0x27f22100 0x0 0x20>;
+@@ -1348,6 +1348,82 @@ power-domain@RK3576_PD_VO1 {
+ 			};
  		};
  
 +		rknn_core_0: npu@27700000 {
@@ -126,8 +55,7 @@ index 7c34f8aab..72f33e0a8 100644
 +			assigned-clock-rates = <594000000>;
 +			resets = <&cru SRST_A_RKNN0>;
 +			reset-names = "srst_a";
-+			power-domains = <&power RK3576_PD_NPU0>,
-+					<&power RK3576_PD_NPU1>;
++			power-domains = <&power RK3576_PD_NPU0>, <&power RK3576_PD_NPU1>;
 +			iommus = <&rknn_mmu_0>;
 +			status = "disabled";
 +		};
@@ -165,8 +93,7 @@ index 7c34f8aab..72f33e0a8 100644
 +			assigned-clock-rates = <594000000>;
 +			resets = <&cru SRST_A_RKNN1>;
 +			reset-names = "srst_a";
-+			power-domains = <&power RK3576_PD_NPU1>,
-+					<&power RK3576_PD_NPU0>;
++			power-domains = <&power RK3576_PD_NPU1>, <&power RK3576_PD_NPU0>;
 +			iommus = <&rknn_mmu_1>;
 +			status = "disabled";
 +		};
@@ -186,9 +113,9 @@ index 7c34f8aab..72f33e0a8 100644
 +			status = "disabled";
 +		};
 +
- 		gmac0: ethernet@2a220000 {
- 			compatible = "rockchip,rk3576-gmac", "snps,dwmac-4.20a";
- 			reg = <0x0 0x2a220000 0x0 0x10000>;
+ 		gpu: gpu@27800000 {
+ 			compatible = "rockchip,rk3576-mali", "arm,mali-bifrost";
+ 			reg = <0x0 0x27800000 0x0 0x20000>;
 -- 
 2.43.0
 
