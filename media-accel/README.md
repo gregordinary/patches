@@ -34,17 +34,23 @@ support-matrix` is the authority, not this file.
 
 ## ffmpeg/ — ffmpeg-rockchip (nyanmisaka lineage)
 
-Kwiboo's `v4l2-request` branch with nyanmisaka's RKMPP/RGA work grafted on, then
-our fixes. Full per-patch rationale in [`ffmpeg/README.md`](ffmpeg/).
+An FFmpeg release tag, Kwiboo's `v4l2-request` hwaccel on top, nyanmisaka's
+RKMPP/RGA work grafted on, then our fixes. Full per-patch rationale in
+[`ffmpeg/README.md`](ffmpeg/).
 
 | File | Purpose |
 |------|---------|
+| `v4l2-request/0001`–`0013` | Kwiboo's V4L2 request-API hwaccel (MPEG-2, H.264, HEVC, VP8, VP9, AV1), carried verbatim |
 | `0001`–`0002` | `AV_PIX_FMT_NV15`/`NV20` and the swscale readers for them |
 | `0003`–`0004` | RKMPP hwcontext; `scale_rkrga` / `vpp_rkrga` / `overlay_rkrga` |
 | `0005` | Tag `NV15`/`NV20` as themselves, so `hwdownload` and `hwmap` work on a 10-bit frame |
 | `0006` | Teach `hwcontext_vulkan`'s DRM importer the composed one-layer descriptor v4l2-request emits |
 | `0007`–`0013` | Defect fixes in the grafted code (a use-after-free, a SIGFPE, a dropped row tail) |
 | `0014`–`0015` | `alphasrc` and `sub2video`, the subtitle burn-in branch |
+| `0016` | Send the HEVC SPS short and long term RPS tables the request API decoder needs |
+| `0017`–`0019` | `mjpeg_v4l2m2m`, a hardware JPEG encoder on the mainline VEPU121 |
+| `0020`–`0021` | `overlay_vulkan` output timebase and framesync options |
+| `0022` | RGA scale ratio for a 90 or 270 degree rotation |
 | `README-libavutil-hwcontext-conflict-resolution.diff` | Reference: nyanmisaka RKMPP `hwcontext` patch, for resolving the libavutil conflict during rebases |
 
 ## userspace/ — librockchip-mpp / librga

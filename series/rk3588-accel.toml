@@ -470,10 +470,18 @@ kernel = [
     "crypto/kernel/103-arm64-dts-rockchip-rk3588-crypto-node.patch",
 ]
 
-# ffmpeg tree (Kwiboo v4l2-request base + nyanmisaka rkmpp/rkrga graft): the graft
-# materialized as an ordered `git am` series (0001-0004; one commit needs a 3-way
-# resolution a cherry-pick cannot reproduce — see media-accel/ffmpeg/README.md),
-# then the NV15/NV20 tag fix the base needs (0005).
+# ffmpeg tree: an FFmpeg release tag, then Kwiboo's V4L2 request-API hwaccel
+# (v4l2-request/0001-0013), then the nyanmisaka rkmpp/rkrga graft materialized as an
+# ordered `git am` series (0001-0004; one commit needs a 3-way resolution a
+# cherry-pick cannot reproduce — see media-accel/ffmpeg/README.md), then the NV15/NV20
+# tag fix the request-API base needs (0005).
+#
+# The v4l2-request patches are Kwiboo's `v4l2-request-n8.1` branch carried verbatim:
+# the 13 commits between `n8.1` and its tip `b57fbbe`, with patch-ids identical to
+# the branch's. They ride on the release tag the SoC layer pins rather than on
+# Kwiboo's own `n8.1` base, so the image takes FFmpeg's point releases -- the
+# demuxer, decoder and swscale fixes on `release/8.1` -- with no wait for the
+# branch to be rebased. All 13 apply to `n8.1.3` with no conflict.
 #
 # 0005 is what makes 10-bit hardware decode usable at all beyond the RGA filters.
 # The base tags a packed NV15 capture buffer with the planar logical sw_format
@@ -607,7 +615,28 @@ kernel = [
 # unbounded overlay source -- 0014's alphasrc, which is exactly what a burn-in
 # chain puts there -- keeps the graph compositing after the main input ends,
 # with no option available to say otherwise.
+#
+# 0022 is a defect fix in the grafted RGA filters, so it follows 0004 and the
+# other rkrga fixes. verify_rga_frame_info() picks the RGA core from the scale
+# ratio, and for a 90 or 270 degree rotation it divided each destination axis by
+# the wrong source axis. A rotated scale RGA3 can do was then routed to RGA2,
+# which takes no P010 and writes no NV15, and the filter failed to configure. The
+# fix is nyanmisaka's, taken from jellyfin-ffmpeg, which carries it and
+# ffmpeg-rockchip does not.
 ffmpeg = [
+    "media-accel/ffmpeg/v4l2-request/0001-avutil-hwcontext-Add-hwdevice-type-for-V4L2-Request-API.patch",
+    "media-accel/ffmpeg/v4l2-request/0002-avutil-hwcontext_v4l2request-Probe-for-a-capable-media-and-video-device.patch",
+    "media-accel/ffmpeg/v4l2-request/0003-avcodec-Add-common-V4L2-Request-API-code.patch",
+    "media-accel/ffmpeg/v4l2-request/0004-avcodec-v4l2request-Add-common-decode-support-for-hwaccels.patch",
+    "media-accel/ffmpeg/v4l2-request/0005-avcodec-Add-V4L2-Request-API-mpeg2-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0006-avcodec-h264dec-add-ref_pic_marking-and-pic_order_cnt-bit_size-to-slice-context.patch",
+    "media-accel/ffmpeg/v4l2-request/0007-avcodec-Add-V4L2-Request-API-h264-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0008-avcodec-Add-V4L2-Request-API-hevc-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0009-avcodec-Add-V4L2-Request-API-vp8-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0010-avcodec-Add-V4L2-Request-API-vp9-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0011-avcodec-Add-V4L2-Request-API-av1-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0012-avutil-hwcontext_v4l2request-Add-support-for-AFBC_16X16_SPLIT-pix-fmts.patch",
+    "media-accel/ffmpeg/v4l2-request/0013-avutil-hwcontext_v4l2request-Add-support-for-BROADCOM_SAND128-pix-fmts.patch",
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
     "media-accel/ffmpeg/0003-lavu-add-RKMPP-hwcontext.patch",
@@ -629,6 +658,7 @@ ffmpeg = [
     "media-accel/ffmpeg/0019-v4l2m2m-add-mjpeg-encoder.patch",
     "media-accel/ffmpeg/0020-overlay-vulkan-keep-the-main-inputs-timebase.patch",
     "media-accel/ffmpeg/0021-overlay-vulkan-expose-the-framesync-options.patch",
+    "media-accel/ffmpeg/0022-rkrga-swap-scale-ratio-for-90-and-270-rotations.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous

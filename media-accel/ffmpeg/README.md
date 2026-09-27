@@ -1,12 +1,16 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # ffmpeg graft (media-accel)
 
-`ffmpeg-rk` is a hybrid FFmpeg: mainline V4L2-request stateless **decode** from the
-Kwiboo base, with Rockchip **rkmpp encode** + **rkrga scale** grafted on from
-nyanmisaka. This scope carries that graft plus the fixes the hybrid needs, applied
-with `git am` onto the base.
+`ffmpeg-rk` is a hybrid FFmpeg: an FFmpeg release, V4L2 request-API stateless
+**decode** from Kwiboo's `v4l2-request` branch, and Rockchip **rkmpp encode** +
+**rkrga scale** grafted on from nyanmisaka. This scope carries the request-API
+hwaccel, the graft, and the fixes the hybrid needs, applied with `git am` onto the
+release tag the SoC layer pins.
 
 ## Series (apply order)
+
+The 13 patches under [`v4l2-request/`](v4l2-request/) apply first; see that
+directory's README. Then:
 
 1. `0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch`
 2. `0002-lsws-add-NV15-and-NV20-formats-support.patch`
@@ -29,6 +33,7 @@ with `git am` onto the base.
 19. `0019-v4l2m2m-add-mjpeg-encoder.patch`
 20. `0020-overlay-vulkan-keep-the-main-inputs-timebase.patch`
 21. `0021-overlay-vulkan-expose-the-framesync-options.patch`
+22. `0022-rkrga-swap-scale-ratio-for-90-and-270-rotations.patch`
 
 Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
 0006 is independent of the graft — it makes the base's own V4L2-request frames
@@ -38,7 +43,8 @@ hardware burn-in chain needs. 0016 is a fix to the base's HEVC hwaccel,
 described below. 0017–0019 are independent of the graft as well: they reach the
 mainline VEPU121 JPEG encoder through V4L2, with no vendor userspace involved,
 and are described below. 0020 and 0021 are defect fixes in upstream's own
-`overlay_vulkan`, found the first time this scope built ffmpeg with Vulkan.
+`overlay_vulkan`, found the first time this scope built ffmpeg with Vulkan. 0022
+is a defect fix in the grafted RGA filters, taken from jellyfin-ffmpeg.
 
 ## 0005 — what a 10-bit decoded frame is called
 
@@ -193,7 +199,9 @@ headers.
 
 ## Provenance
 
-- **Base:** Kwiboo `FFmpeg` branch `v4l2-request-n8.1`, commit `b57fbbe5`.
+- **Base:** FFmpeg release tag `n8.1.3`, as the SoC layer pins it.
+- **Request-API hwaccel:** Kwiboo `FFmpeg` branch `v4l2-request-n8.1`, commit
+  `b57fbbe5`, carried as [`v4l2-request/0001`–`0013`](v4l2-request/).
 - **Graft source:** nyanmisaka `ffmpeg-rockchip` branch `8.1`, commit `f66f2f80`.
 
 Each graft patch's `(cherry picked from commit …)` trailer records the exact
@@ -202,8 +210,8 @@ grafted tree byte-for-byte.
 
 ## Why these are patches, not cherry-picks
 
-`0003` (RKMPP hwcontext) does not cherry-pick cleanly onto the Kwiboo base: the base
-and nyanmisaka's tree register different sets of `AVHWDeviceType`s, so adding the
+`0003` (RKMPP hwcontext) does not cherry-pick cleanly onto the request-API base: that
+base and nyanmisaka's tree register different sets of `AVHWDeviceType`s, so adding the
 rkmpp entry is a 3-way textual conflict in `libavutil/hwcontext.c` / `.h` and
 `libavutil/Makefile`. The resolution is mechanical (keep both sets, add rkmpp), but
 a pinned cherry-pick cannot reproduce a manual resolution — so the resolved commit
@@ -366,3 +374,27 @@ their plain 16-bit equivalents; `nv12`, `yuv420p` and `yuv420p10le` all bypass i
 and all upload correctly. Separately, there is no zero-copy Vulkan-to-RKMPP
 handoff — every `hwmap` variant is `ENOSYS` — and `scale_vulkan` rejects BGRA
 with `Unsupported colorspace` and exposes no option to name the matrix.
+
+## 0022 — the scale ratio of a rotated RGA job
+
+`verify_rga_frame_info()` derives a scale ratio per axis from the destination and
+source sizes, and uses it twice. A ratio outside 1/8..8 moves the job from RGA3 to
+RGA2, and the final range check refuses a ratio past the chosen core's limit.
+
+A 90 or 270 degree rotation swaps the output's axes, and the unpatched code still
+divided destination width by source width. For those modes each axis was paired
+with the wrong one. A rotated scale that RGA3 can do was then routed to RGA2, which
+accepts no `P010` or `P210` and writes no `NV15` or `NV20`, so the filter failed to
+configure with `ENOSYS`. The same mistake could also trip the range check.
+
+The fix pairs the destination height with the source width, and the destination
+width with the source height, whenever the rotate mode carries the 90 degree bit.
+That is the test the output frame's sample aspect ratio already applies a few
+hundred lines earlier.
+
+It is nyanmisaka's, taken from jellyfin-ffmpeg commit `24bd5c9` ("Sync fixes from
+ffmpeg-rockchip"), which folds it into that project's `debian/patches/0042`.
+ffmpeg-rockchip's `8.1` branch does not carry it. The patch keeps nyanmisaka as
+author. Jellyfin's RKMPP filter chain reaches the path through `vpp_rkrga`'s
+`transpose=` option, which it emits for a rotated source. The patch has not run on
+hardware.
