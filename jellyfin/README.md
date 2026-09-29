@@ -1,10 +1,16 @@
 # Jellyfin patches
 
-Patches against the Jellyfin **server** (`github.com/jellyfin/jellyfin`).
+Patches against the Jellyfin **server** (`github.com/jellyfin/jellyfin`), and
+against Jellyfin's own Debian **packaging** (`github.com/jellyfin/jellyfin-packaging`,
+under [`packaging/`](packaging/)) so the patched server builds as a package.
 Standalone: applying them needs nothing from this repository but the patch
 files, and building needs nothing but Jellyfin's own toolchain.
 
-Base: `master` at `d6bcad3b5` (`v12.0-rc5-70`).
+[`series/jellyfin.toml`](../series/jellyfin.toml) binds both: its `app` scope is
+the server patches below, its `app_packaging` scope the packaging patches.
+
+Base: the server at `v12.1` (`ee91c75e7`), the packaging at `v12.1-202609142034`,
+the tag that packaged that release.
 
 ## Series
 
@@ -95,6 +101,21 @@ FFmpeg upstream has no V4L2 request-API decoders — they live in Kwiboo's
 built for a mainline kernel, and where it is absent the type simply never
 resolves.
 
+## Packaging
+
+Jellyfin's `.deb`s are built by `jellyfin-packaging`, whose `debian/` expects the
+server tree at `jellyfin-server/` and publishes it with `dotnet publish`. Four of
+these patches make that packaging build outside Jellyfin's own container; the fifth
+pairs a server built from source with the web client of its release.
+
+| patch | what it does |
+| --- | --- |
+| `packaging/0001` | Build the server and the web client in `override_dh_auto_build-arch` and `-indep`, so `dpkg-buildpackage -B` builds the server without Node.js. |
+| `packaging/0002` | Take the .NET runtime identifier from `DEB_HOST_ARCH`. `$(shell arch)` prints `aarch64` on an arm64 host, which matched none of the branches. |
+| `packaging/0003` | Skip `dh_shlibdeps`. The control file names every dependency by hand and has no `${shlibs:Depends}` for it to fill, and in a cross build it stops on every target library outside the multiarch directories. |
+| `packaging/0004` | Read the ICU soname from the installed `libicu-dev` rather than `apt-cache policy`, which needs package lists a build environment may not have. |
+| `packaging/0005` | Depend on the `jellyfin-web` of the server's own release, so a solver installs the matching web client and an upgrade holds it back until the server moves with it. |
+
 ## Applying and building
 
 ```sh
@@ -103,6 +124,11 @@ cd jellyfin
 git am --3way /path/to/patches/jellyfin/*.patch
 dotnet publish Jellyfin.Server --configuration Release --output ./out
 ```
+
+As a package: check out `jellyfin-packaging` at the release tag, apply
+`packaging/*.patch` to it, lay the patched server tree at `jellyfin-server/`, write
+a `debian/changelog` entry for the version, and run `dpkg-buildpackage -B`. boot2deb's
+`jellyfin-v4l2request` feature does exactly this, offline, from pinned sources.
 
 Jellyfin's own README documents `dotnet build` plus running the output from
 `Jellyfin.Server/bin/Debug/net10.0`; either is fine, and `dotnet publish` is
@@ -150,14 +176,19 @@ behaves as `HardwareAccelerationType` alone always did. On a stock server, leave
 
 ## Verification
 
-Against `master` at `d6bcad3b5`, on .NET 10.0.400:
+Against `v12.1`, on .NET 10.0.400:
 
-- The series applies under `git am --3way` and under strict `git apply` applied
-  in order, and reproduces the authoring tree byte-for-byte.
-- `dotnet build Jellyfin.sln` is clean.
-- 1741 tests pass across `Jellyfin.Controller.Tests` (128, including 16 added
-  here), `Jellyfin.Model.Tests` (673), `Jellyfin.Server.Implementations.Tests`
-  (704), `Jellyfin.MediaEncoding.Tests` (97) and `Jellyfin.Api.Tests` (139).
+- The server patches apply under strict `git am`, and a self-contained
+  `linux-arm64` publish of `Jellyfin.Server` is clean.
+- The packaging patches apply under strict `git am` to `v12.1-202609142034` and
+  reproduce the authoring tree.
+- `Jellyfin.Model.Tests` (748), `Jellyfin.Server.Implementations.Tests` (938, 12
+  skipped), `Jellyfin.MediaEncoding.Tests` (100, 1 skipped) and `Jellyfin.Api.Tests`
+  (139) pass. `Jellyfin.Controller.Tests` passes 220 of 221, the 16 added here among
+  them. The one failure, `PlaylistTests.IsVisible_PlaylistWithNothingLeftInIt_IsHidden`,
+  is order-dependent and upstream's: it fails in stock `v12.1` when the project runs
+  whole, beside a second order-dependent `BaseItemTests` case, and both pass run on
+  their own.
 
 The added tests pin the two properties that make the change safe: every
 acceleration type resolves both halves to itself when the new fields are unset,

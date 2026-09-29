@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# series/jellyfin.toml
+#
+# Jellyfin server series: the decode/encode split and the `v4l2request`
+# acceleration type, plus the Debian packaging changes that build the patched
+# server as a package. Referenced by an app declaration rather than by a kernel:
+# boot2deb's `jellyfin-v4l2request` feature names it, and pins it on its own axis,
+# so nothing here reaches a kernel build. Each list is the authoritative apply
+# order for one tree, applied with `git am --3way`; paths are relative to this
+# repo's root.
+
+# Declared intent; the builder's verify-applies gate is the enforcement. Matched
+# against the app's own pinned ref (`v12.1`). The server patches read the same on
+# 12.0 and 12.1, and the packaging patches are written against the 12.1 release
+# packaging, so the envelope is the one release both have been applied to.
+applies_to_app = ">=12.1, <12.2"
+
+# The server tree (github.com/jellyfin/jellyfin): route every hardware-accel read
+# through a decode or an encode accessor, let the two name different stacks, give
+# the encoder its device when a split pairing leaves it unreached, and add the
+# decode-only `v4l2request` type. See jellyfin/README.md.
+app = [
+    "jellyfin/0001-encodinghelper-route-hw-accel-through-decode-encode-accessors.patch",
+    "jellyfin/0002-encodingoptions-choose-the-decoder-and-encoder-separately.patch",
+    "jellyfin/0003-encodinghelper-init-the-encoders-device-on-a-split-pairing.patch",
+    "jellyfin/0004-add-a-v4l2request-hardware-acceleration-type.patch",
+]
+
+# The packaging tree (github.com/jellyfin/jellyfin-packaging): build the server
+# without the web client's toolchain, publish for the Debian host architecture on a
+# native arm64 host as well as a cross build, skip the shlibdeps step whose result
+# the control file never uses, read the ICU soname from what is installed, and pair
+# the server with the web client of its own release. The first four are fixes the
+# packaging needs for any build outside its own container; the fifth is what keeps
+# a server built from source matched to the web client the archive serves.
+app_packaging = [
+    "jellyfin/packaging/0001-debian-build-the-server-and-the-web-client-in-their-own-targets.patch",
+    "jellyfin/packaging/0002-debian-take-the-.net-runtime-identifier-from-the-debian-host-architecture.patch",
+    "jellyfin/packaging/0003-debian-skip-dh_shlibdeps-whose-result-the-control-file-does-not-use.patch",
+    "jellyfin/packaging/0004-debian-take-the-icu-soname-from-the-installed-libicu-dev.patch",
+    "jellyfin/packaging/0005-debian-depend-on-the-jellyfin-web-of-the-server-s-own-release.patch",
+]
+
+kernel    = []
+ffmpeg    = []
+userspace = []
+uboot     = []

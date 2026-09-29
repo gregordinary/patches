@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 01:00:52 -0400
+Subject: [PATCH] debian: skip dh_shlibdeps, whose result the control file does
+ not use
+
+jellyfin-server's Depends are written out in debian/control, and nothing
+there references ${shlibs:Depends}, so what dh_shlibdeps computes is
+never used. The override meant to make it tolerant of missing information
+was named override_dh_shdeplibs, which debhelper never calls.
+
+In a cross build the step is worse than unused: dpkg-shlibdeps searches
+the target's multiarch directories, which hold nothing unless the
+target's libraries are installed as foreign-architecture packages, and it
+stops on every library of the self-contained runtime it cannot find
+(libc.so.6 first among them). --ignore-missing-info does not cover a
+library that cannot be found.
+
+Override dh_shlibdeps with nothing. The package's dependencies are the
+ones debian/control states, as they already were.
+---
+ debian/rules | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/debian/rules b/debian/rules
+index 353dbe6..7dcd0a3 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -71,5 +71,8 @@ override_dh_auto_clean:
+ override_dh_installinit:
+ 	dh_installinit --name=jellyfin
+ 
+-override_dh_shdeplibs:
+-	dh_shlibdeps -- --ignore-missing-info
++# The control file names jellyfin-server's dependencies by hand and has no
++# ${shlibs:Depends} for dh_shlibdeps to fill, so its result would go unused.
++# Skipping it also lets a cross build run without the target architecture's
++# libraries installed beside the build tools.
++override_dh_shlibdeps:
+-- 
+2.43.0
+

@@ -21,11 +21,10 @@ top of mainline.
 | [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
 | [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
 | [`uboot-host/`](uboot-host/) | u-boot host-build fixes — the tooling that runs on the build machine rather than the board. SoC-independent, so every u-boot series carries them ahead of its own patches. |
-| [`jellyfin/`](jellyfin/) | Jellyfin **server** patches for Rockchip boards on a mainline kernel. Not part of any series — no builder here compiles Jellyfin; apply them to a Jellyfin checkout and build with Jellyfin's own toolchain. |
+| [`jellyfin/`](jellyfin/) | Jellyfin **server** patches for Rockchip boards on a mainline kernel, and the Debian packaging patches that build the patched server as a package. Bound by `series/jellyfin.toml`; they also apply by hand to a Jellyfin checkout. |
 
 Each scope is **self-contained** and need not share a common internal layout —
-`rocket/` keeps the shape it had as its own repo, and `jellyfin/` is applied by
-hand rather than by a series.
+`rocket/` keeps the shape it had as its own repo.
 
 ## Series
 
@@ -33,9 +32,15 @@ hand rather than by a series.
 drawn from the scopes above — the unit a builder consumes — to the version range
 it targets: `applies_to_kernel` for the kernel-family trees
 (`kernel`/`ffmpeg`/`userspace`), `applies_to_uboot` for the `uboot` tree, since
-u-boot is its own axis. A series that patches only one of the two declares only
-that range, and a series pinned to a single upstream generation declares neither
-— the builder's `git am` pass is the enforcement either way.
+u-boot is its own axis, and `applies_to_app` for an application's two trees
+(`app`, `app_packaging`), matched against the application's own release. A series
+declares only the ranges of the trees it patches, and a series pinned to a single
+upstream generation declares none — the builder's `git am` pass is the enforcement
+either way.
+
+[`series/jellyfin.toml`](series/jellyfin.toml) is the Jellyfin server series:
+`app` `0001`–`0004` on the server tree, `app_packaging` `packaging/0001`–`0005` on
+Jellyfin's packaging tree.
 
 [`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline media
 + NPU + crypto series: kernel `030`–`103`, ffmpeg `v4l2-request/0001`–`0013` then
@@ -52,10 +57,11 @@ every entry applies unconditionally, which is where `rk3588-accel`, `rk3576-fixe
 
 ## Consuming patches
 
-boot2deb selects a series by name (from its kernel definition), pins this repo to
-an exact commit in the recipe lock (`[patches] commit`), and runs a verify-applies
-gate that dry-runs the series with `git am --3way`, hard-erroring on any patch that
-does not apply. Offline builds fetch the pinned revision manually.
+boot2deb selects a series by name (from its kernel definition, or from an app a
+feature declares), pins this repo to an exact commit in the recipe lock (`[patches]
+commit`, or the app's own `[apps.patches] commit`), and runs a verify-applies gate
+that dry-runs the series with `git am --3way`, hard-erroring on any patch that does
+not apply. Offline builds fetch the pinned revision manually.
 
 ## Licensing
 

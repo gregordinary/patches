@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:08:31 -0400
+Subject: [PATCH] debian: build the server and the web client in their own
+ targets
+
+override_dh_auto_build publishes the server and then builds the web client
+with npm, so every build needs both a .NET SDK and Node.js, whichever package
+it is producing. jellyfin-server is Architecture: any and jellyfin-web is
+Architecture: all, which is exactly the split debhelper's -arch and -indep
+override targets express.
+
+Move each half into its own target. `dpkg-buildpackage -B` then builds the
+server without Node.js, `-A` builds the web client without a .NET SDK, and a
+full build runs both as before.
+---
+ debian/rules | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/debian/rules b/debian/rules
+index afd09ce..6ef2d6e 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -49,11 +49,17 @@ override_dh_strip:
+ 
+ override_dh_clistrip:
+ 
+-override_dh_auto_build:
++# The server is the architecture-dependent package and the web client the
++# architecture-independent one, so each is built by its own half of the build
++# target. `dpkg-buildpackage -B` then builds the server without Node.js, and
++# `-A` builds the web client without a .NET SDK.
++override_dh_auto_build-arch:
+ 	cd jellyfin-server && dotnet publish -maxcpucount:1 --configuration $(CONFIG) \
+         --output='$(CURDIR)/build/usr/lib/jellyfin/bin' --self-contained --runtime $(DOTNETRUNTIME) \
+ 		-p:DebugSymbols=false -p:DebugType=none Jellyfin.Server
+ 	rm -f $(CURDIR)/build/usr/lib/jellyfin/bin/libcoreclrtraceptprovider.so
++
++override_dh_auto_build-indep:
+ 	cd jellyfin-web && npm ci --no-audit --unsafe-perm && \
+         npm run build:production && mv $(CURDIR)/jellyfin-web/dist $(CURDIR)/build/web
+ 
+-- 
+2.43.0
+

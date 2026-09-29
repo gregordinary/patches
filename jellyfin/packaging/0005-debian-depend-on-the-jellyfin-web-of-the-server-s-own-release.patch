@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:10:53 -0400
+Subject: [PATCH] debian: depend on the jellyfin-web of the server's own
+ release
+
+jellyfin-server recommends jellyfin-web with no version, so the two are held
+together only by being published at the same time. A server built outside
+Jellyfin's own release process keeps its version while the repository moves
+on, and then nothing stops the web client from being upgraded past it.
+
+Depend on jellyfin-web of the server's release instead. The release is the
+changelog version without its epoch or build suffix, and the range admits
+every packaging of that release (12.1+deb13, 12.1+deb12) while excluding the
+next one (12.1.1, 12.2). A dependency solver then installs the matching web
+client beside the server, and a system upgrade holds the web client back
+until the server moves with it.
+---
+ debian/control |  4 ++--
+ debian/rules   | 14 +++++++++++++-
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/debian/control b/debian/control
+index 3878d79..a754342 100644
+--- a/debian/control
++++ b/debian/control
+@@ -16,8 +16,8 @@ Description: Jellyfin is the Free Software Media System.
+ 
+ Package: jellyfin-server
+ Architecture: any
+-Depends: libfontconfig1, libjemalloc2, adduser, ${icu:Depends}
+-Recommends: jellyfin-web, sudo, jellyfin-ffmpeg8 | ffmpeg
++Depends: libfontconfig1, libjemalloc2, adduser, ${icu:Depends}, ${web:Depends}
++Recommends: sudo, jellyfin-ffmpeg8 | ffmpeg
+ Description: Jellyfin is the Free Software Media System.
+  This package provides the Jellyfin server backend and API.
+ 
+diff --git a/debian/rules b/debian/rules
+index daed46f..cb061fb 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -25,14 +25,26 @@ export COMPlus_EnableDiagnostics=0
+ %:
+ 	dh $@
+ 
++# The Jellyfin release this package is, with the epoch and the build suffix
++# taken off: 1:12.1+b2d.2 is 12.1.
++JELLYFIN_RELEASE := $(shell dpkg-parsechangelog -SVersion \
++	| sed -e 's/^[0-9]*://' -e 's/[+~-].*//')
++
+ # The server loads the system ICU at runtime by its versioned soname, so the
+ # package depends on the ICU of the release it is built for. That is the
+ # libicu-dev the build environment has installed.
++#
++# The server serves the web client of its own release, and the two change
++# together, so the server depends on exactly that release of jellyfin-web.
++# `<< X.` admits X+deb13 and every other suffix of X, and excludes X.1 and
++# every later release.
+ override_dh_gencontrol:
+ 	ICU_MAJOR="$$(dpkg-query -W -f='$${Version}' libicu-dev \
+ 		| sed -n 's/^\([0-9]\+\)\..*/\1/p')" && \
+ 	test -n "$$ICU_MAJOR" && \
+-	dh_gencontrol -- -Vicu:Depends="libicu$$ICU_MAJOR"
++	test -n '$(JELLYFIN_RELEASE)' && \
++	dh_gencontrol -- -Vicu:Depends="libicu$$ICU_MAJOR" \
++		-Vweb:Depends="jellyfin-web (>= $(JELLYFIN_RELEASE)), jellyfin-web (<< $(JELLYFIN_RELEASE).)"
+ 
+ override_dh_auto_test:
+ 
+-- 
+2.43.0
+

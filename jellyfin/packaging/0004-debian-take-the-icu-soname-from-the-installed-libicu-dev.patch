@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:10:32 -0400
+Subject: [PATCH] debian: take the ICU soname from the installed libicu-dev
+
+icu:Depends was read from `apt-cache policy libicu-dev`, which reports the
+candidate version from the package lists. A build environment without package
+lists, such as a container image that removes /var/lib/apt/lists after
+installing its build dependencies, gets no candidate, and the package is
+generated with `Depends: libicu`, a name no release carries.
+
+Read the version of the libicu-dev the build environment has installed
+instead: it is the ICU of the release being built for, and it is present by
+construction because building needs it. An empty result now stops the build
+rather than producing an unsatisfiable dependency.
+---
+ debian/rules | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/debian/rules b/debian/rules
+index 7dcd0a3..daed46f 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -25,9 +25,13 @@ export COMPlus_EnableDiagnostics=0
+ %:
+ 	dh $@
+ 
++# The server loads the system ICU at runtime by its versioned soname, so the
++# package depends on the ICU of the release it is built for. That is the
++# libicu-dev the build environment has installed.
+ override_dh_gencontrol:
+-	ICU_MAJOR="$$(apt-cache policy libicu-dev 2>/dev/null \
+-		| sed -n 's/  Candidate: \([0-9]\+\)\..*/\1/p' | head -n1)" && \
++	ICU_MAJOR="$$(dpkg-query -W -f='$${Version}' libicu-dev \
++		| sed -n 's/^\([0-9]\+\)\..*/\1/p')" && \
++	test -n "$$ICU_MAJOR" && \
+ 	dh_gencontrol -- -Vicu:Depends="libicu$$ICU_MAJOR"
+ 
+ override_dh_auto_test:
+-- 
+2.43.0
+

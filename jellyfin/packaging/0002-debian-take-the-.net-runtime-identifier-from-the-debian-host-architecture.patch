@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:08:42 -0400
+Subject: [PATCH] debian: take the .NET runtime identifier from the Debian host
+ architecture
+
+DOTNETRUNTIME was chosen from `$(shell arch)`, the architecture of the machine
+running the build, and then adjusted for a cross build by comparing
+DEB_HOST_MULTIARCH. On an arm64 machine `arch` prints `aarch64`, which none of
+the branches matches (they test `arm64` and `armv7l`), so a native arm64 build
+publishes with an empty `--runtime` and dotnet rejects the command line.
+
+The package is built for DEB_HOST_ARCH whether the build is native or cross,
+and dpkg-buildpackage exports it in both cases, so map that to the runtime
+identifier directly: amd64 to linux-x64, arm64 to linux-arm64, armhf to
+linux-arm. The server build stops with a message naming an architecture that
+has no mapping, rather than reaching dotnet with an empty identifier; the web
+client does not need one and builds anywhere.
+---
+ debian/rules | 32 +++++++++++++-------------------
+ 1 file changed, 13 insertions(+), 19 deletions(-)
+
+diff --git a/debian/rules b/debian/rules
+index 6ef2d6e..353dbe6 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -3,29 +3,20 @@ CONFIG ?= Release
+ TERM := xterm
+ SHELL := /bin/bash
+ 
+-HOST_ARCH := $(shell arch)
+-BUILD_ARCH := ${DEB_HOST_MULTIARCH}
+-ifeq ($(HOST_ARCH),x86_64)
+-    # Building AMD64
++# The .NET runtime identifier the server is published for, from the Debian
++# architecture the package is built for. dpkg-buildpackage exports
++# DEB_HOST_ARCH, including for a cross build (`-a arm64` on an amd64 host);
++# dpkg-architecture supplies it when debian/rules is run by hand.
++DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
++ifeq ($(DEB_HOST_ARCH),amd64)
+     DOTNETRUNTIME := linux-x64
+-    ifeq ($(BUILD_ARCH),arm-linux-gnueabihf)
+-        # Cross-building ARM on AMD64
+-        DOTNETRUNTIME := linux-arm
+-    endif
+-    ifeq ($(BUILD_ARCH),aarch64-linux-gnu)
+-        # Cross-building ARM on AMD64
+-        DOTNETRUNTIME := linux-arm64
+-    endif
+ endif
+-ifeq ($(HOST_ARCH),armv7l)
+-    # Building ARM
+-    DOTNETRUNTIME := linux-arm
+-endif
+-ifeq ($(HOST_ARCH),arm64)
+-    # Building ARM
++ifeq ($(DEB_HOST_ARCH),arm64)
+     DOTNETRUNTIME := linux-arm64
+ endif
+-
++ifeq ($(DEB_HOST_ARCH),armhf)
++    DOTNETRUNTIME := linux-arm
++endif
+ export DH_VERBOSE=1
+ export DOTNET_CLI_TELEMETRY_OPTOUT=1
+ export COMPlus_LTTng=0
+@@ -54,6 +45,9 @@ override_dh_clistrip:
+ # target. `dpkg-buildpackage -B` then builds the server without Node.js, and
+ # `-A` builds the web client without a .NET SDK.
+ override_dh_auto_build-arch:
++	@test -n '$(DOTNETRUNTIME)' || { \
++		echo "no .NET runtime identifier for Debian architecture '$(DEB_HOST_ARCH)'" >&2; \
++		exit 1; }
+ 	cd jellyfin-server && dotnet publish -maxcpucount:1 --configuration $(CONFIG) \
+         --output='$(CURDIR)/build/usr/lib/jellyfin/bin' --self-contained --runtime $(DOTNETRUNTIME) \
+ 		-p:DebugSymbols=false -p:DebugType=none Jellyfin.Server
+-- 
+2.43.0
+
