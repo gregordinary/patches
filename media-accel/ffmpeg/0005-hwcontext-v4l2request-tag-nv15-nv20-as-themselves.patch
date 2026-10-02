@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: x <x@y>
+From: gregordinary <33880035+gregordinary@users.noreply.github.com>
 Date: Sun, 30 Aug 2026 13:08:35 -0400
 Subject: [PATCH] lavu/hwcontext_v4l2request: tag NV15 and NV20 as themselves
 
