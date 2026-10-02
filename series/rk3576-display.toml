@@ -27,8 +27,7 @@
 #
 # The series quiesces the VOP before the OS jump (patch 0011). A bootloader
 # that lights the panel and hands Linux a VOP still scanning out costs the
-# kernel the display entirely -- see the display reference, section 5, in the
-# board-research tree.
+# kernel the display entirely.
 #
 # The patches touch only SoC-generic u-boot (the rk3576-generic control DTB
 # and defconfig), so the series applies to any RK3576 board on this kernel.

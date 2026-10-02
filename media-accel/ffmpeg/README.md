@@ -170,9 +170,6 @@ it and the colour is premultiplied twice.
 by `drawtext`, `drawbox` and the pad/fill filters. Its additions are gated on new
 flags no other caller sets, so the exposure is rebase surface, not behaviour.
 
-Measurements, harnesses and the ASS assets behind the figures above are in
-`board-research/media-accel/subtitle-burnin/` of the workspace.
-
 ## 0016 — SPS-level RPS
 
 The rkvdec VDPU381/VDPU383 hardware parses slice headers itself, so a slice
