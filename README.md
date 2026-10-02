@@ -22,6 +22,7 @@ top of mainline.
 | [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
 | [`uboot-host/`](uboot-host/) | u-boot host-build fixes — the tooling that runs on the build machine rather than the board. SoC-independent, so every u-boot series carries them ahead of its own patches. |
 | [`jellyfin/`](jellyfin/) | Jellyfin **server** patches for Rockchip boards on a mainline kernel, and the Debian packaging patches that build the patched server as a package. Bound by `series/jellyfin.toml`; they also apply by hand to a Jellyfin checkout. |
+| [`media-capture/`](media-capture/) | Capture into the hardware pipeline: the FFmpeg V4L2 input device hands out DRM PRIME frames that reference the capture buffers, rather than copies. Bound by `series/media-capture.toml`, which a feature composes on top of an FFmpeg provider series. |
 
 Each scope is **self-contained** and need not share a common internal layout —
 `rocket/` keeps the shape it had as its own repo.
@@ -41,6 +42,9 @@ either way.
 [`series/jellyfin.toml`](series/jellyfin.toml) is the Jellyfin server series:
 `app` `0001`–`0004` on the server tree, `app_packaging` `packaging/0001`–`0005` on
 Jellyfin's packaging tree.
+
+[`series/media-capture.toml`](series/media-capture.toml) is the media capture series:
+`ffmpeg` `0001`–`0003`, applied after whichever FFmpeg provider series the build carries.
 
 [`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline media
 + NPU + crypto series: kernel `030`–`103`, ffmpeg `v4l2-request/0001`–`0013` then

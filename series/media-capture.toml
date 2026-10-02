@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# series/media-capture.toml
+#
+# Media capture series: what a capture source needs to reach the hardware
+# pipeline without a copy. Referenced by a feature rather than by a kernel:
+# boot2deb's `media-capture` feature names it, and resolution appends it after
+# the kernel's and the device's series, so it composes with whichever FFmpeg
+# provider the build carries. Each list is the authoritative apply order for one
+# tree, applied with `git am --3way`; paths are relative to this repo's root.
+#
+# It declares no version range. Its only tree is FFmpeg, and the patches touch the V4L2
+# input device and `avformat_free_context()`, which no provider series patches, so the
+# `git am` pass on the provider's pinned FFmpeg is the enforcement.
+
+# FFmpeg: two fixes to how a demuxer's packets are released at close, then the V4L2
+# input device handing out DRM PRIME frames that reference the capture buffers, so a
+# hardware scaler or encoder reads the image where the driver wrote it. The fixes come
+# first because a frame that references a capture buffer depends on them. See
+# media-capture/README.md.
+ffmpeg = [
+    "media-capture/ffmpeg/0001-avformat-free-buffered-packets-before-demuxer-private-data.patch",
+    "media-capture/ffmpeg/0002-v4l2-do-not-requeue-a-buffer-released-after-close.patch",
+    "media-capture/ffmpeg/0003-v4l2-add-drm-prime-output.patch",
+]
+
+kernel    = []
+userspace = []
+uboot     = []
