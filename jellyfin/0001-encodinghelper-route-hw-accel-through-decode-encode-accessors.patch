@@ -42,10 +42,10 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  2 files changed, 47 insertions(+), 26 deletions(-)
 
 diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
-index 9a6888935..69a596781 100644
+index ebfa78176..d4f86e949 100644
 --- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
 +++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
-@@ -200,6 +200,26 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -201,6 +201,26 @@ namespace MediaBrowser.Controller.MediaEncoding
          [GeneratedRegex(@"\s+")]
          private static partial Regex WhiteSpaceRegex();
  
@@ -72,7 +72,7 @@ index 9a6888935..69a596781 100644
          public string GetH264Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
              => GetH26xOrAv1Encoder("libx264", "h264", state, encodingOptions);
  
-@@ -216,7 +236,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -217,7 +237,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              // Since transcoding of folder rips is experimental anyway, it's not worth adding additional variables such as this.
              if (state.VideoType == VideoType.VideoFile)
              {
@@ -81,7 +81,7 @@ index 9a6888935..69a596781 100644
  
                  var codecMap = new Dictionary<HardwareAccelerationType, string>()
                  {
-@@ -245,7 +265,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -246,7 +266,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          {
              if (state.VideoType == VideoType.VideoFile)
              {
@@ -90,7 +90,7 @@ index 9a6888935..69a596781 100644
  
                  // Only enable VA-API MJPEG encoder on Intel iHD driver.
                  // Legacy platforms supported ONLY by i965 do not support MJPEG encoder.
-@@ -415,7 +435,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -416,7 +436,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              // prefer 'tonemap_vaapi' over 'vpp_qsv' on Linux for supporting Gen9/KBLx.
              // 'vpp_qsv' requires VPL, which is only supported on Gen12/TGLx and newer.
              if (OperatingSystem.IsWindows()
@@ -99,7 +99,7 @@ index 9a6888935..69a596781 100644
                  && _mediaEncoder.EncoderVersion < _minFFmpegQsvVppTonemapOption)
              {
                  return false;
-@@ -1025,7 +1045,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -1031,7 +1051,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              var isWindows = OperatingSystem.IsWindows();
              var isLinux = OperatingSystem.IsLinux();
              var isMacOS = OperatingSystem.IsMacOS();
@@ -108,7 +108,7 @@ index 9a6888935..69a596781 100644
              var vidDecoder = GetHardwareVideoDecoder(state, options) ?? string.Empty;
              var isHwTonemapAvailable = IsHwTonemapAvailable(state, options);
  
-@@ -2101,7 +2121,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -2128,7 +2148,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              // https://github.com/intel/media-driver/issues/1456
              var enableWaFori915Hang = false;
  
@@ -117,7 +117,7 @@ index 9a6888935..69a596781 100644
  
              if (hardwareAccelerationType == HardwareAccelerationType.vaapi)
              {
-@@ -3977,7 +3997,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -4036,7 +4056,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              EncodingOptions options,
              string vidEncoder)
          {
@@ -126,7 +126,7 @@ index 9a6888935..69a596781 100644
              {
                  return (null, null, null);
              }
-@@ -4185,7 +4205,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -4244,7 +4264,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              EncodingOptions options,
              string vidEncoder)
          {
@@ -135,7 +135,7 @@ index 9a6888935..69a596781 100644
              {
                  return (null, null, null);
              }
-@@ -4411,7 +4431,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -4470,7 +4490,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              EncodingOptions options,
              string vidEncoder)
          {
@@ -144,7 +144,7 @@ index 9a6888935..69a596781 100644
              {
                  return (null, null, null);
              }
-@@ -5019,7 +5039,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -5078,7 +5098,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              EncodingOptions options,
              string vidEncoder)
          {
@@ -153,7 +153,7 @@ index 9a6888935..69a596781 100644
              {
                  return (null, null, null);
              }
-@@ -5758,7 +5778,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -5831,7 +5851,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              EncodingOptions options,
              string vidEncoder)
          {
@@ -162,7 +162,7 @@ index 9a6888935..69a596781 100644
              {
                  return (null, null, null);
              }
-@@ -5948,7 +5968,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6021,7 +6041,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              EncodingOptions options,
              string vidEncoder)
          {
@@ -171,7 +171,7 @@ index 9a6888935..69a596781 100644
              {
                  return (null, null, null);
              }
-@@ -6247,7 +6267,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6320,7 +6340,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              List<string> subFilters;
              List<string> overlayFilters;
  
@@ -180,7 +180,7 @@ index 9a6888935..69a596781 100644
              {
                  HardwareAccelerationType.vaapi => GetVaapiVidFilterChain(state, options, outputVideoCodec),
                  HardwareAccelerationType.amf => GetAmdVidFilterChain(state, options, outputVideoCodec),
-@@ -6449,7 +6469,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6522,7 +6542,7 @@ namespace MediaBrowser.Controller.MediaEncoding
                  return null;
              }
  
@@ -189,7 +189,7 @@ index 9a6888935..69a596781 100644
  
              if (!string.IsNullOrEmpty(videoStream.Codec) && hardwareAccelerationType != HardwareAccelerationType.none)
              {
-@@ -6540,7 +6560,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6613,7 +6633,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              // VideoToolbox decoders have built-in SW fallback
              if (bitDepth == 10
                  && isCodecAvailable
@@ -198,7 +198,7 @@ index 9a6888935..69a596781 100644
              {
                  if (string.Equals(videoCodec, "hevc", StringComparison.OrdinalIgnoreCase)
                      && options.HardwareDecodingCodecs.Contains("hevc", StringComparison.OrdinalIgnoreCase)
-@@ -6596,7 +6616,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6669,7 +6689,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              var isVideotoolboxSupported = isMacOS && _mediaEncoder.SupportsHwaccel("videotoolbox");
              var isRkmppSupported = isLinux && IsRkmppFullSupported();
              var isCodecAvailable = options.HardwareDecodingCodecs.Contains(videoCodec, StringComparison.OrdinalIgnoreCase);
@@ -207,7 +207,7 @@ index 9a6888935..69a596781 100644
  
              var ffmpegVersion = _mediaEncoder.EncoderVersion;
  
-@@ -6618,7 +6638,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6691,7 +6711,7 @@ namespace MediaBrowser.Controller.MediaEncoding
  
              // VideoToolbox decoders have built-in SW fallback
              if (isCodecAvailable
@@ -216,7 +216,7 @@ index 9a6888935..69a596781 100644
              {
                  if (string.Equals(videoCodec, "hevc", StringComparison.OrdinalIgnoreCase)
                      && options.HardwareDecodingCodecs.Contains("hevc", StringComparison.OrdinalIgnoreCase))
-@@ -6743,7 +6763,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6816,7 +6836,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              var isLinux = OperatingSystem.IsLinux();
  
              if ((!isWindows && !isLinux)
@@ -225,7 +225,7 @@ index 9a6888935..69a596781 100644
              {
                  return null;
              }
-@@ -6823,7 +6843,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6896,7 +6916,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          public string GetNvdecVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
          {
              if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
@@ -234,7 +234,7 @@ index 9a6888935..69a596781 100644
              {
                  return null;
              }
-@@ -6896,7 +6916,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -6969,7 +6989,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          public string GetAmfVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
          {
              if (!OperatingSystem.IsWindows()
@@ -243,7 +243,7 @@ index 9a6888935..69a596781 100644
              {
                  return null;
              }
-@@ -6952,7 +6972,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -7025,7 +7045,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          public string GetVaapiVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
          {
              if (!OperatingSystem.IsLinux()
@@ -252,7 +252,7 @@ index 9a6888935..69a596781 100644
              {
                  return null;
              }
-@@ -7025,7 +7045,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -7098,7 +7118,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          public string GetVideotoolboxVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
          {
              if (!OperatingSystem.IsMacOS()
@@ -261,7 +261,7 @@ index 9a6888935..69a596781 100644
              {
                  return null;
              }
-@@ -7092,7 +7112,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -7165,7 +7185,7 @@ namespace MediaBrowser.Controller.MediaEncoding
              var isLinux = OperatingSystem.IsLinux();
  
              if (!isLinux
@@ -270,7 +270,7 @@ index 9a6888935..69a596781 100644
              {
                  return null;
              }
-@@ -7401,7 +7421,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -7474,7 +7494,7 @@ namespace MediaBrowser.Controller.MediaEncoding
  
              if (state.IsVideoRequest)
              {
@@ -280,7 +280,7 @@ index 9a6888935..69a596781 100644
                      var inputFormat = GetInputFormat(state.InputContainer);
                      if (!string.IsNullOrEmpty(inputFormat))
 diff --git a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
-index 0ddd37835..509e242f3 100644
+index fa43d756a..f76a3dbfc 100644
 --- a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
 +++ b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
 @@ -241,7 +241,8 @@ namespace MediaBrowser.MediaEncoding.Encoder

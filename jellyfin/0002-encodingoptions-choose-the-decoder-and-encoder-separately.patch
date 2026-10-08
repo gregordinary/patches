@@ -40,10 +40,10 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  4 files changed, 108 insertions(+), 3 deletions(-)
 
 diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
-index 69a596781..56cb78545 100644
+index d4f86e949..60464270f 100644
 --- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
 +++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
-@@ -210,7 +210,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -211,7 +211,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          /// <param name="options">Encoding options.</param>
          /// <returns>The hardware acceleration type to decode with.</returns>
          public static HardwareAccelerationType GetDecodeType(EncodingOptions options)
@@ -52,7 +52,7 @@ index 69a596781..56cb78545 100644
  
          /// <summary>
          /// Gets the hardware acceleration type that selects the encoder.
-@@ -218,7 +218,7 @@ namespace MediaBrowser.Controller.MediaEncoding
+@@ -219,7 +219,7 @@ namespace MediaBrowser.Controller.MediaEncoding
          /// <param name="options">Encoding options.</param>
          /// <returns>The hardware acceleration type to encode with.</returns>
          public static HardwareAccelerationType GetEncodeType(EncodingOptions options)
@@ -62,7 +62,7 @@ index 69a596781..56cb78545 100644
          public string GetH264Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
              => GetH26xOrAv1Encoder("libx264", "h264", state, encodingOptions);
 diff --git a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
-index 509e242f3..b8fb41b06 100644
+index f76a3dbfc..b6ff236c0 100644
 --- a/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
 +++ b/MediaBrowser.MediaEncoding/Encoder/MediaEncoder.cs
 @@ -874,6 +874,8 @@ namespace MediaBrowser.MediaEncoding.Encoder
@@ -105,11 +105,11 @@ index 4d052d801..bfe7b5f3d 100644
      /// Gets or sets the FFmpeg path as set by the user via the UI.
      /// </summary>
 diff --git a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
-index 2b009b467..2abaa3f3a 100644
+index aca55fbcc..89182d419 100644
 --- a/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
 +++ b/tests/Jellyfin.Controller.Tests/MediaEncoding/EncodingHelperTests.cs
-@@ -261,6 +261,89 @@ public class EncodingHelperTests
-         Assert.Contains("-ar 48000", args, StringComparison.Ordinal);
+@@ -321,6 +321,89 @@ public class EncodingHelperTests
+         Assert.Contains("pan=stereo", args, StringComparison.Ordinal);
      }
  
 +    [Theory]
@@ -198,7 +198,7 @@ index 2b009b467..2abaa3f3a 100644
      private static EncodingJobInfo BuildAudioState(string audioCodec, int requestedSampleRate, string? outputContainer = null)
      {
          var audio = new MediaStream { Index = 0, Type = MediaStreamType.Audio, Codec = "flac", SampleRate = 96000 };
-@@ -322,10 +405,11 @@ public class EncodingHelperTests
+@@ -382,10 +465,11 @@ public class EncodingHelperTests
          };
      }
  

@@ -9,7 +9,7 @@ files, and building needs nothing but Jellyfin's own toolchain.
 [`series/jellyfin.toml`](../series/jellyfin.toml) binds both: its `app` scope is
 the server patches below, its `app_packaging` scope the packaging patches.
 
-Base: the server at `v12.1` (`ee91c75e7`), the packaging at `v12.1-202609142034`,
+Base: the server at `v12.2` (`ca0f16eb7`), the packaging at `v12.2-202610051851`,
 the tag that packaged that release.
 
 ## Series
@@ -80,15 +80,22 @@ the fallback whenever the preferred hardware chain is unavailable.
 
 ## 0004 — the `v4l2request` type
 
-Three things it deliberately does not do.
+**It takes 4:2:0 streams at 8 and 10 bits.** A 10-bit frame reaches the software
+chain the way an 8-bit one does: FFmpeg's automatic download hands the chain the
+layout the decoder wrote, `NV15` on `rkvdec` and `P010` elsewhere, and swscale
+converts it. `NV15` takes an FFmpeg whose `hwcontext_v4l2request` tags those frames
+as `NV15` and whose swscale reads them; on one that cannot, a 10-bit transcode
+fails rather than falling back. H.264 Hi10P is admitted as it is for `rkmpp`,
+because `rkvdec` decodes it. Where no request-API decoder accepts a stream,
+FFmpeg's device probe finds none and FFmpeg decodes it in software. Measured on
+the RK3588 at kernel 7.2.9, HEVC Main 10, VP9 profile 2, H.264 High 10 and 10-bit
+AV1 decode bit-exact, and 4K HEVC Main 10 → 1080p costs 101 CPU-seconds against
+380 for software decode, which takes it from 0.53x to 1.6x realtime.
+
+Two things it deliberately does not do.
 
 **It never asks for a hardware surface.** FFmpeg has no V4L2 filter to consume
 one, so the chain is the software chain and every frame is downloaded.
-
-**It declines anything but 8-bit.** `hwcontext_v4l2request` offers no transfer
-format for 10-bit frames — the hardware writes a packed layout with no
-system-memory equivalent — so a 10-bit frame could never be read back out of the
-software chain. Those decode in software, which is what happens today.
 
 **It is decode only.** The request API describes no encoder, so the type appears
 in neither codec map and selecting it to encode with falls back to the software
@@ -168,6 +175,10 @@ RK3588 that is H.264, HEVC and VP9. AV1 is decoded by a separate `hantro-vpu`
 node whose output is bit-exact on most streams but has known deterministic gaps
 — add it only if those have been checked against the content in question.
 
+10-bit content follows the codec list, and Jellyfin's 10-bit HEVC and VP9
+switches (`EnableDecodingColorDepth10Hevc`, `EnableDecodingColorDepth10Vp9`, both
+on by default) apply to this type as to any other.
+
 **An unpatched server ignores the two new elements** — `XmlSerializer` drops
 unknown elements — so the same file is safe to ship to a stock install, where it
 behaves as `HardwareAccelerationType` alone always did. On a stock server, leave
@@ -176,37 +187,38 @@ behaves as `HardwareAccelerationType` alone always did. On a stock server, leave
 
 ## Verification
 
-Against `v12.1`, on .NET 10.0.400:
+Against `v12.2`, on .NET 10.0.401:
 
 - The server patches apply under strict `git am`, and a self-contained
   `linux-arm64` publish of `Jellyfin.Server` is clean.
-- The packaging patches apply under strict `git am` to `v12.1-202609142034` and
+- The packaging patches apply under strict `git am` to `v12.2-202610051851` and
   reproduce the authoring tree.
-- `Jellyfin.Model.Tests` (748), `Jellyfin.Server.Implementations.Tests` (938, 12
+- `Jellyfin.Model.Tests` (748), `Jellyfin.Server.Implementations.Tests` (1074, 12
   skipped), `Jellyfin.MediaEncoding.Tests` (100, 1 skipped) and `Jellyfin.Api.Tests`
-  (139) pass. `Jellyfin.Controller.Tests` passes 220 of 221, the 16 added here among
-  them. The one failure, `PlaylistTests.IsVisible_PlaylistWithNothingLeftInIt_IsHidden`,
-  is order-dependent and upstream's: it fails in stock `v12.1` when the project runs
-  whole, beside a second order-dependent `BaseItemTests` case, and both pass run on
-  their own.
+  (156) pass. `Jellyfin.Controller.Tests` passes all 235, the 21 added here among
+  them. Two upstream cases in it are order-dependent,
+  `PlaylistTests.IsVisible_PlaylistWithNothingLeftInIt_IsHidden` and one in
+  `BaseItemTests`: they can fail when the project runs whole, in stock `v12.2` too,
+  and pass run on their own.
 
 The added tests pin the two properties that make the change safe: every
 acceleration type resolves both halves to itself when the new fields are unset,
 and a same-stack configuration initialises its device exactly once. They also
 pin the RK3588 pairing end to end — `-hwaccel v4l2request` with `hevc_rkmpp` —
-and the 10-bit refusal.
+and which streams the type admits: 10-bit 4:2:0 HEVC, VP9, AV1 and H.264 Hi10P take
+the hardware path, the operator's 10-bit HEVC switch still declines it, and 4:2:2
+stays in software.
 
-**Validated on hardware, 2026-08-31.** A server built from this series
-(self-contained linux-arm64 publish, .NET 10.0.400) ran on a Turing RK1
-(kernel 7.2.2, boot2deb jellyfin image) with the configuration above. Real
-playback requests through the Jellyfin API produced exactly the intended
-command lines, and every transcode ran to completion:
+**Validated on hardware, 2026-10-07.** The series, built as a package by boot2deb
+(.NET 10.0.401), ran on a Turing RK1 (kernel 7.2.9, boot2deb `jellyfin-v4l2request`
+image) with the configuration above. Transcodes forced through the Jellyfin API
+emitted the intended command lines and ran to completion, 900 frames each:
 
-- 1080p 8-bit HEVC → 720p: `-hwaccel v4l2request` with `hevc_rkmpp`, 6.7x
-  realtime. The same argv replayed under `time` costs **17.6 CPU-s against
-  47.6** without the flag — the 2.96x saving in the table above, reproduced
-  through the server-emitted command.
-- 4K 8-bit H.264 → 1080p: `-hwaccel v4l2request` with `h264_rkmpp`, 2.4x.
-- 4K 10-bit HEVC: the type declines it — no `-hwaccel` emitted, software
-  decode, `hevc_rkmpp` still on the encode side, exactly the designed
-  degradation.
+- 4K HEVC Main 10 → 1080p: `-hwaccel v4l2request` with `h264_rkmpp`, 1.4x realtime.
+  Software decode runs the same transcode at 0.53x.
+- 1080p HEVC Main 10, VP9 profile 2 and H.264 High 10 → 720p: `-hwaccel v4l2request`,
+  4.5-4.9x.
+- 1080p 8-bit H.264 → 720p: `-hwaccel v4l2request`, 3.1x.
+- 1080p HEVC Main 10 with `EnableDecodingColorDepth10Hevc` turned off: no `-hwaccel`,
+  software decode, 3.0x.
+- 10-bit AV1 with `av1` added to the codec list: `-hwaccel v4l2request`, 3.7x.
