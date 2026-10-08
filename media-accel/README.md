@@ -51,6 +51,7 @@ RKMPP/RGA work grafted on, then our fixes. Full per-patch rationale in
 | `0017`–`0019` | `mjpeg_v4l2m2m`, a hardware JPEG encoder on the mainline VEPU121 |
 | `0020`–`0021` | `overlay_vulkan` output timebase and framesync options |
 | `0022` | RGA scale ratio for a 90 or 270 degree rotation |
+| `0023` | Probe the request-API decoder with the widest frame size for the coded format first, so H.264 goes to `rkvdec` rather than the Hantro VDPU2 |
 | `README-libavutil-hwcontext-conflict-resolution.diff` | Reference: nyanmisaka RKMPP `hwcontext` patch, for resolving the libavutil conflict during rebases |
 
 ## userspace/ — librockchip-mpp / librga

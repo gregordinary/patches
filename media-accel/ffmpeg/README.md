@@ -34,6 +34,7 @@ directory's README. Then:
 20. `0020-overlay-vulkan-keep-the-main-inputs-timebase.patch`
 21. `0021-overlay-vulkan-expose-the-framesync-options.patch`
 22. `0022-rkrga-swap-scale-ratio-for-90-and-270-rotations.patch`
+23. `0023-hwcontext-v4l2request-try-the-widest-decoder-first.patch`
 
 Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
 0006 is independent of the graft — it makes the base's own V4L2-request frames
@@ -44,7 +45,9 @@ described below. 0017–0019 are independent of the graft as well: they reach th
 mainline VEPU121 JPEG encoder through V4L2, with no vendor userspace involved,
 and are described below. 0020 and 0021 are defect fixes in upstream's own
 `overlay_vulkan`, found the first time this scope built ffmpeg with Vulkan. 0022
-is a defect fix in the grafted RGA filters, taken from jellyfin-ffmpeg.
+is a defect fix in the grafted RGA filters, taken from jellyfin-ffmpeg. 0023 is a
+fix to the base's device probe: it decides which decoder a stream goes to when two
+take its coded format.
 
 ## 0005 — what a 10-bit decoded frame is called
 
@@ -395,3 +398,28 @@ ffmpeg-rockchip's `8.1` branch does not carry it. The patch keeps nyanmisaka as
 author. Jellyfin's RKMPP filter chain reaches the path through `vpp_rkrga`'s
 `transpose=` option, which it emits for a rotated source. The patch has not run on
 hardware.
+
+## 0023 — which decoder a stream goes to
+
+The request-API probe walks udev's media devices in udev's order, which is sorted
+by sysfs path, and takes the first one that accepts the coded format, the frame
+size and the stream's parameters. Where two decoders take one codec, the winner
+follows from register addresses.
+
+On RK3588 two decoders take H.264. The Hantro VDPU2 (`rk3568-vpu-dec`, `fdb50000`)
+sorts before `rkvdec` (`fdc38000`), so every 8-bit 4:2:0 stream up to 1920x1088
+went to the VDPU2. That block decodes about 3x realtime of 1080p H.264 in total,
+however many streams share it. `rkvdec` decodes 9.3x per stream and about 18x
+across its two cores. In Jellyfin's transcode chain four concurrent 1080p H.264
+streams ran at 0.75x each on the VDPU2 against 2.9x each on `rkvdec`, for the same
+CPU. The two score the same on conformance.
+
+0023 ranks the media devices before probing them, by the largest frame area any of
+their video devices reports for the coded format through `VIDIOC_ENUM_FRAMESIZES`.
+The widest goes first, and equal areas keep udev's order. `rkvdec` reports
+65520x65520 for `S264` and the VDPU2 1920x1088, so H.264 goes to `rkvdec`. The VDPU2
+keeps MPEG-2 and VP8, which only it decodes, and still takes an H.264 stream
+`rkvdec` refuses. A device that reports no size for the format ranks last and is
+still probed. Each device's reach is logged at verbose level. The patch touches
+nothing in the 13 `v4l2-request/` patches, and `-hwaccel_device` still selects
+nothing: the hwcontext discards the device string.

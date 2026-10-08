@@ -623,6 +623,16 @@ kernel = [
 # which takes no P010 and writes no NV15, and the filter failed to configure. The
 # fix is nyanmisaka's, taken from jellyfin-ffmpeg, which carries it and
 # ffmpeg-rockchip does not.
+#
+# 0023 decides which decoder a stream goes to when two take its coded format.
+# The v4l2-request probe took the first media device in udev's order, which is
+# sysfs-path order, and on RK3588 that put every 8-bit H.264 stream up to 1080p on
+# the Hantro VDPU2 (fdb50000) ahead of rkvdec (fdc38000). The VDPU2 decodes about
+# 3x realtime of 1080p in total; rkvdec decodes 9x per stream and 18x across its
+# two cores. 0023 ranks the media devices by the widest frame size each reports
+# for the coded format, and probes in that order, so H.264 goes to rkvdec and the
+# VDPU2 keeps MPEG-2 and VP8, which only it decodes. It applies after the
+# v4l2-request patches and touches none of them.
 ffmpeg = [
     "media-accel/ffmpeg/v4l2-request/0001-avutil-hwcontext-Add-hwdevice-type-for-V4L2-Request-API.patch",
     "media-accel/ffmpeg/v4l2-request/0002-avutil-hwcontext_v4l2request-Probe-for-a-capable-media-and-video-device.patch",
@@ -659,6 +669,7 @@ ffmpeg = [
     "media-accel/ffmpeg/0020-overlay-vulkan-keep-the-main-inputs-timebase.patch",
     "media-accel/ffmpeg/0021-overlay-vulkan-expose-the-framesync-options.patch",
     "media-accel/ffmpeg/0022-rkrga-swap-scale-ratio-for-90-and-270-rotations.patch",
+    "media-accel/ffmpeg/0023-hwcontext-v4l2request-try-the-widest-decoder-first.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous
