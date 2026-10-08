@@ -55,9 +55,10 @@ series' `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*`
 A series spans every kernel generation it can, rather than being forked per version.
 Where one patch has to differ, or drops out because upstream took it, that patch — not
 the series — carries a `kernels` range, and the file name says which generation it is
-for. A series that no longer has a divergence to express declares its floor once and
-every entry applies unconditionally, which is where `rk3588-accel`, `rk3576-fixes` and
-`rk3576-npu` stand at 7.2.4: the rocket fixes they used to carry are the kernel's own.
+for. A series with no divergence to express declares its floor once, and every entry
+applies unconditionally. `rk3588-accel` and `rk3576-fixes` stand that way at 7.2.7,
+where the kernel bounds the HEVC and AV1 tile counts itself. `rk3576-npu` stands at
+7.2.4, where the kernel carries the rocket fixes.
 
 ## Consuming patches
 

@@ -27,11 +27,13 @@
 # 0016 sets the HEVC SPS reference-picture-set controls. This SoC's rkvdec parses
 # slice headers in hardware and takes the SPS-level sets through EXT_SPS_ST_RPS
 # and EXT_SPS_LT_RPS, which this kernel exposes; an FFmpeg that never populates
-# them leaves the decoder to work from what the slice header alone carries. On the
-# RK3588, whose driver takes the same two controls, adding it moved the HEVC
-# conformance suite from 15 of 147 streams to 147. It is one file and depends on
-# nothing else here. Its kernel-side counterpart is 083 in series/rk3576-fixes,
-# which bounds what those controls may say.
+# them leaves the decoder to work from what the slice header alone carries. The
+# RK3588's driver takes the same two controls. There the HEVC conformance suite
+# passes 15 of 147 streams through ffmpeg without 0016 and 141 with it, the software
+# decoder's own score on that board. On this SoC its effect is unproven, and settling
+# it needs the Fluster conformance suite on an RK3576 board. It is one file and
+# depends on nothing else here. Its kernel-side counterpart is 083 in
+# series/rk3576-fixes, which bounds what those controls may say.
 #
 # Ordering is the RK3588 series' order, narrowed: 0002 and 0013 both edit
 # libswscale/swscale_unscaled.c and 0013 builds on 0002's hunks, so the two stay in

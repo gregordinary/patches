@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # series/rk3576-fixes.toml
 #
-# RK3576 kernel-fix series: fixes a mainline 7.1 or 7.2 kernel needs on RK3576
+# RK3576 kernel-fix series: fixes a mainline 7.2 kernel needs on RK3576
 # boards, each written to upstream standards and meant to leave this repo.
 # Referenced by kernels/rk3576-mainline-7.2. The list is the authoritative apply
 # order for the kernel tree, applied with `git am --3way`; paths are relative to

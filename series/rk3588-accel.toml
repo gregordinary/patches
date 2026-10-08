@@ -2,8 +2,9 @@
 # series/rk3588-accel.toml
 #
 # RK3588 hardware acceleration: the ordered patch series that turns a mainline
-# 7.1 or 7.2 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
-# (VDPU381 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto offload).
+# 7.2 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
+# (VDPU381, VDPU2 and VPU981 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto
+# offload).
 #
 # A series is owned by a kernel definition, not a device. It targets 7.2.7 and later,
 # where the rocket driver carries the job-push and task-array fixes and the V4L2 core
@@ -15,13 +16,12 @@
 
 # Declared intent; the builder's verify-applies gate is the enforcement.
 #
-# The floor is 060's, not the series': `rk3588-base.dtsi` lists `vdec0`'s `reg` and
-# `reg-names` in the order its binding declares from 7.1.5, where earlier 7.1.x
-# transposed "link" and "function". That node is 060's trailing context, so the patch
-# reads one way or the other and cannot read both. It is written against the binding
-# order, which puts the whole series at 7.1.5 -- a kernel that keeps 060 out keeps
-# VEPU580 encode out, so filtering it per-patch would silently ship a different image
-# rather than fail.
+# The floor is 7.2.7, where the kernel carries the fixes named above. 060 has a kernel
+# dependency of its own, which that floor covers. Its trailing context is
+# `rk3588-base.dtsi`'s `vdec0` node, written against the `reg` and `reg-names` order
+# the binding declares, which kernels follow from 7.1.5. A kernel that keeps 060 out
+# keeps VEPU580 encode out, so filtering it per-patch would silently ship a different
+# image rather than fail.
 #
 # The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
 # against, not because 7.3 is known to break it.
@@ -61,8 +61,8 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # they delete curr_ctx from struct v4l2_m2m_dev and rewrite v4l2_m2m_try_run(),
 # _v4l2_m2m_job_finish(), v4l2_m2m_get_curr_priv(), v4l2_m2m_suspend() and
 # v4l2_m2m_streamoff() for every m2m driver in the kernel, not just rkvdec. The
-# image builds others -- the two hantro nodes, VP8/MPEG decode and VEPU121 JPEG
-# encode, go through the same core. max_parallel_jobs defaults to 1 in
+# image builds others -- the three hantro nodes, VDPU2 (H.264, MPEG-2, VP8) and
+# VPU981 (AV1) decode and VEPU121 JPEG encode, go through the same core. max_parallel_jobs defaults to 1 in
 # v4l2_m2m_init(), so every driver that does not set it keeps one-job-at-a-time
 # behaviour.
 #
@@ -82,14 +82,11 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
 #
-# 072 is the one patch that differs between the two kernel generations, and the
-# reason is that 7.2 describes this hardware where 7.1 did not. 7.1's dtsi has a
-# single `rga` node for the RGA2 core, so 072-7.1 replaces it and adds the two RGA3
-# cores and their IOMMUs. 7.2 carries Sven Puschel's V4L2 RGA3 support, so all three
-# cores and both RGA3 IOMMUs are already described -- for the in-tree driver -- and
-# 072-7.2 only retargets them: the compatible strings pick the vendor driver and tell
-# the two RGA3 cores apart, and each core's register window grows to the 4 KiB the
-# driver needs to reach its IOMMU block at +0xf00. Both land on the same DT.
+# 7.2 carries Sven Puschel's V4L2 RGA3 support, so all three RGA cores and both RGA3
+# IOMMUs are already described -- for the in-tree driver -- and 072 only retargets
+# them: the compatible strings pick the vendor driver and tell the two RGA3 cores
+# apart, and each core's register window grows to the 4 KiB the driver needs to reach
+# its IOMMU block at +0xf00.
 #
 # Which driver binds is a kconfig decision the consumer makes, and the two are
 # mutually exclusive in practice: a build that takes this series wants
@@ -505,8 +502,9 @@ kernel = [
 # 0006 belongs to the base, not the graft: it teaches hwcontext_vulkan's DRM
 # importer the composed one-layer/N-plane descriptor that hwcontext_v4l2request
 # emits, which the importer rejects today for plain 8-bit NV12 against every
-# Vulkan driver. It shares no file with 0001-0005, and when the RK3576 series
-# gains an ffmpeg scope it wants this same patch: nothing in it is RK3588-specific.
+# Vulkan driver. It shares no file with 0001-0005, and nothing in it is
+# RK3588-specific. series/rk3576-media does not carry it: Mesa's PanVk does not drive
+# that SoC's Mali-G52 by default, and forced onto it renders wrong chroma.
 #
 # 0007-0013 are defect fixes in the grafted code, so each one follows the patch
 # that introduces the file it touches: 0007/0008 need 0004's rkrga filters,
@@ -523,8 +521,9 @@ kernel = [
 # no count checks, dividing by a stride it never checks for zero, and silently
 # importing object 0 for a frame whose planes live elsewhere.
 #
-# None of the seven has run on hardware. They compile warning-clean and the
-# series reproduces byte-for-byte, which is not the same thing.
+# No test has aimed at the seven defects. The code they touch runs in every RGA
+# and RKMPP chain measured on the RK1, but none of those chains provokes a defect,
+# so no run shows a fix taking effect.
 #
 # 0014 and 0015 belong to the base as 0006 does, and build the subtitle branch
 # every hardware burn-in chain needs: a transparent frame with libass drawn into

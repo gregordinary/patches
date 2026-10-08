@@ -29,6 +29,11 @@ support-matrix` is the authority, not this file.
 | `078-rkvdec-vp9-move-to-common-file.patch` | VP9 series 2/4 — shared helpers | upstream VP9-on-VDPU381 v1, unmerged |
 | `079-rkvdec-vdpu381-vp9.patch` | **VP9 decode** on VDPU381: profile 0 (`NV12`) + profile 2 (`NV15`) | upstream VP9-on-VDPU381 v1, unmerged; 224/305 Fluster |
 | `080-rkvdec-vdpu381-vp9-multicore-fixups.patch` | Builds `079` against the multi-core restructure | our own; `ctx->core` for regs/clock/watchdog, as `071` is for `070` |
+| `081-hantro-align-nv15-bytesperline-64.patch` | Pads the VPU981 `NV15` stride so **RGA can blit 10-bit AV1** | our own; the AV1 half of `076`; plain `NV15` only, the `_4L4` variants untouched |
+| `082-rkvdec-rcb-map-sram-through-dma-api.patch` | Maps the RCB SRAM through the DMA API, so the frame-buffer allocator cannot issue its IOVA twice | our own; without it, decode past about 2 GiB of mapped buffers hits `-EADDRINUSE` and falls back to software |
+| `083-rkvdec-bound-sps-rps-tables.patch` | Bounds the HEVC SPS reference picture set controls before they index fixed arrays | our own; VDPU381 and VDPU383; refuses nothing conforming |
+| `084-hantro-raise-vpu981-av1-frame-size.patch` | Raises the VPU981 **AV1 decode** limit from 4096x2304 to 8192x4352 | our own; both format lists move, since either alone clamps silently |
+| `085-hantro-jpeg-enc-max-frame-size.patch` | Caps the **JPEG encoder** at 8176, the last size that encodes | our own; 8192 masks to zero in a nine-bit macroblock field; every Rockchip variant |
 
 > NPU (`rocket`) patches live in the sibling [`../rocket/`](../rocket/) scope, not here.
 
@@ -52,7 +57,6 @@ RKMPP/RGA work grafted on, then our fixes. Full per-patch rationale in
 | `0020`–`0021` | `overlay_vulkan` output timebase and framesync options |
 | `0022` | RGA scale ratio for a 90 or 270 degree rotation |
 | `0023` | Probe the request-API decoder with the widest frame size for the coded format first, so H.264 goes to `rkvdec` rather than the Hantro VDPU2 |
-| `README-libavutil-hwcontext-conflict-resolution.diff` | Reference: nyanmisaka RKMPP `hwcontext` patch, for resolving the libavutil conflict during rebases |
 
 ## userspace/ — librockchip-mpp / librga
 

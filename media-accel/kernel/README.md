@@ -48,13 +48,6 @@ The patches here come from different places, and they age differently:
   rebased. `030` and `031` are the ones with reach beyond this driver: between them they
   rewrite five functions in `v4l2-mem2mem.c` for every m2m driver in the image,
   defaulting them to the one-job-at-a-time behaviour they have today.
-- **`050` — absorbed by mainline at 7.2.** The AV1 helper library and the Verisilicon
-  IOMMU, taken from an upstream posting series and curated to apply as one. 7.2 carries
-  the binding, the driver, the RK3588 DT node and the MAINTAINERS entry, so the patch is
-  ranged `<7.2` and simply drops out above that — a patch that stops applying because
-  the code is already there is an upper bound on its range, not a break. What did *not*
-  land is its trailing `CONFIG_VSI_IOMMU=m` defconfig line, so a 7.2 consumer sets that
-  symbol from a kconfig fragment or gets no AV1 IOMMU at all.
 - **`060` — out-of-tree by its author's intent.** The VEPU580 encoder is an OOT driver on
   the MPP framework, explicitly not offered for upstream, so it does not retire on its
   own — it stays until something replaces it.
@@ -63,14 +56,12 @@ The patches here come from different places, and they age differently:
   pair is where a kernel bump most often lands: `070` is the driver, `071` tracks the
   kernel, so a rework normally touches `071` alone. 7.2 removing `strncpy()` outright is
   the shape that takes — one call site, one line in `071`.
-- **`072` — our own devicetree wiring, one file per kernel generation.** The RGA driver
-  in `070` is SoC-neutral, so each SoC points its own nodes at it; this is the RK3588's,
-  and it is the one patch here that reads differently on 7.1 and 7.2. 7.1 describes only
-  the RGA2 core, so `-7.1` replaces that node and adds the two RGA3 cores and their
-  IOMMUs. 7.2 describes all three for its own in-tree V4L2 RGA3 driver, so `-7.2` leaves
-  the nodes where they are and changes two properties each: the compatible, which selects
-  this driver and distinguishes the two RGA3 cores, and the register window, which has to
-  span the 4 KiB the driver needs to reach the core's IOMMU block at `+0xf00`.
+- **`072` — our own devicetree wiring.** The RGA driver in `070` is SoC-neutral, so each
+  SoC points its own nodes at it, and this is the RK3588's. The kernel describes all
+  three cores for its own in-tree V4L2 RGA3 driver, so `072` leaves the nodes where they
+  are and changes two properties each: the compatible, which selects this driver and
+  distinguishes the two RGA3 cores, and the register window, which has to span the 4 KiB
+  the driver needs to reach the core's IOMMU block at `+0xf00`.
 - **`075` — upstream core fix.** Sascha Hauer's fix for the hantro
   `->run()` error paths (patch 1/7 of the unmerged rk3588-jpegdec series). The base
   kernel double-finishes a failed decode and mis-arms the watchdog, and the kernel's own

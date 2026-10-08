@@ -102,8 +102,10 @@ Origins are `yisding/rock-5b-ysp`'s fix-candidate list, re-derived against this 
 rather than ported: two of the defects it describes are not present here, and 0009's
 divide-by-zero and 0010's leak are not in it.
 
-**None of the seven has run on hardware.** They compile warning-clean and the series
-reproduces byte-for-byte; that is not the same claim.
+**No test has aimed at the seven defects.** All seven ship in every `ffmpeg-rk` build,
+and the RGA filters, the RKMPP hwcontext, the encoder's DRM import and the NV15 reader
+they touch run in every RGA and RKMPP chain measured on the RK1. None of those chains
+was built to provoke a defect, so no run shows a fix taking effect.
 
 ## 0006 — multi-planar DRM import
 
@@ -119,9 +121,8 @@ them does, and re-describes the descriptor as one single-component layer per pla
 when it cannot. `AVDRMPlaneDescriptor` carries an `object_index`, so both layers
 reference the same dma-buf at different offsets: no copy, no memory touched.
 
-**It builds only with `--enable-vulkan`**, which `ffmpeg-rk` does not currently
-pass; the patch is inert in today's binaries and lands ahead of the build-flag
-change. NV15/NV20 stay out of reach — Vulkan has no packed 10-bit 4:2:0 or 4:2:2
+**It builds only with `--enable-vulkan`**, which every `ffmpeg-rk` build passes.
+NV15/NV20 stay out of reach — Vulkan has no packed 10-bit 4:2:0 or 4:2:2
 format, and neither layout decomposes into `R8`/`GR88` or `R16`/`GR1616`.
 
 Origin is jellyfin-ffmpeg's

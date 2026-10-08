@@ -37,9 +37,9 @@ patch -p1 < .../001-mpp-allocator-dma-heap-mainline-cma.patch
 - Mainline kernels only. **Revert for Rockchip BSP kernels** (those
   expose the `cma` / `system-dma32` / `system-uncached` heap names the
   upstream table expects).
-- MPP here is encode-only on this board (decode uses v4l2request or the
-  rkmpp decoder which manages its own buffers); extra CMA pressure is
-  modest. 4K under heavy concurrency may want a larger `cma=` bootarg
+- MPP here is encode-only on this board. Decode goes through the kernel's
+  V4L2 stateless decoders (`-hwaccel v4l2request`), because MPP finds no
+  decode client on a mainline kernel. Extra CMA pressure is modest. 4K under heavy concurrency may want a larger `cma=` bootarg
   (default pool 393 MB).
 - Verified: applies cleanly to tsukumijima `develop` @ 750e76ec;
   produces a working `librockchip-mpp1` that encodes 720p HEVC at
