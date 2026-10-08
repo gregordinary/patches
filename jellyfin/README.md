@@ -209,16 +209,18 @@ and which streams the type admits: 10-bit 4:2:0 HEVC, VP9, AV1 and H.264 Hi10P t
 the hardware path, the operator's 10-bit HEVC switch still declines it, and 4:2:2
 stays in software.
 
-**Validated on hardware, 2026-10-07.** The series, built as a package by boot2deb
-(.NET 10.0.401), ran on a Turing RK1 (kernel 7.2.9, boot2deb `jellyfin-v4l2request`
-image) with the configuration above. Transcodes forced through the Jellyfin API
-emitted the intended command lines and ran to completion, 900 frames each:
+**Validated on hardware, 2026-10-08.** The series on `v12.2`, built as a package by
+boot2deb (.NET 10.0.401), ran on a Turing RK1 (kernel 7.2.9) with the configuration
+above. Its FFmpeg carried `media-accel/ffmpeg` through `0023` and libdav1d. Transcodes
+forced through the Jellyfin API emitted the intended command lines and ran to
+completion, 900 frames each:
 
 - 4K HEVC Main 10 → 1080p: `-hwaccel v4l2request` with `h264_rkmpp`, 1.4x realtime.
   Software decode runs the same transcode at 0.53x.
 - 1080p HEVC Main 10, VP9 profile 2 and H.264 High 10 → 720p: `-hwaccel v4l2request`,
-  4.5-4.9x.
-- 1080p 8-bit H.264 → 720p: `-hwaccel v4l2request`, 3.1x.
+  4.4-4.9x.
+- 1080p 8-bit H.264 → 720p: `-hwaccel v4l2request`, decoded on `rkvdec`, 7.9x.
 - 1080p HEVC Main 10 with `EnableDecodingColorDepth10Hevc` turned off: no `-hwaccel`,
   software decode, 3.0x.
-- 10-bit AV1 with `av1` added to the codec list: `-hwaccel v4l2request`, 3.7x.
+- 10-bit AV1 left out of the codec list: software decode through libdav1d, 2.4x. With
+  `av1` added: `-hwaccel v4l2request`, 3.8x.
