@@ -14,8 +14,10 @@ of 5400 rows. 594 MHz is clean, and Rockchip's OPP table asks only 725 mV
 of its 500 and 600 MHz steps.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
-[each core takes five register banks rather than three: this series drives
- the DPU's own completion, which needs the dpu and dpu_rdma banks mapped]
+[gregordinary: each core takes five register banks rather than three:
+ this series drives the DPU's own completion, which needs the dpu and
+ dpu_rdma banks mapped]
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  arch/arm64/boot/dts/rockchip/rk3576.dtsi | 78 +++++++++++++++++++++++-
  1 file changed, 77 insertions(+), 1 deletion(-)

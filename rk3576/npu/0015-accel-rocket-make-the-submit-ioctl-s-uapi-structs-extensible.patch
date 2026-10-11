@@ -59,9 +59,9 @@ No ABI change: neither struct grows here, and for today's layouts the v1
 minimum equals the current sizeof.
 
 This is the RK3576 series' port of the rk3588 series' patch 085.  It does
-NOT carry that patch's rocket_iommu_domain_put() NULL guard: 0013 in this
-series fixes the same crash at its source by taking the domain reference
-at job construction, so the guard would be dead code here.
+NOT carry that patch's rocket_iommu_domain_put() NULL guard: Linux 7.2.4
+fixes the same crash at its source by taking the domain reference at job
+construction, so the guard would be dead code here.
 
 Measured on an H96 MAX M9 (RK3576): tests/uapi_selftest_rocket goes from
 13 checks to 19, the six new ones being the v1-minimum acceptance in both

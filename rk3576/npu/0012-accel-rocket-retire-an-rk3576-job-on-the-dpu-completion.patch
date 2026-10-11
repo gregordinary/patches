@@ -13,7 +13,7 @@ handed a surface whose tail has not landed.
 INTERRUPT_RAW_STATUS carries the signal that has drained.  The DPU_0/
 DPU_1 bits are what RK3588 takes as its completion interrupt, and on
 RK3576 they set tens to hundreds of microseconds AFTER PC_DONE.  Logging
-both at the moment the poll retires, on an H96 MAX M9 [HW sweep]:
+both at the moment the poll retires, on an H96 MAX M9:
 
   raw@retire=0x20000001 -> 0x30000155 after 82us
 
@@ -30,7 +30,7 @@ because that was the shortest one that was correct; the bound was never
 the poll rate, it was the drain being hidden behind the detection lag.
 With the DPU bit as the retire condition the period can go to 50 us.
 Measured with tests/rk3576_submit_floor (8x64x32 int8 matmul, n=300,
-us/submit) [HW sweep]:
+us/submit):
 
   poll period          500us   250us   125us    50us    25us
   PC_DONE (before)      1065     731*    535*    433*     --
@@ -54,7 +54,7 @@ they still fail at 100 us (3 of 43 shapes) and pass at 250, 500, 1000 and
 2000, and a longer grace only costs those tasks wall time (the fp16 stem
 in the cost table is 13.5 ms at 500 us against 15.8 at 1000).
 
-Whole-entry cost, tests/rk3576_cost_table, NPU milliseconds [HW sweep]:
+Whole-entry cost, tests/rk3576_cost_table, NPU milliseconds:
 
                                  500us/PC_DONE   50us/DPU bit
   int8 stem 3x224x224 k3s2 oc32       4.00           3.33

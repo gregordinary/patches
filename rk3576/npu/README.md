@@ -6,7 +6,7 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 0008 to 0030 and 0033 are ours; 0001-0007, 0031, 0032, 0034 and 0035 come from
+Patches 0008 to 0027, 0029, 0030 and 0033 are ours; 0001-0007, 0028, 0031, 0032, 0034 and 0035 come from
 the linux-rockchip series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
 (`gahing@gahingwoo.com`), tracked at its **v14** posting (patchwork series 1172991), with
 their upstream commit messages and review tags intact. They compose after
@@ -24,7 +24,7 @@ their upstream commit messages and review tags intact. They compose after
 | 0007 | arm64: dts: rockchip: add NPU (RKNN) nodes to rk3576 |
 | 0008 | accel/rocket: program PC_TASK_CON with the per-SoC TASK_NUMBER width (ours) |
 | 0009 | accel/rocket: make the RK3576 completion poll period tunable (ours) |
-| 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours) |
+| 0011 | accel/rocket: keep the IOMMU domain attached across jobs (ours, based on Midgy BALON's RFC v4 5/9) |
 | 0012 | accel/rocket: retire an RK3576 job on the DPU's completion, not on `PC_DONE` (ours) |
 | 0014 | accel/rocket: anchor the IOVA allocator to the IOMMU domain (ours) |
 | 0015 | accel/rocket: make the submit ioctl's uAPI structs extensible (ours) |
@@ -35,11 +35,11 @@ their upstream commit messages and review tags intact. They compose after
 | 0021 | accel/rocket: retire an RK3576 pooling job on the PPU's completion (ours) |
 | 0022 | accel/rocket: retire an RK3576 job on the hardware's own account of the kick (ours) |
 | 0023 | accel/rocket: do cache maintenance over named ranges of a BO (ours) |
-| 0024 | accel/rocket: do not let a stale poll retire the next job (ours) |
+| 0024 | accel/rocket: do not let a stale poll retire the next job (ours, on the poll sequence fix in Jiaxing Hu's RFC v4 4/6) |
 | 0025 | accel/rocket: wait for the writing block, not for a deadline (ours) |
 | 0026 | accel/rocket: reset the cores this SoC acquired (ours) |
 | 0027 | accel/rocket: stop the block under the job lock (ours) |
-| 0028 | accel/rocket: wait for a running IRQ handler before resetting a core (ours) |
+| 0028 | accel/rocket: wait for a running IRQ handler before resetting a core |
 | 0029 | accel/rocket: do not touch a gated core from an idle poll (ours) |
 | 0030 | accel/rocket: sequence the completion poll against scheduler teardown (ours) |
 | 0031 | dt-bindings: power: rockchip: allow resets in a power domain node |
@@ -47,7 +47,7 @@ their upstream commit messages and review tags intact. They compose after
 | 0033 | dt-bindings: npu: rockchip: describe the RK3576 DPU register banks (ours) |
 | 0034 | accel/rocket: let the core suspend after a reset |
 
-Three of the carried patches have local changes -- 0002, 0006 and 0007 -- and 0034 is
+Four of the carried patches have local changes -- 0002, 0006, 0007 and 0028 -- and 0034 is
 upstream's change on the context 0011 leaves; the rest are verbatim. The table is in
 apply order. 0035 comes before 0007 because upstream orders the two halves that way,
 0031 to 0033 sit near the end because `Documentation/` has no apply-order dependency on
@@ -356,7 +356,7 @@ RK3588 shows nothing.
 
 `/dev/accel/accel0` is group `render`, so this is available to any client that may use
 the NPU at all. It is not RK3576-specific -- the code is mainline's and the RK3576
-enablement does not touch it; the RK3588 series carries the same fix as 085. It is here
+enablement does not touch it; the RK3588 series carries the same fix as 084. It is here
 because this is the series the RK3576 image applies, and that image does not take the
 RK3588 series.
 

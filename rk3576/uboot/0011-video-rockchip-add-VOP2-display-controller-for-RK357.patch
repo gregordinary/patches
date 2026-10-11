@@ -36,6 +36,11 @@ same thing for the same reason. The MMU that global_init() turned on is
 turned back off once the window is quiet, so the OS does not inherit an
 IOMMU reporting PAGING_ENABLED against u-boot's page tables.
 
+The register writes follow Rockchip's downstream driver,
+drivers/video/drm/rockchip_vop2.c in rockchip-linux/u-boot next-dev
+(aeec6f2bfd). The file keeps that driver's GPL-2.0-only licence and
+copyright.
+
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/video/rockchip/Kconfig         |   9 +
@@ -78,23 +83,23 @@ index 0a66cb5a..c991aa47 100644
  obj-$(CONFIG_ROCKCHIP_RK3399) += rk3399_vop.o
 diff --git a/drivers/video/rockchip/rockchip_vop2.c b/drivers/video/rockchip/rockchip_vop2.c
 new file mode 100644
-index 00000000..eecd5b64
+index 00000000..e01fab7c
 --- /dev/null
 +++ b/drivers/video/rockchip/rockchip_vop2.c
 @@ -0,0 +1,662 @@
-+// SPDX-License-Identifier: GPL-2.0+
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Rockchip VOP2 display controller (RK3576), minimal UCLASS_VIDEO driver.
 + *
-+ * Copyright (c) 2021 Rockchip Electronics Co. Ltd.
++ * (C) Copyright 2008-2017 Fuzhou Rockchip Electronics Co., Ltd
 + *
 + * Drives a single video port (VP0) with a single primary window (Esmart0)
 + * reading a linear ARGB8888 framebuffer full-screen, at a fixed 1920x1080p60,
 + * out to the on-chip HDMI (the DW-HDMI-QP is a separate UCLASS_DISPLAY bridge).
-+ * This is the raster half of the "Light" milestone: bring VP0 + Esmart0 up so
-+ * the framebuffer the video uclass fills is scanned out over HDMI.
++ * It brings VP0 + Esmart0 up so the framebuffer the video uclass fills is
++ * scanned out over HDMI.
 + *
-+ * Scope, deliberately narrow (Milestone "Light"): one VP, one full-screen
++ * Scope, deliberately narrow: one VP, one full-screen
 + * primary plane, no scaling, no overlay blending, no gamma/CSC, no multi-mode.
 + * EDID mode selection, extra planes, and the other VPs are out of scope here.
 + *
@@ -112,7 +117,7 @@ index 00000000..eecd5b64
 + * bridge enable: the bridge's video QP register domain only decodes once the
 + * VOP pixel interface runs, and VP0 free-starts the moment the PLL delivers
 + * dclk. See the DCLK<->pll_hdmiphy0 coupling in clk_rk3576.c
-+ * (rk3576_dclk_vop_set_parent) and the board-bringup/h96-max-m9 console plan.
++ * (rk3576_dclk_vop_set_parent).
 + *
 + * Power: the RK3576 PD_VOP macro power domain is powered by the DM
 + * power-domain attach on probe (no power code here); the Esmart plane's

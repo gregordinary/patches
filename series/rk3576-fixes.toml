@@ -22,7 +22,7 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # panfrost's first register write aborts asynchronously (SError -> panic). 100
 # gives the RK3576 GPU domain a regulator like RK3588's; 101 labels the domain so
 # a board can attach vdd_gpu_s0 with domain-supply (the H96 board DTS does).
-# Upstream-destined; retire from this series once it reaches the 7.1.y stable tree.
+# Upstream-destined; retire from this series once a kernel it targets carries it.
 #
 # 102 describes the CPU caches, which the SoC dtsi omits entirely -- the kernel
 # reports "cacheinfo: Unable to detect cache hierarchy for CPU 0" and leaves
@@ -62,8 +62,7 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # a read_cache module parameter measures the two configurations against each
 # other without a rebuild. This one is on the SoC layer's decoder, so the base
 # h96-max-m9/forky image gets it too, not just media-accel. Upstream-destined
-# like the rest -- offered to the mainline maintainers, not merged, so unlike
-# 100-102 there is no landed commit to retire it against yet.
+# like the rest, and not merged.
 #
 # 083 is shared verbatim with series/rk3588-accel, where its full rationale lives:
 # one rkvdec defect, reached through the VDPU383 this SoC carries, so the fix is the

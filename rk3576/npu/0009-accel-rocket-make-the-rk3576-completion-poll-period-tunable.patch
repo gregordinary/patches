@@ -18,7 +18,7 @@ The bound is not the poll rate.  PC_DONE means the program counter
 finished, not that the DPU's write DMA has drained, and the driver both
 tears down the IOMMU mapping and signals the fence as soon as it sees
 PC_DONE.  A long period hides that behind its own detection lag.  Measured
-on an H96 MAX M9 with the int8 matmul gate, one run per point [HW sweep]:
+on an H96 MAX M9 with the int8 matmul gate, one run per point:
 
   poll period       1000us  500us  250us  150us
   shapes passing    43/43   43/43  40/43  37/43

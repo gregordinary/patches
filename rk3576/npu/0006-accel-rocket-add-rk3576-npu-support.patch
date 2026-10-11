@@ -14,35 +14,13 @@ unchanged:
     stalls without them.  RK3588 keeps its four clocks.
   - RK3576 requests one reset (srst_a); its BIU reset (srst_h) is driven
     from the power domain.  RK3588 keeps both.
+  - RK3576 spans two power domains (PD_NPU0 + PD_NPU1) and attaches the
+    list explicitly; RK3588 is single-domain and keeps the driver-core
+    auto-attach.
   - RK3576 has no maskable completion interrupt (PC_DONE is read-only in
     INTERRUPT_MASK), so it polls PC_DONE via an hrtimer; RK3588 keeps the
     DPU completion IRQ.
-  - guard rocket_job_timedout() MMIO behind pm_runtime_get_if_active(),
-    which holds a reference across the reads.  pm_runtime_active() only
-    samples, and the domain can drop between the test and the first
-    readl; a register access with the domain down takes an async SError
-    on this hardware.
-
-A core may also span more than one power domain: the RK3576 core spans
-PD_NPU0 and PD_NPU1, because the convolution buffer is read through NPU1
-whichever core is computing.  How many it spans is a property of the node
-rather than of the SoC that was matched, so attach the list unconditionally
-and let the DT say.  The driver core attaches the single-domain case
-itself and reports -EEXIST for it, which is that job already done and not
-a failure.
-
-Counting the cores walks the driver's own match table rather than a
-second, hand-kept list of compatibles.  The array sized from that count
-is indexed by every core that goes on to probe, so the two lists cannot
-be allowed to disagree; the table is exported as rocket_dt_match for
-rocket_device_init() to reach.
-
-That count is also why the match data is checked at the top of
-rocket_probe(), before anything is allocated.  A device bound by name
-rather than by compatible carries no match data and has no of_node, so
-the walk never counted it and the slot the probe would write is past the
-end of the array -- and core->soc is dereferenced without a check by
-every one of its users, rocket_core_init() first among them.
+  - guard rocket_job_timedout() MMIO behind pm_runtime_active()
 
 Tested on a Radxa ROCK 4D: the NPU probes, powers on, brings up its
 IOMMUs and runs submitted jobs to completion.  Full multi-layer inference
@@ -50,11 +28,13 @@ is not yet correct on this SoC (only the first operation per power session
 produces valid output); see the cover letter.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
-[count the cores over the match table rather than a second compatible
- list, and check the match data before the count is used, both after the
+[gregordinary: attach the power-domain list whatever the SoC, as the
+ node says how many a core spans; count the cores over the match table
+ and check the match data at the top of rocket_probe(), both after the
  same changes in this series (v8 and v12 11/14); hold a runtime PM
  reference across the timeout dump with pm_runtime_get_if_active()
  rather than testing pm_runtime_active()]
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_core.c   |  36 +++++++-
  drivers/accel/rocket/rocket_core.h   |  22 ++++-

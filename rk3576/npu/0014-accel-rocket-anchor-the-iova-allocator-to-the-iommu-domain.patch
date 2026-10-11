@@ -51,8 +51,7 @@ postclose.
 Mainline code, unchanged by the RK3576 enablement -- carried here because this
 is the series the RK3576 image applies, and that image does not take the
 RK3588 series where the same fix is 084.  Independent of the rest of this
-series (it touches rocket_drv.{c,h} and rocket_gem.{c,h}, which patches 0008
-to 0013 do not) and applies in any order relative to them.
+series, and applies in any order relative to 0008 to 0012.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---

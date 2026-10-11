@@ -1,104 +1,36 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: gregordinary <33880035+gregordinary@users.noreply.github.com>
-Date: Tue, 18 Aug 2026 12:00:00 +0000
+From: Jiaxing Hu <gahing@gahingwoo.com>
+Date: Thu, 24 Sep 2026 22:21:23 +1200
 Subject: [PATCH] accel/rocket: wait for a running IRQ handler before
  resetting a core
 
-rocket_reset() calls drm_sched_stop(), which stops the scheduler and
-returns.  It does not wait for a threaded handler that is already
-running, so the comment that followed it -- "Remaining interrupts have
-been handled" -- stated an assumption rather than something the code
-arranged.  A completion handler that is mid-flight when the reset starts
-keeps running against a core the reset is about to put through
-rocket_core_reset(), and against an in_flight_job the reset has already
-dropped.
+drm_sched_stop() does not wait for a threaded handler that is already
+running. Call synchronize_irq() after it, outside job_lock, which the
+handler takes.
 
-Call synchronize_irq(core->irq) after drm_sched_stop() and reword the
-comment to say what holds afterwards.
+Before the sync, mask the block's interrupt and clear its raw status, so
+that an active core cannot signal a completion after it. Do that under
+job_lock, since rocket_job_hw_submit() arms the same mask under that lock,
+and only when pm_runtime_get_if_active() returns a positive count: the
+reset holds no runtime PM reference, and with the domain down a register
+access takes an async SError.
 
-Mask the block first.  rocket_job_hw_submit() arms INTERRUPT_MASK on
-every submit -- the DMA-error pair on RK3576, the DPU pair on RK3588 --
-and only the hardirq clears it, so on an ordinary timeout the mask is
-still live and an interrupt can arrive after the sync returns.  Waiting
-without masking fences the handler that is running, not the one the
-hardware is still entitled to raise.  The next submit re-arms the mask,
-so nothing is lost by clearing it here.
+Igor Paunovic's induced-reset runs on RK3588, including a two-task job that
+puts hw_submit() on the IRQ thread, found no fault; as he put it, "this
+does not show the race is closed".
 
-Clear what is latched alongside it, the same set the completion path
-clears -- 0x1ffff, and PC_DONE_0/1 as well where the completion is
-polled.  Masking ends nothing already raised.  On RK3588 that matters
-because the hardirq decides on INTERRUPT_RAW_STATUS alone and the line
-is IRQF_SHARED, so another device's interrupt finds the stale bit and
-wakes the threaded handler again.  Here it matters for the poll instead:
-0025 reads those same raw bits to decide the writing block has finished,
-so a bit left standing across a reset is a completion the next job's
-first tick can read as its own.  0024's sequence number does not cover
-that one -- it fences a stale work item, not a stale register.
-
-That write is guarded by pm_runtime_get_if_active(), and it needs to be.
-It is the first register access rocket_reset() makes, and the function
-holds no runtime PM reference of its own: the only one in the window
-belongs to in_flight_job, and the completion path can have put it and
-cleared the pointer before the timeout worker arrives.  drm_sched_stop()
-sits in between, can block, and subtracts every pending job's credits,
-so rocket_job_is_idle() is true and nothing keeps the core resumed.  A
-register access with the domain down takes an async SError on this
-hardware, so the reset must not be what causes one.  pm_runtime_active()
-would not do: it is a snapshot that holds no reference, and the domain
-can drop between the test and the write.
-
-Nor is > 0 shorthand for != 0.  pm_runtime_get_if_active() tests
-power.disable_depth before power.runtime_status, so -EINVAL masks a
-suspended device rather than excluding one, and this driver makes that
-state twice: pm_runtime_force_suspend(), its own system sleep callback,
-disables runtime PM before it turns the clocks off, and
-rocket_core_fini() suspends the core and disables before it cancels the
-timeout worker.  Either would put these writes on a powered-down block.
-What that costs is the other half of the ambiguity: a core still up with
-runtime PM disabled -- pm_runtime_force_suspend() before its callback has
-run, or CONFIG_PM=n under COMPILE_TEST -- keeps its mask and its latched
-bits, because writing to it would mean writing to the half that is down
-as well.
-
-Those two writes go under job_lock, though the sync does not.
-rocket_job_hw_submit() arms the same register and always runs under that
-lock, while reset.pending is set here without it and read there with it,
-so a submit that has already passed its check can re-arm the mask after
-this clears it.  The block is then left running a task with its interrupt
-live while synchronize_irq() fences a handler that has already finished,
-which is the same shape of race 0027 closes for OPERATION_ENABLE, on the
-other register.  It takes a multi-task job to reach: only then does
-rocket_job_hw_submit() run from the IRQ thread rather than the scheduler
-thread, where drm_sched_stop() does not fence it.
-pm_runtime_get_if_active() takes a reference on an already-active device
-without invoking a callback, and pm_runtime_put_autosuspend() is
-asynchronous, so holding job_lock across them cannot re-enter this
-driver's runtime PM callbacks.
-
-The sync itself stays outside job_lock.  rocket_job_handle_irq() takes
-that lock -- 0027 moved the register writes under it, so it now holds the
-lock for the whole handler -- and waiting for the handler while holding
-the lock it wants would deadlock instead of fencing anything.  Nothing is
-held at that point, and both callers, rocket_job_timedout() and
-rocket_reset_work(), run in process context, so sleeping there is
-allowed.
-
-The other way into rocket_job_handle_irq() on this SoC is the completion
-poll work, which the hrtimer_cancel()/cancel_work_sync() pair above
-already fences; this closes the shared interrupt thread, which the
-RK3576 still takes for the DMA-error bits.
-
-This does not stop a handler that has already read in_flight_job from
-finishing its work on the job the reset is about to drop.  That window
-needs the check and the register writes to be one step under the lock,
-which is what 0027 does; the two are complementary.
-
-From this series -- Jiaxing Hu's patch, suggested by Igor Paunovic,
-tracked at its v14 posting.  The function is shared with the RK3588,
-which carries the same fix as rocket/091.
-
-  https://lore.kernel.org/linux-rockchip/20260924102135.92217-4-gahing@gahingwoo.com/
-
+Link: https://lore.kernel.org/all/20260819073530.6087-1-royalnet026@gmail.com/
+Link: https://lore.kernel.org/all/CAEWPSH5mxTbUkNouxm6yecMZYvDowquhvYvhaXQ8HoMtHD5U1g@mail.gmail.com/
+Link: https://lore.kernel.org/all/20260912113717.6819-1-royalnet026@gmail.com/
+Link: https://lore.kernel.org/all/20260916132824.13527-1-royalnet026@gmail.com/
+Link: https://lore.kernel.org/all/20260919103422.148834-1-royalnet026@gmail.com/
+Suggested-by: Igor Paunovic <royalnet026@gmail.com>
+Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
+Tested-by: Igor Paunovic <royalnet026@gmail.com> # RK3588, three cores, induced reset, JOB_TIMEOUT_MS=2
+[gregordinary: also clear PC_DONE_0/1 where the completion is polled,
+ since the poll reads those bits from INTERRUPT_RAW_STATUS and one left
+ standing across a reset reads as the next job's completion; the
+ comments are expanded to match]
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_job.c | 81 +++++++++++++++++++++++++++++--

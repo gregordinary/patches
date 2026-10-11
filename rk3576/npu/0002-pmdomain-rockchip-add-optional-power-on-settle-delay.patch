@@ -22,10 +22,12 @@ runs on the first power-on even when a bootloader left the NPU up.
 
 Signed-off-by: Jiaxing Hu <gahing@gahingwoo.com>
 Reviewed-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
-[carried over patches/rk3576/kernel/100, which gives DOMAIN_M_O_R_G its
- regulator argument for the GPU; the merged macro takes both arguments,
- so the DOMAIN_RK3576_R spelling the upstream patch adds is not needed
- here and RK3576_PD_NPU passes its regulator argument directly]
+[gregordinary: rebased over the RK3576 GPU power-domain regulator patch,
+ which gives DOMAIN_M_O_R_G its regulator argument for the GPU; the
+ merged macro takes both arguments, so the DOMAIN_RK3576_R spelling the
+ upstream patch adds is not needed here and RK3576_PD_NPU passes its
+ regulator argument directly]
+Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/pmdomain/rockchip/pm-domains.c | 52 +++++++++++++++-----------
  1 file changed, 30 insertions(+), 22 deletions(-)

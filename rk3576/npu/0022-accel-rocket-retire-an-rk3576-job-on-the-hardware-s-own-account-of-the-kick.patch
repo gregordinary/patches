@@ -10,9 +10,9 @@ completion, bounded by dpu_grace_us.  Neither of the two signals that
 wait is anchored on says what it was taken to say.
 
 PC_OPERATION_ENABLE is a self-clearing GO bit.  The vendor rknpu driver
-writes 1 and then 0 to it back to back (rknpu_job.c) [source-confirmed],
+writes 1 and then 0 to it back to back (rknpu_job.c),
 and on this part it reads back zero at every poll of a kick that is
-still running [HW sweep, H96 MAX M9] -- so "OPERATION_ENABLE == 0", the
+still running on an H96 MAX M9 -- so "OPERATION_ENABLE == 0", the
 first half of the completion condition, has been vacuously true since
 the polled path was written.  Every wait under it therefore started at
 the FIRST POLL TICK rather than at an event, which is not what
@@ -22,7 +22,7 @@ PC_DONE, the other half, is raised per TASK and not per kick.  0016
 made a job of n tasks go out as one hardware kick, and the two PC_DONE
 bits alternate as the program counter retires each program of it.
 Traced at a 10 us poll over the 35-program cross-layer kick of a
-MobileNetV1-224 [HW sweep]:
+MobileNetV1-224:
 
   t=   12 us   PC_DONE_0 set, task 1 of 35 in flight
   t=   31 us   PC_DONE_1 set
@@ -42,13 +42,13 @@ not enough: it is a fitted number, and a stream whose programs each
 take longer than dpu_grace_us outruns it.  A 224x224 k3 convolution at
 256 channels row-splits into 75 chained tasks; scaled, the deadline
 expires at 37.5 ms -- 75 * 500 us to the microsecond -- with the task
-counter reading 67 tasks started of 75 [HW sweep].
+counter reading 67 tasks started of 75.
 
 The part says exactly where a kick is.  PC_TASK_STATUS -- the register
 the vendor driver reads as its "task counter", and whose offset it
-carries per SoC, 0x3c on RK3588 and 0x48 here [source-confirmed] -- is
-a live pair of counters, both modulo the programmed TASK_NUMBER [HW
-sweep, kicks of 2, 3, 5, 8, 9, 35 and 90 tasks]:
+carries per SoC, 0x3c on RK3588 and 0x48 here -- is
+a live pair of counters, both modulo the programmed TASK_NUMBER (measured
+over kicks of 2, 3, 5, 8, 9, 35 and 90 tasks):
 
   bits 15:0     tasks started
   bits 31:16    tasks completed
@@ -68,7 +68,7 @@ programs TASK_NUMBER = 1, where both counters read zero always, so
 PC_DONE alone is its signal and its wait does not change.
 
 This also closes a race the old condition had: the per-task block
-completion bits do not persist across tasks [HW sweep], so a poll
+completion bits do not persist across tasks, so a poll
 landing while a MID-STREAM task's DPU bit was still set would retire
 the job early -- rare enough never to have been caught, and
 indistinguishable from a correct retire when it happened.
@@ -80,7 +80,7 @@ in the gates reaches it -- 29 gates, zero backstop hits, which is also
 what says every class raises PC_DONE, the pooling and LUT-load programs
 included.
 
-Measured on an H96 MAX M9 [HW sweep]:
+Measured on an H96 MAX M9:
 
   - the 224x224 k3 convolution above is bit-exact, 150 programs in one
     kick, where a deadline scaled by the task count retires it at
@@ -204,7 +204,7 @@ index 3139f09a3..dbb5de586 100644
 + * and it says nothing about the stream being over.
 + *
 + * PC_TASK_STATUS does.  It is a live pair of counters, both modulo the
-+ * programmed TASK_NUMBER [HW sweep, H96 MAX M9]:
++ * programmed TASK_NUMBER:
 + *
 + *   bits 15:0     tasks started
 + *   bits 31:16    tasks completed
@@ -217,12 +217,12 @@ index 3139f09a3..dbb5de586 100644
 + * always, so PC_DONE alone is its signal and its behaviour does not change.
 + *
 + * (The vendor rknpu driver reads the same register as its "task counter" and
-+ * carries its offset per SoC, 0x3c on RK3588 and 0x48 here [source-confirmed].)
++ * carries its offset per SoC, 0x3c on RK3588 and 0x48 here.)
 + *
 + * PC_OPERATION_ENABLE is NOT part of this test on the polled path: OP_EN is a
-+ * self-clearing GO bit -- the vendor driver writes 1 then 0 to it back to back
-+ * [source-confirmed] -- and it reads back zero at every poll of a kick that is
-+ * still running [HW sweep].  Left in the completion condition it is vacuously
++ * self-clearing GO bit -- the vendor driver writes 1 then 0 to it back to
++ * back -- and it reads back zero at every poll of a kick that is still
++ * running.  Left in the completion condition it is vacuously
 + * true, which is what made every wait below start at the first poll tick
 + * instead of at an event.
 + */

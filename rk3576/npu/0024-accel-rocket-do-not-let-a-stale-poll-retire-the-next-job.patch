@@ -29,11 +29,12 @@ short surface rather than an error.
 RK3588 does not reach this: it has a completion interrupt and
 soc->poll_completion is false, so no poll work is ever queued.
 
-Equivalent to the poll_seq/poll_work_seq fix in "[RFC PATCH v4 4/6]
-accel/rocket: add RK3576 NPU (RKNN) support" (Jiaxing Hu, linux-rockchip
-2026-08-03), rewritten against this series, where the poll condition and
-the per-submit state it latches have both moved.
+Based on the poll_seq/poll_work_seq fix in Jiaxing Hu's "accel/rocket:
+add RK3576 NPU (RKNN) support" (RFC v4 4/6, linux-rockchip 2026-08-03),
+rewritten against this series, where the poll condition and the
+per-submit state it latches have both moved.
 
+Link: https://lore.kernel.org/all/20260803094125.3285895-5-gahing@gahingwoo.com/
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_core.h | 10 ++++++++++

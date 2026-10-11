@@ -18,7 +18,7 @@ retires on the dpu_grace_us deadline instead -- paid in full, on every
 submit.
 
 Measured through the userspace pooling entry on an H96 MAX M9, the wait
-for the output BO on a 1024x7x7 k7 average pool [HW sweep]:
+for the output BO on a 1024x7x7 k7 average pool:
 
   dpu_grace_us     500     250     100
   wait (us)        641     389     213

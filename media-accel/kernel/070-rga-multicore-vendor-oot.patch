@@ -8,13 +8,12 @@ Out-of-tree driver lifted from rockchip-linux/kernel develop-6.6
 (drivers/video/rockchip/rga3/), carried as OOT against mainline
 v7.1 alongside the rcawston VEPU580 OOT driver.
 
-Path A per rga_path_decision.md (2026-05-09): the mainline V4L2 RGA
-path (drivers/media/platform/rockchip/rga, even with the Pengutronix
-RGA3 v5 series applied) cannot today express librga's multi-source
-alpha composite in one ioctl chain. Until V4L2 m2m grows multi-input
-single-output blend AND librga gains a V4L2 backend, the vendor
-/dev/rga ABI is what userspace (librga.so / scale_rkrga / vpp_rkrga
-/ overlay_rkrga / FFmpeg --enable-rkrga) actually speaks.
+The mainline V4L2 RGA path (drivers/media/platform/rockchip/rga, even
+with the Pengutronix RGA3 v5 series applied) cannot express librga's
+multi-source alpha composite in one ioctl chain. Until V4L2 m2m grows
+multi-input single-output blend AND librga gains a V4L2 backend, the
+vendor /dev/rga ABI is what userspace (librga.so / scale_rkrga /
+vpp_rkrga / overlay_rkrga / FFmpeg --enable-rkrga) actually speaks.
 
 Source: https://github.com/rockchip-linux/kernel/tree/develop-6.6
         drivers/video/rockchip/rga3/
@@ -30,7 +29,7 @@ work (dma-buf/iommu attach/clk_bulk/dev_pm_opp drift, vendor-only
 header refs in rga_drv.c) happens in a follow-up patch.
 
 Module name remains rga3.ko (per rga3/Makefile obj-$(CONFIG_ROCKCHIP_MULTI_RGA)
-+= rga3.o); rk1_config must set CONFIG_ROCKCHIP_MULTI_RGA=m and drop
++= rga3.o); the kernel config must set CONFIG_ROCKCHIP_MULTI_RGA=m and drop
 CONFIG_VIDEO_ROCKCHIP_RGA, otherwise mainline's V4L2 rga driver will
 fail to bind (compat strings replaced) but its module will still build.
 

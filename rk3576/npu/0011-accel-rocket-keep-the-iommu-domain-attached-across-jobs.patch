@@ -18,7 +18,7 @@ comes back short.
 The stock 1 ms poll period hides this, because the detection lag is longer
 than the drain.  Shortening the period exposes it, which is what made a
 shorter poll look unsafe.  Measured on an H96 MAX M9 with the int8 matmul
-gate, one run per point [HW sweep]:
+gate, one run per point:
 
   poll period          1000us  500us  250us  150us
   detach per job       43/43   43/43  40/43  37/43
@@ -45,10 +45,11 @@ dispatch saving is inside the noise on this part (1654 vs 1661 us/submit on an
 completion poll, not by the handshake.  RK3588 keeps its completion interrupt
 and is untouched apart from taking the same lifetime bookkeeping.
 
-Equivalent to "[RFC PATCH v4 5/9] accel: rocket: Keep the IOMMU domain
-attached across jobs" (Midgy BALON, linux-rockchip 2026-06-13), rebased here
-onto this series.
+Based on Midgy BALON's "accel: rocket: Keep the IOMMU domain attached
+across jobs" (RFC v4 5/9, linux-rockchip 2026-06-13), rebased onto this
+series.
 
+Link: https://lore.kernel.org/all/20260613070116.438906-6-midgy971@gmail.com/
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/accel/rocket/rocket_core.c | 14 ++++++++-

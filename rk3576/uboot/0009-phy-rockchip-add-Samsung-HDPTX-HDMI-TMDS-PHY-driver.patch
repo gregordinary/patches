@@ -14,6 +14,11 @@ asserts once cmn_rstn releases. PHY_CLK_RDY (bit 2) comes up later in
 STANDBY and is not a lock indicator. Lock takes about 1.06 ms on this
 silicon against the TRM's sub-60 us claim, so the poll allows 10 ms.
 
+Ported from the HDMI path of Rockchip's downstream driver,
+drivers/video/drm/phy-rockchip-samsung-hdptx-hdmi.c in
+rockchip-linux/u-boot next-dev (aeec6f2bfd). The DP path is not
+carried. The file keeps that driver's GPL-2.0 licence and copyright.
+
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  drivers/phy/rockchip/Kconfig                  |   10 +

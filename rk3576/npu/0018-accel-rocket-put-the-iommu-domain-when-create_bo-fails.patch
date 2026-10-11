@@ -39,8 +39,7 @@ already removed.
 Applies on top of 0014, which moves the IOVA allocator into the domain and
 rewrites the surrounding lines.
 
-Found by inspection while chasing an unrelated NULL dereference in
-rocket_gem_bo_free(); that one is not this, and remains open.
+Found by inspection.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---

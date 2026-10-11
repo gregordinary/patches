@@ -15,13 +15,15 @@
 # real silicon, including multi-task row-windowed programs submitted with no gap
 # between tasks.
 #
-# 0001-0007, 0031, 0032, 0034 and 0035 come from the linux-rockchip series "accel/rocket:
-# RK3576 NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v14 posting (patchwork series
-# 1172991); everything else is ours, though 0027 and 0028 make the same changes as that
-# series' 02/15 and 03/15 and each patch says so. 0001, 0003, 0004, 0005, 0031, 0032 and
-# 0035 are verbatim; 0002, 0006 and 0007 carry local changes, and 0034 is upstream's
-# change on the context 0011 leaves. 0035 is listed ahead of 0007 because upstream orders
-# the two that way: the domain clocks and resets, then the nodes.
+# 0001-0007, 0028, 0031, 0032, 0034 and 0035 come from the linux-rockchip series
+# "accel/rocket: RK3576 NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v14 posting
+# (patchwork series 1172991); everything else is ours. 0001, 0003, 0004, 0005, 0031, 0032
+# and 0035 are verbatim; 0002, 0006, 0007 and 0028 carry local changes, each noted in the
+# patch, and 0034 is upstream's change on the context 0011 leaves. 0011 is based on Midgy
+# BALON's RFC v4 5/9 and 0024 on the poll sequence fix in Jiaxing Hu's RFC v4 4/6, and
+# each credits its source. 0027 makes the same change as the series' 02/15. 0035 is listed
+# ahead of 0007 because upstream orders the two that way: the domain clocks and resets,
+# then the nodes.
 #
 # 0001 widens the binding to describe the RK3576 node and pins the exact shape per
 # compatible in an allOf, which is what makes a one-domain RK3576 core a dtbs_check
@@ -113,7 +115,7 @@
 # (500 us) because a task with a wide DPU output element raises no DPU bit at all. That
 # is what lets the poll period ship at 50 us: 2.42x per submit against the 500 us it
 # replaces, and correct where PC_DONE at that period hands back partial surfaces. See
-# rk3576/npu/README.md for the measurements.
+# rk3576/npu/README.md for the measurements. 0011 is based on Midgy BALON's RFC v4 5/9.
 #
 # 0014 is ours and is one way an unprivileged caller crashes the kernel through
 # /dev/accel, which is group `render`. It moves the IOVA allocator from rocket_file_priv into
@@ -121,7 +123,7 @@
 # path, which the drm_sched free worker can run after the owning file has closed, so
 # a client that submits and closes without waiting frees the allocator out from under
 # it. It is mainline code that the RK3576 enablement does not touch -- the RK3588
-# series carries the same fix as 085 -- and it is here because this is the series the
+# series carries the same fix as 084 -- and it is here because this is the series the
 # RK3576 image applies.
 #
 # 0015-0017 are ours and are the submit uAPI. 0015 makes the submit descriptors
@@ -206,7 +208,8 @@
 # boundaries, because one dma_sync_single_*() must cover a PHYSICALLY contiguous span while a
 # scatterlist segment is contiguous only in the DMA address space.
 #
-# 0024 is ours and stops the completion poll retiring a job it was not queued for. 0012's work
+# 0024 is ours, on the poll sequence fix in Jiaxing Hu's RFC v4 4/6, and stops the completion
+# poll retiring a job it was not queued for. 0012's work
 # item is queued by the hrtimer and runs later, and it is not the only path into
 # rocket_job_handle_irq(): the shared interrupt still reports the DMA-error bits and its thread
 # retires whatever is in flight, as does a reset. So the timer can queue the work for job N, the
@@ -240,8 +243,9 @@
 # exists because a caller that sizes its programs has no other way to tell an older kernel,
 # where the failure is silent and looks like a capacity bound.
 #
-# 0026-0030 are ours and are five ways the driver's own bookkeeping is wrong rather
-# than five ways the hardware is. 0026 resets with soc->num_resets, the count the
+# 0026-0030 are five ways the driver's own bookkeeping is wrong rather than five ways
+# the hardware is. 0028 is Jiaxing Hu's (v14 03/15, suggested by Igor Paunovic) and
+# the other four are ours. 0026 resets with soc->num_resets, the count the
 # resets were acquired with, instead of ARRAY_SIZE: on this SoC that walked an entry
 # nothing asked for, which the reset core absorbs as a no-op against a NULL rstc and
 # which stops being harmless once 0003 and 0035 make srst_h a line the power domain
@@ -318,13 +322,12 @@
 # and widens `reg`/`reg-names` to the five banks 0007 emits, pinning RK3588 back to
 # three in the same allOf.
 #
-# 0004 and 0005 are BOTH upstream now -- "iommu/rockchip: Take all DT clocks" and
-# "iommu/rockchip: Clear stale page faults before enabling stall", merged 2026-07-26
-# and present in linux-next from next-20260814. Neither is in 7.1.x, which is why both
-# are still carried here, and it is why this series no longer posts them upstream. When
-# this series moves to a kernel that has them, each becomes a redundant patch that
-# `git am --3way` will absorb silently rather than reject, so both have to be dropped
-# by hand at that bump.
+# 0004 and 0005 are both in mainline from v7.3-rc1 -- "iommu/rockchip: Take all DT
+# clocks" (841363ebb508) and "iommu/rockchip: Clear stale page faults before enabling
+# stall" (b10d5920cafa). Neither is in 7.2.y, which is why both are still carried here,
+# and it is why this series no longer posts them upstream. When this series moves to a
+# kernel that has them, each becomes a redundant patch that `git am --3way` will absorb
+# silently rather than reject, so both have to be dropped by hand at that bump.
 #
 # 0006 gates the RK3576 support behind of_device_id match data (rk3576_soc_data), so
 # the RK3588's behaviour is unchanged and the rk3588-accel series is unaffected; 0008
@@ -342,8 +345,8 @@
 
 # Declared intent; the builder's verify-applies gate is the enforcement. Every patch
 # here reads the same on 7.1 and 7.2 -- 7.2 moves nothing under the NPU, the Rockchip
-# IOMMU driver or the power-domain driver that these touch, and 0004 is still not
-# upstream, so nothing is silently absorbed. The ceiling is 7.3 because 7.2 is the
+# IOMMU driver or the power-domain driver that these touch, and neither 0004 nor 0005
+# is in 7.2.y, so nothing is silently absorbed. The ceiling is 7.3 because 7.2 is the
 # newest generation the series has been dry-run against.
 applies_to_kernel = ">=7.2.4, <7.3"
 

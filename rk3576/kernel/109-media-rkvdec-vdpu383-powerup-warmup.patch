@@ -36,6 +36,13 @@ the link-mode engine instead, and the engine turns out not to matter
 (below). The job has no V4L2 context behind it, so the host interrupt
 is disabled across it as well.
 
+The slice, its parameter set, the buffer layout and the register
+values the job keeps are that workaround's, from Ding Wei's
+drivers/video/rockchip/mpp/hack/mpp_hack_rk3576.c (Copyright 2024
+Rockchip, GPL-2.0+ OR MIT) in rockchip-linux/kernel. The job here
+keeps the subset of its registers the measurements below show is
+needed.
+
 What matters is that the block completes a decode, and the job carries
 only what that takes: the decode mode, a core timeout, the stream, and
 the frame to write it into. Each piece was measured on an H96 MAX M9
@@ -141,7 +148,7 @@ index 2ecb953f8..f17ca0d77 100644
  /*
   * Reference read caches, in the "cache" reg region. Three identical banks
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec.c b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
-index ca5584ce0..4527375be 100644
+index ca5584ce0..678256ee2 100644
 --- a/drivers/media/platform/rockchip/rkvdec/rkvdec.c
 +++ b/drivers/media/platform/rockchip/rkvdec/rkvdec.c
 @@ -11,9 +11,12 @@
@@ -184,7 +191,7 @@ index ca5584ce0..4527375be 100644
 +#define VDPU383_WARMUP_FIRST_REG	8
 +#define VDPU383_WARMUP_NUM_REGS		256
 +
-+/* A 2x2 IDR slice, and the parameter set that describes it. */
++/* A 2x2 IDR slice and its parameter set, from Rockchip's mpp_hack_rk3576.c. */
 +static const u8 vdpu383_warmup_rlc[] = {
 +	0x00, 0x00, 0x01, 0x65, 0x88, 0x82, 0x0b, 0x01,
 +	0x2f, 0x08, 0xc5, 0x00, 0x01, 0x51, 0x78, 0xe0,

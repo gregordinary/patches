@@ -11,7 +11,7 @@ the whole cost.
 
 Measured on an RK3576 (H96 MAX M9, 7.1.5, core 0 only) over a ladder of
 BO sizes from 4 KiB to 4 MiB, 400 iterations each, taking the median
-[HW sweep, tests/rk3576_prep_floor.c in the rocket-userspace tree]:
+(tests/rk3576_prep_floor.c in rocket-userspace):
 
   a rejected ioctl (syscall + drm dispatch + GEM lookup)   1.17 us
   PREP_BO                            floor 1.33 us   0.0969 us/KiB
@@ -61,8 +61,8 @@ group) and its brackets taken as ranges, the four graphs go from 4.9,
 6.7, 9.3 and 10.8 ms to 3.6, 4.7, 7.2 and 7.7, and their guards from
 1.99, 3.23, 2.67 and 4.58 ms to 0.59, 1.09, 0.69 and 1.47 -- on the same
 submits and tasks, every layer still bit-exact against a CPU model of
-the part's arithmetic and every graph still returning TFLite's own top-1
-[HW sweep].  The residual guard is well above brackets-times-floor
+the part's arithmetic and every graph still returning TFLite's own top-1.
+The residual guard is well above brackets-times-floor
 because a range costs per-range kernel work of its own; the ranges are
 64 bytes each and there are tens per bracket.
 

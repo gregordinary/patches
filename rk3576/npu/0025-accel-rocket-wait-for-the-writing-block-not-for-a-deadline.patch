@@ -29,7 +29,7 @@ of 6888 CBUF granules where two groups fail at 5992.  What every one of
 those walls has in common is WORK -- 766 to 830 MMACs, at a footprint that
 falls 2.4x across them -- and work is a time.  Raising dpu_grace_us to 750
 makes all of them bit-exact at unchanged shape, program and CBUF budget,
-and restoring 500 brings them back [HW sweep, H96 MAX M9].
+and restoring 500 brings them back on an H96 MAX M9.
 
 Two further measurements say the governing quantity is the program's
 execution and not the bytes it writes.  At the same plane and a 3x3 kernel
@@ -61,7 +61,7 @@ it is not free, and how much it costs was measured rather than assumed.
 
 Raising dpu_grace_us to 5000 on the old behaviour shows which submits ride
 it to completion, because those are the ones whose wall scales with it.
-Over a 58-gate list [HW sweep, H96 MAX M9] the whole run moves +1.0% and
+Over a 58-gate list on an H96 MAX M9 the whole run moves +1.0% and
 every graph is inside noise -- MobileNetV1 623 ms either way, Inception V3
 65917 -> 65351 ms -- so nothing on the library's own paths rides it: those
 name their class (a matmul and a convolution as the wide-output class, a
@@ -77,7 +77,7 @@ grace sweep predicted, to within 10%.  They stay rc=0: the surfaces are
 right and the wait is long.  Every other row of the 58 is unmoved.
 
 Measured with this patch applied, as an out-of-tree build of the same
-source against the board's own headers [HW sweep, H96 MAX M9]:
+source against an H96 MAX M9's own headers:
 
   - the 112x112 k7 ic32 convolution at four output-channel groups is
     bit-exact at every height from 40 to 56, 51 runs, 0 wrong;
