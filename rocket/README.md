@@ -1,16 +1,17 @@
 # rocket — RK3588 NPU kernel patches
 
-Sixteen patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
-developed against v7.1 and carried unchanged onto v7.2, where the driver is byte-identical. Each one is a module rebuild — the kernel image and the device
+Thirteen patches to the mainline RK3588 `rocket` DRM-accel driver (`drivers/accel/rocket/`),
+applied to v7.3. Each one is a module rebuild — the kernel image and the device
 tree are never touched, so boot is never at risk and a bad outcome is recovered with
 `rmmod` or a reboot. Every hardware access happens from inside the driver's runtime-PM
 and job hooks, so the NPU power domain is always powered first: a register access on an
 unpowered domain is the one operation that wedges this SoC's power firmware.
 
 **Apply the whole series.** It is developed, tested, and measured as a unit, and that is the
-only configuration the userspace projects' published figures describe. Twelve of the seventeen
-are required: seven of them fix bugs that can crash the kernel, one stops a mis-numbered core
-returning wrong output, and one is the one that makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume,
+only configuration the userspace projects' published figures describe. Eight of the thirteen
+are required: five of them fix bugs that can crash the kernel, one stops a mis-numbered core
+returning wrong output, one makes the driver hold the clocks it re-rates, and one is the one
+that makes the NPU worth using at all. Two more are the dispatch-floor pair those figures assume,
 a third stops a pooling job waiting out the scheduler's timeout, and a fourth lets a core
 that has just been reset suspend. Exactly one — the
 voltage patch — costs you nothing to omit at today's operating point. The
@@ -26,9 +27,7 @@ cherry-pick.
 | **Required** | `089-rocket-drv-clocks-by-name.patch` | Makes the driver hold the clocks it thinks it holds. `rocket_core_init()` requests the bulk with every `.id` left `NULL`, and a `NULL` `con_id` resolves **by index**, so all four handles come back on `ACLK_NPUn` and none on `hclk`, `pclk` or the SCMI compute clock. Latent today — genpd's `GENPD_FLAG_PM_CLK` keeps the rest running — but the driver holds no reference to the clock it re-rates. Igor Paunovic's, from linux-rockchip. |
 | **Required** | `090-rocket-drv-irq-under-job-lock.patch` | Takes the completion's `OPERATION_ENABLE = 0` and `INTERRUPT_CLEAR` under `job_lock`. `rocket_job_hw_submit()` writes `OPERATION_ENABLE = 1` from inside that lock, so the completion's zero can land after a submit's one and stop a task that has only just started. The second writer is `rocket_reset()`, which a client reaches through the same unvalidated `regcmd` IOVA as `088`. |
 | **Required** | `091-rocket-drv-irq-sync-before-reset.patch` | `090`'s other half. `rocket_reset()` calls `drm_sched_stop()`, which stops the scheduler and returns without waiting for a threaded handler that is already running — so the comment that followed it, "Remaining interrupts have been handled", stated an assumption rather than something the code arranged. A `synchronize_irq()` between the stop and the `job_lock` guard makes it true, and clearing `INTERRUPT_MASK` and `INTERRUPT_CLEAR` first — under `pm_runtime_get_if_active()`, since the function holds no reference of its own — fences both the completion the hardware is still entitled to raise and the one already latched, which the hardirq would find on its shared line and hand to the thread again. Those two writes go under `job_lock`, because `rocket_job_hw_submit()` arms the same register under it and `reset.pending` is set without it, so a submit that has already passed its check would otherwise re-arm the mask behind the reset. The `synchronize_irq()` stays outside, where it cannot wait on the handler that wants the lock. From the RK3576 series at its v13 posting: Jiaxing Hu's patch, suggested by Igor Paunovic. |
-| **Required** | `094-rocket-drv-find-core-all-slots.patch` | Makes core removal find every core. `rocket_remove()` decrements `num_cores` while `find_core_for_dev()` searches `0..num_cores-1`, so the last core unbound is never found, the device is never torn down, and the next bind round writes **past the end of the core array**. Records the allocated count and searches all of it. Igor Paunovic's, from linux-rockchip; `Cc: stable`. Needed by `096`. |
 | **Required** | `095-rocket-drv-core-hw-index.patch` | Makes the driver tell the hardware which core it is talking to. `core->index` is assigned the **bind-order slot** but is used as the **hardware core number**, scaled into the CNA/CORE `S_POINTER` registers as `0x10000000 * index`. They agree only while the cores bind as a prefix of the devicetree nodes in devicetree order; otherwise tasks on a mis-numbered core time out and the inference returns **wrong output**. Igor Paunovic's, from linux-rockchip; `Cc: stable`. |
-| **Required** | `096-rocket-drv-sched-to-core-all-slots.patch` | `094`'s other half, in `sched_to_core()`. Same shrinking search range, and neither caller checks for NULL, so unbinding a middle core **NULL-derefs from the job queue and from reset work** on a core that is still running. Igor Paunovic's, reported by Sidong Yang; `Cc: stable`. Needs `094`. |
 | Recommended | `083-rocket-drv-iommu-keepattach.patch` | Keeps the IOMMU domain attached across jobs. −20 µs/submit (~38%) on the dispatch floor. |
 | Recommended | `086-rocket-drv-batched-submit.patch` | Runs a job's tasks in one HW kick. Adds the `DRM_ROCKET_JOB_BATCHED` uAPI flag and the 1.1 version that userspace's chaining paths (`ROCKET_BATCH_SUBMIT`, `ROCKET_KACC_CHAIN`) probe for — without it they stay off. |
 | Recommended | `093-rocket-drv-ppu-completion.patch` | Arms the interrupt a **pooling** job can actually raise. A pool enables PPU/PPU_RDMA and has no DPU stage, so the DPU pair the driver arms unconditionally masks off its only completion: no interrupt arrives and the job retires at the scheduler's timeout through a core reset — **~507 ms per pool submit**, with the right answer already in the output BO. Adds the `DRM_ROCKET_JOB_PPU_DONE` uAPI flag and the 1.3 version. Kernel half only; needs `086`. |
@@ -42,7 +41,7 @@ bisect lands on a real answer.
 
 ## Dependencies
 
-Seven, and all of them are real (not just diff context):
+Six, and all of them are real (not just diff context):
 
 - **`082` requires `081`** — it scales the voltage the clock patch's rate needs.
 - **`086` requires `083`** — batched submit builds on the keep-attached domain
@@ -57,10 +56,6 @@ Seven, and all of them are real (not just diff context):
 - **`093` requires `086`** — the flag it reads is `drm_rocket_job.flags`, which `086`
   appends to the descriptor. On a tree without `086` there is no field to carry
   `DRM_ROCKET_JOB_PPU_DONE` and the patch does not apply at all.
-- **`096` requires `094`** — the range it searches is `rdev->max_cores`, which `094`
-  introduces. On a tree without `094` there is no such field and the patch does not
-  **compile**: a hard dependency, not an ordering preference, so `096` stays out of any
-  subset that omits `094`.
 - **`097` requires `091`** — `097` makes a core that has just been reset actually
   suspend, and `091`'s `synchronize_irq()` is what guarantees no threaded handler is
   still running to touch it once it goes down. Without `091` the reset returns with a
@@ -68,7 +63,7 @@ Seven, and all of them are real (not just diff context):
   register access takes an async SError. The comment `097` rewrites is also `091`'s, so
   it does not apply to a tree without it either.
 
-`081`, `083`, `084`, `085`, `089`, `090`, `091`, `094` and `095` each apply to a pristine
+`081`, `083`, `084`, `085`, `089`, `090`, `091` and `095` each apply to a pristine
 tree on their own, in any combination. **Applying in ascending numeric order always satisfies the dependencies**, so
 if you are unsure, just apply them lowest-number first.
 
@@ -626,32 +621,6 @@ version. `PPU_DONE` itself is safe to gate on `>= 1.3` on either part.
 and the defect it fixes was measured on silicon — the fix path itself has not been
 executed. Not represented in the compatibility matrix above for the same reason.
 
-## Core removal searches every slot (`094-rocket-drv-find-core-all-slots.patch`)
-
-Igor Paunovic's patch, from linux-rockchip, `Cc: stable` with a `Fixes:` tag against the
-driver's first commit. Carried here because it is in no released kernel. Independent —
-applies to a pristine tree on its own — and `096` does not compile without it.
-
-`rocket_remove()` decrements `rdev->num_cores` for each core it removes, and
-`find_core_for_dev()` searches slots `0..num_cores-1`. Unbinding the cores in the order they
-were bound therefore loses the last one: by the time it is removed the search range has
-shrunk past its slot, `find_core_for_dev()` returns -1, and `rocket_remove()` gives up.
-`num_cores` never reaches zero, `rocket_device_fini()` never runs, and the file-scoped `rdev`
-keeps pointing at a device that is going away. Binding the cores again starts from that stale
-count — `rocket_probe()` takes `num_cores` as the slot to fill — so on an RK3588 the second
-round lands on slots 1, 2 and 3 of an array allocated for three. The write to `cores[3]` is
-past the end.
-
-Nothing in tree reads the array often enough to notice, so the overrun is silent today;
-upstream found it with UBSAN under a devfreq worker that walks every core several times a
-second. The fix records the allocated count as `rdev->max_cores` and searches all of it.
-Every core is then found on removal, `num_cores` reaches zero, the device is torn down and a
-later bind starts clean.
-
-It does not make unbinding a single core out of several work: probe still takes `num_cores`
-as the slot to fill, and `rocket_open()` still reaches for `cores[0]` whether or not anything
-is there. Upstream says so and leaves both for a change that is not a fix.
-
 ## Cores numbered by devicetree position (`095-rocket-drv-core-hw-index.patch`)
 
 Igor Paunovic's patch, from linux-rockchip, `Cc: stable` with a `Fixes:` tag against the
@@ -686,41 +655,20 @@ boot binds all cores in devicetree order, and unbinding the *last* core leaves e
 remaining slot equal to its devicetree position, which is what the RK3576 recipe does (core
 1 of two). It is taken because the failure is silent until it is loud and the fix is free.
 
-## Scheduler lookup searches every slot (`096-rocket-drv-sched-to-core-all-slots.patch`)
+### What `095` was measured against
 
-`094`'s other half. Igor Paunovic's patch, from linux-rockchip, reported by Sidong Yang;
-`Cc: stable`. **Requires `094`**: it reads `rdev->max_cores` and does not compile without it.
-
-`sched_to_core()` walks `rdev->cores[]` up to `num_cores`, and `rocket_remove()` decrements
-`num_cores` for every core it removes. Unbind a core that is not the last one and the cores
-behind it fall outside the search, so `sched_to_core()` returns NULL for a core that is still
-bound and still running jobs. Neither caller checks: `rocket_job_run()` passes the result to
-`rocket_fence_create()` and reads `core->dev`, and `rocket_job_timedout()` reads `core->dev`
-for its `dev_err`. Unbinding the middle core of three on an RK3588 while three clients submit
-to all of them faults twice — once from the surviving third core's job queue
-(`drm_sched_run_job_work`) and once from its reset work (`rocket-reset-2`) — and upstream has
-the KASAN traces for both.
-
-One line: search `max_cores`, the way `find_core_for_dev()` does after `094`. It does not
-make unbinding one core out of several safe — an open client keeps an entity pointing at the
-scheduler of the core that went away and waits forever on a fence that never signals — but
-the NULL dereference is what belongs in a fix.
-
-This is a compile error, not the diff-context kind ascending order alone settles: keep `096` out of any
-subset that omits `094`.
-
-### What `094`–`096` were measured against
-
-Turing RK1, kernel 7.2.0-1-arm64, 2026-09-05, over the series through `096`. All of it applies to pristine mainline
-`drivers/accel/rocket/` under strict `git am`, in ascending order; the module builds clean
-out of tree against `/lib/modules/7.2.0-1-arm64/build`, loads, all three cores bind and the
-driver reports `rocket 1.3.0`. The full RK3588 gate list of `rocket-userspace` passes with
-and without the two that change a code path a passing job can reach:
+Turing RK1, kernel 7.2.0-1-arm64, 2026-09-05, with the series applied to pristine mainline
+`drivers/accel/rocket/` under strict `git am` together with the two core-slot fixes 7.3
+carries: `6eff1d69da` ("search every core slot when a core is removed") in both arms, and
+`89c2c777df` ("search every core slot when looking up a scheduler") in the arm with `095`.
+The module builds clean out of tree against `/lib/modules/7.2.0-1-arm64/build`, loads, all
+three cores bind and the driver reports `rocket 1.3.0`. The full RK3588 gate list of
+`rocket-userspace` passes with and without `095`:
 
 | Stack | ctest | skipped | wall time |
 |---|---|---|---|
-| `081`–`094` | 96/96 | 22 | 381.68 s |
-| `081`–`096` | 96/96 | 22 | 381.05 s |
+| without `095` | 96/96 | 22 | 381.68 s |
+| with `095` | 96/96 | 22 | 381.05 s |
 
 The 22 skips are the same tests name for name in both arms (18 RK3576-only, plus `siglip`,
 `sam`, `conv_dw_int8_runtime` and `uapi_bo_ranges`) — checked, because a test that quietly
@@ -786,9 +734,7 @@ git am --3way $P/089-rocket-drv-clocks-by-name.patch           # required (drive
 git am --3way $P/090-rocket-drv-irq-under-job-lock.patch       # required (completion vs submit race)
 git am --3way $P/091-rocket-drv-irq-sync-before-reset.patch     # required (090's other half)
 git am --3way $P/093-rocket-drv-ppu-completion.patch            # recommended (pooling completion); needs 086
-git am --3way $P/094-rocket-drv-find-core-all-slots.patch      # required (array overrun); needed by 096
 git am --3way $P/095-rocket-drv-core-hw-index.patch            # required (wrong core number -> wrong output)
-git am --3way $P/096-rocket-drv-sched-to-core-all-slots.patch  # required (NULL deref); needs 094
 git am --3way $P/097-rocket-drv-suspend-after-reset.patch      # recommended (core stays resumed after a reset); needs 091
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- drivers/accel/rocket/rocket.ko
 ```
@@ -817,8 +763,8 @@ warnings are benign when the kernel was cross-built and you are building nativel
 ## Portability to other RK3588 boards and kernels
 
 These patch the SoC-level `rocket` driver (`drivers/accel/rocket/`), not the board device tree
-or the kernel image, so on any RK3588 board running the same mainline `rocket` (developed
-against v7.1) they apply to identical source and rebuild the same way. The one hard requirement
+or the kernel image, so on any RK3588 board running the same mainline `rocket` (v7.3) they
+apply to identical source and rebuild the same way. The one hard requirement
 is that the board runs the mainline `rocket` driver and that the module is rebuilt against the
 exact running kernel.
 
@@ -830,15 +776,12 @@ The two board-dependent pieces both degrade gracefully:
 - **IRQ affinity** uses GIC interrupt numbers that are kernel/SoC-specific — read
   `/proc/interrupts` for the three `.npu` nodes rather than assuming.
 
-Across the 7.1 and 7.2 generations no rebase is needed: `drivers/accel/rocket/` is
-byte-identical between v7.1 and v7.2 — every file in the directory and the uAPI header —
-so a series developed against v7.1 needs nothing for a 7.2 board, and all seventeen
-patches here apply to v7.2 and v7.2.3 under **strict** `git am` — no `--3way`, no fuzz.
-Re-checked on v7.2.3 on 2026-09-13, with `drivers/accel/rocket/` building `W=1` clean
-cross for arm64. That is an apply
-result, not a run result: the measured figures on this page are still v7.1 at 600 MHz and have
-not been re-taken on 7.2. A later mainline may move the driver and require rebasing; each patch
-is small and self-contained, so a rebase is mechanical — but re-verify on that kernel.
+Every patch here applies to v7.3 under **strict** `git am` — no `--3way`, no fuzz — and
+`drivers/accel/rocket/` builds `W=1` clean cross for arm64, checked 2026-10-19. That is an
+apply result, not a run result: the measured figures on this page are v7.1 at 600 MHz and
+have not been re-taken on 7.3. A later mainline may move the driver and require rebasing;
+each patch is small and self-contained, so a rebase is mechanical — but re-verify on that
+kernel.
 
 ## License
 

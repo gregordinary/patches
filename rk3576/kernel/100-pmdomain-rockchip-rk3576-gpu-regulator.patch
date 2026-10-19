@@ -40,7 +40,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  1 file changed, 23 insertions(+), 22 deletions(-)
 
 diff --git a/drivers/pmdomain/rockchip/pm-domains.c b/drivers/pmdomain/rockchip/pm-domains.c
-index 490bbb1d1..1ad2c7946 100644
+index e193f978d5..9c3fa867df 100644
 --- a/drivers/pmdomain/rockchip/pm-domains.c
 +++ b/drivers/pmdomain/rockchip/pm-domains.c
 @@ -185,7 +185,7 @@ struct rockchip_pmu {
@@ -59,10 +59,10 @@ index 490bbb1d1..1ad2c7946 100644
 +	.need_regulator = regulator,			\
  }
  
- #define DOMAIN_RK3036(_name, req, ack, idle, wakeup)		\
-@@ -244,8 +245,8 @@ struct rockchip_pmu {
- #define DOMAIN_RK3568(name, pwr, req, wakeup)		\
- 	DOMAIN_M(name, pwr, pwr, req, req, req, wakeup)
+ #define DOMAIN_M_R(_name, pwr, status, req, idle, ack, wakeup, regulator)	\
+@@ -258,8 +259,8 @@ struct rockchip_pmu {
+ #define DOMAIN_RK3568(name, pwr, req, wakeup, regulator)		\
+ 	DOMAIN_M_R(name, pwr, pwr, req, req, req, wakeup, regulator)
  
 -#define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, wakeup)	\
 -	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, wakeup)
@@ -71,7 +71,7 @@ index 490bbb1d1..1ad2c7946 100644
  
  /*
   * Dynamic Memory Controller may need to coordinate with us -- see
-@@ -1286,25 +1287,25 @@ static const struct rockchip_domain_info rk3568_pm_domains[] = {
+@@ -1314,25 +1315,25 @@ static const struct rockchip_domain_info rk3568_pm_domains[] = {
  };
  
  static const struct rockchip_domain_info rk3576_pm_domains[] = {

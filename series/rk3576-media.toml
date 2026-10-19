@@ -43,7 +43,7 @@
 # is the FFmpeg tree's, not the kernel's -- these patches sit on the
 # `v4l2-request-n8.1` base the SoC layer pins, and the kernel bound is inherited
 # from whichever other series a build composes alongside this one.
-applies_to_kernel = ">=7.1, <7.3"
+applies_to_kernel = ">=7.1, <7.4"
 
 kernel = []
 

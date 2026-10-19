@@ -3,15 +3,15 @@
 #
 # RK3288 kernel-fix series: fixes a mainline kernel needs on RK3288 boards, each
 # written to upstream standards and meant to leave this repo. Referenced by
-# kernels/rk3288-mainline-7.2 and kernels/rk3288-libre-7.2. Each list is the
+# kernels/rk3288-mainline-7.3 and kernels/rk3288-libre-7.3. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`;
 # paths are relative to this repo's root.
 
 # Declared intent; the builder's verify-applies gate is the enforcement. The one
-# patch here reads the same on 7.0 through 7.2. The ceiling is 7.3 because 7.2 is the
-# newest generation the series has been dry-run against, not because 7.3 is known to
+# patch here reads the same on 7.0 through 7.3. The ceiling is 7.4 because 7.3 is the
+# newest generation the series has been dry-run against, not because 7.4 is known to
 # break it.
-applies_to_kernel = ">=7.0, <7.3"
+applies_to_kernel = ">=7.0, <7.4"
 
 # Kernel tree: the rk3288 crypto engine's hash offloads declare a statesize
 # smaller than what their fallback's export() writes under the partial-block
@@ -19,7 +19,7 @@ applies_to_kernel = ">=7.0, <7.3"
 # boot and the crypto API rejects all three offloads. The fix inherits the
 # fallback's statesize at init_tfm time, exactly as the driver already does for
 # reqsize. Upstream-destined (linux-crypto, Cc: stable); retire it from this
-# series once it reaches the 7.1.y stable tree.
+# series once a kernel it targets carries it.
 kernel = [
     "rk3288/kernel/100-crypto-rk3288-inherit-fallback-ahash-statesize.patch",
 ]

@@ -6,10 +6,12 @@ RK3576 NPU. Consumed by the `rk3576-npu` patch series (`series/rk3576-npu.toml`)
 
 ## Origin
 
-Patches 0008 to 0027, 0029, 0030 and 0033 are ours; 0001-0007, 0028, 0031, 0032, 0034 and 0035 come from
+Patches 0008 to 0027, 0029, 0030 and 0033 are ours; 0001-0003, 0006, 0007, 0028, 0031, 0032, 0034 and 0035 come from
 the linux-rockchip series **"accel/rocket: RK3576 NPU (RKNN) enablement"** by Jiaxing Hu
 (`gahing@gahingwoo.com`), tracked at its **v14** posting (patchwork series 1172991), with
-their upstream commit messages and review tags intact. They compose after
+their upstream commit messages and review tags intact. That series' two Rockchip IOMMU
+patches, "iommu/rockchip: Take all DT clocks" and "iommu/rockchip: Clear stale page faults
+before enabling stall", are in the kernel from 7.3, so none is carried here. They compose after
 `rk3576-fixes` on the RK3576 kernel and apply with `git am --3way`.
 
 | file | upstream subject |
@@ -17,8 +19,6 @@ their upstream commit messages and review tags intact. They compose after
 | 0001 | dt-bindings: npu: rockchip: add `rockchip,rk3576-rknn-core` |
 | 0002 | pmdomain: rockchip: add optional per-domain power-on settle delay |
 | 0003 | pmdomain: rockchip: cycle an optional power-domain reset on power-on |
-| 0004 | iommu/rockchip: take all DT clocks |
-| 0005 | iommu/rockchip: clear stale page faults before enabling stall |
 | 0006 | accel/rocket: add RK3576 NPU (RKNN) support |
 | 0035 | arm64: dts: rockchip: add NPU core domain clocks and resets to rk3576 |
 | 0007 | arm64: dts: rockchip: add NPU (RKNN) nodes to rk3576 |
@@ -209,9 +209,9 @@ fails, and why this belongs to the SoC and not to each board.
 `rk3568-iommu` carrying five clocks and an NPU MMU carrying two are each rejected,
 where widening the shared list alone left both spellings valid. `rockchip,iommu` also
 lists `clock-names` under `required:`, so a node carrying `clocks` and no names does
-not validate at all. The driver reaches the clocks either way, since 0004 switched
-`rk_iommu` to `devm_clk_bulk_get_all()`, which resolves by index; the names are what
-makes the node describable.
+not validate at all. The driver reaches the clocks either way, since the kernel's
+`rk_iommu` takes them with `devm_clk_bulk_get_all()`, which resolves by index; the names
+are what makes the node describable.
 
 ## What 0026 to 0030 fix: five defects in the driver's own bookkeeping
 

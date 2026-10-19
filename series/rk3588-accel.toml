@@ -2,30 +2,31 @@
 # series/rk3588-accel.toml
 #
 # RK3588 hardware acceleration: the ordered patch series that turns a mainline
-# 7.2 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
+# 7.3 kernel plus the ffmpeg/MPP userspace into the Turing RK1 media stack
 # (VDPU381, VDPU2 and VPU981 decode, VEPU580 encode, RGA 2D, rocket NPU, crypto
 # offload).
 #
-# A series is owned by a kernel definition, not a device. It targets 7.2.7 and later,
-# where the rocket driver carries the job-push and task-array fixes and the V4L2 core
-# and the VPU981 driver bound the HEVC and AV1 tile counts, so none of those is a patch
-# here, and every entry applies unconditionally. Each list is the
+# A series is owned by a kernel definition, not a device. It targets 7.3 and later,
+# where the rocket driver carries the job-push and task-array fixes and searches every
+# core slot when a core is removed or a job is scheduled, and the V4L2 core and the
+# VPU981 driver bound the HEVC and AV1 tile counts, so none of those is a patch here,
+# and every entry applies unconditionally. Each list is the
 # authoritative apply order for one source tree, applied with `git am --3way`; a
 # tree's list may span scopes (the kernel tree interleaves the media-accel,
 # rocket and crypto scopes). Paths are relative to this repo's root.
 
 # Declared intent; the builder's verify-applies gate is the enforcement.
 #
-# The floor is 7.2.7, where the kernel carries the fixes named above. 060 has a kernel
+# The floor is 7.3, where the kernel carries the fixes named above. 060 has a kernel
 # dependency of its own, which that floor covers. Its trailing context is
 # `rk3588-base.dtsi`'s `vdec0` node, written against the `reg` and `reg-names` order
 # the binding declares, which kernels follow from 7.1.5. A kernel that keeps 060 out
 # keeps VEPU580 encode out, so filtering it per-patch would silently ship a different
 # image rather than fail.
 #
-# The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
-# against, not because 7.3 is known to break it.
-applies_to_kernel = ">=7.2.7, <7.3"
+# The ceiling is 7.4 because 7.3 is the newest generation the series has been dry-run
+# against, not because 7.4 is known to break it.
+applies_to_kernel = ">=7.3, <7.4"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
 # in ascending numeric order satisfies the series' dependencies: npu-volt needs
@@ -82,7 +83,7 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # The RGA driver (070/071) is SoC-neutral and shared with series/rk3576-rga; 072
 # is this SoC's own DT wiring for it, which is why the two are separate patches.
 #
-# 7.2 carries Sven Puschel's V4L2 RGA3 support, so all three RGA cores and both RGA3
+# The kernel carries Sven Puschel's V4L2 RGA3 support, so all three RGA cores and both RGA3
 # IOMMUs are already described -- for the in-tree driver -- and 072 only retargets
 # them: the compatible strings pick the vendor driver and tell the two RGA3 cores
 # apart, and each core's register window grows to the 4 KiB the driver needs to reach
@@ -91,7 +92,7 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # Which driver binds is a kconfig decision the consumer makes, and the two are
 # mutually exclusive in practice: a build that takes this series wants
 # CONFIG_ROCKCHIP_MULTI_RGA and leaves CONFIG_VIDEO_ROCKCHIP_RGA unset. The in-tree
-# 7.2 driver is a genuine alternative for a consumer that wants no out-of-tree code,
+# driver is a genuine alternative for a consumer that wants no out-of-tree code,
 # at the cost of the /dev/rga ABI librga speaks: it exposes one core per V4L2 video
 # node (multi-core scheduling is explicitly deferred upstream), implements scaling
 # and colour conversion only, and has no 10-bit YUV -- so NV15, which is what a
@@ -337,20 +338,8 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # Not run on hardware. It applies under strict git am, builds warning-clean at W=1, and
 # the defect it fixes was measured on silicon; the fix path itself has not been executed.
 #
-# 094, 095 and 096 are Igor Paunovic's core-management fixes from linux-rockchip, all
-# three Cc: stable with a Fixes: tag and none in a released kernel. 094: rocket_remove()
-# decrements num_cores per core removed while find_core_for_dev() searches
-# 0..num_cores-1, so unbinding the cores in bind order never finds the last one, the
-# device is never torn down, the file-scoped rdev outlives it, and the next bind round
-# starts from the stale count -- on an RK3588 slots 1, 2 and 3 of an array allocated for
-# three, a write past the end. It records the allocated count as max_cores and searches
-# all of it. 096 is the same shrinking range in sched_to_core(), whose two callers
-# (rocket_job_run, rocket_job_timedout) dereference the result unchecked, so unbinding a
-# middle core NULL-derefs from the surviving core's job queue and from its reset work.
-# One line, and it reads max_cores, so it does NOT COMPILE without 094 -- a hard
-# dependency, not the diff-context kind that ascending order alone satisfies.
-#
-# 095 changes what core->index means. rocket_job_hw_submit() scales it into the CNA and
+# 095 is Igor Paunovic's core-index fix from linux-rockchip, Cc: stable with a Fixes:
+# tag and not in a released kernel. It changes what core->index means. rocket_job_hw_submit() scales it into the CNA and
 # CORE S_POINTER registers as 0x10000000 * index, which the vendor driver derives from
 # the HARDWARE number of the core; rocket_probe() assigned the bind-order slot. The two
 # agree only while the cores that bind are a prefix of the devicetree's core nodes in
@@ -364,9 +353,9 @@ applies_to_kernel = ">=7.2.7, <7.3"
 # position -- and taken because the failure is silent until it is loud and the fix is
 # free.
 #
-# Measured 2026-09-05 on the RK1 at 7.2.0: all sixteen rocket patches apply strict, the
-# module builds and binds all three cores, and rocket-userspace's RK3588 gate list is
-# 96/96 with the same 22 skips name for name with and without 095 and 096. No run drove
+# Measured 2026-09-05 on the RK1 at 7.2.0: the rocket patches apply strict, the module
+# builds and binds all three cores, and rocket-userspace's RK3588 gate list is 96/96
+# with the same 22 skips name for name with and without 095. No run drove
 # traffic through mis-numbered cores, so 095's wrong-output claim is upstream's. A full
 # unbind/rebind brings the device back as accel1 while the tests open accel0 by name --
 # every test then SKIPs, which reads like a pass; reload the module first.
@@ -457,9 +446,7 @@ kernel = [
     "rocket/090-rocket-drv-irq-under-job-lock.patch",
     "rocket/091-rocket-drv-irq-sync-before-reset.patch",
     "rocket/093-rocket-drv-ppu-completion.patch",
-    "rocket/094-rocket-drv-find-core-all-slots.patch",
     "rocket/095-rocket-drv-core-hw-index.patch",
-    "rocket/096-rocket-drv-sched-to-core-all-slots.patch",
     "rocket/097-rocket-drv-suspend-after-reset.patch",
     "crypto/kernel/100-dt-bindings-crypto-rockchip-rk356x-rk3588-engine.patch",
     "crypto/kernel/101-crypto-rockchip-rk356x-rk3588-offloader.patch",

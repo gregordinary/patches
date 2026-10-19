@@ -33,7 +33,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  1 file changed, 30 insertions(+), 22 deletions(-)
 
 diff --git a/drivers/pmdomain/rockchip/pm-domains.c b/drivers/pmdomain/rockchip/pm-domains.c
-index 1ad2c7946..ae20c10ea 100644
+index 9c3fa867df..771610ace8 100644
 --- a/drivers/pmdomain/rockchip/pm-domains.c
 +++ b/drivers/pmdomain/rockchip/pm-domains.c
 @@ -18,6 +18,7 @@
@@ -69,9 +69,9 @@ index 1ad2c7946..ae20c10ea 100644
  	.ack_mask = (ack),				\
  	.active_wakeup = wakeup,			\
  	.need_regulator = regulator,			\
-@@ -245,8 +248,8 @@ struct rockchip_pmu {
- #define DOMAIN_RK3568(name, pwr, req, wakeup)		\
- 	DOMAIN_M(name, pwr, pwr, req, req, req, wakeup)
+@@ -259,8 +262,8 @@ struct rockchip_pmu {
+ #define DOMAIN_RK3568(name, pwr, req, wakeup, regulator)		\
+ 	DOMAIN_M_R(name, pwr, pwr, req, req, req, wakeup, regulator)
  
 -#define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, wakeup, regulator)	\
 -	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, wakeup, regulator)
@@ -80,7 +80,7 @@ index 1ad2c7946..ae20c10ea 100644
  
  /*
   * Dynamic Memory Controller may need to coordinate with us -- see
-@@ -668,6 +671,10 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
+@@ -682,6 +685,10 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
  		if (ret < 0)
  			goto out;
  
@@ -91,7 +91,7 @@ index 1ad2c7946..ae20c10ea 100644
  		rockchip_pmu_restore_qos(pd);
  	}
  
-@@ -1287,25 +1294,26 @@ static const struct rockchip_domain_info rk3568_pm_domains[] = {
+@@ -1315,25 +1322,26 @@ static const struct rockchip_domain_info rk3568_pm_domains[] = {
  };
  
  static const struct rockchip_domain_info rk3576_pm_domains[] = {

@@ -15,9 +15,9 @@
 # real silicon, including multi-task row-windowed programs submitted with no gap
 # between tasks.
 #
-# 0001-0007, 0028, 0031, 0032, 0034 and 0035 come from the linux-rockchip series
-# "accel/rocket: RK3576 NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v14 posting
-# (patchwork series 1172991); everything else is ours. 0001, 0003, 0004, 0005, 0031, 0032
+# 0001-0003, 0006, 0007, 0028, 0031, 0032, 0034 and 0035 come from the linux-rockchip
+# series "accel/rocket: RK3576 NPU (RKNN) enablement" (Jiaxing Hu), tracked at its v14
+# posting (patchwork series 1172991); everything else is ours. 0001, 0003, 0031, 0032
 # and 0035 are verbatim; 0002, 0006, 0007 and 0028 carry local changes, each noted in the
 # patch, and 0034 is upstream's change on the context 0011 leaves. 0011 is based on Midgy
 # BALON's RFC v4 5/9 and 0024 on the poll sequence fix in Jiaxing Hu's RFC v4 4/6, and
@@ -322,12 +322,11 @@
 # and widens `reg`/`reg-names` to the five banks 0007 emits, pinning RK3588 back to
 # three in the same allOf.
 #
-# 0004 and 0005 are both in mainline from v7.3-rc1 -- "iommu/rockchip: Take all DT
-# clocks" (841363ebb508) and "iommu/rockchip: Clear stale page faults before enabling
-# stall" (b10d5920cafa). Neither is in 7.2.y, which is why both are still carried here,
-# and it is why this series no longer posts them upstream. When this series moves to a
-# kernel that has them, each becomes a redundant patch that `git am --3way` will absorb
-# silently rather than reject, so both have to be dropped by hand at that bump.
+# The upstream series' two Rockchip IOMMU patches are in the kernel from 7.3 --
+# "iommu/rockchip: Take all DT clocks" (841363ebb508) and "iommu/rockchip: Clear stale
+# page faults before enabling stall" (b10d5920cafa) -- so the five-clock NPU MMU nodes
+# 0007 emits bind with no IOMMU patch here, and this series touches nothing under
+# drivers/iommu.
 #
 # 0006 gates the RK3576 support behind of_device_id match data (rk3576_soc_data), so
 # the RK3588's behaviour is unchanged and the rk3588-accel series is unaffected; 0008
@@ -336,26 +335,22 @@
 # as rocket_dt_match so that rocket_device_init() counts cores over it rather than over
 # a second, hand-kept list of compatibles. The array sized from that count is indexed
 # by every core that goes on to probe, so the two lists cannot be allowed to disagree,
-# and one list is the way to guarantee that. Patches 4-5 touch the shared Rockchip
-# IOMMU driver; that is contained because only a kernel built with this series carries
-# them.
+# and one list is the way to guarantee that.
 #
 # The list is the authoritative apply order for the kernel tree, applied with
 # `git am --3way`; paths are relative to this repo's root.
 
-# Declared intent; the builder's verify-applies gate is the enforcement. Every patch
-# here reads the same on 7.1 and 7.2 -- 7.2 moves nothing under the NPU, the Rockchip
-# IOMMU driver or the power-domain driver that these touch, and neither 0004 nor 0005
-# is in 7.2.y, so nothing is silently absorbed. The ceiling is 7.3 because 7.2 is the
-# newest generation the series has been dry-run against.
-applies_to_kernel = ">=7.2.4, <7.3"
+# Declared intent; the builder's verify-applies gate is the enforcement. The floor is
+# 7.3, which carries the IOMMU patches named above and the power-domain driver 0002 is
+# written against: 7.3 adds a regulator-carrying DOMAIN_M_R macro beside the ones 0002
+# extends. The ceiling is 7.4 because 7.3 is the newest generation the series has been
+# dry-run against.
+applies_to_kernel = ">=7.3, <7.4"
 
 kernel = [
     "rk3576/npu/0001-dt-bindings-npu-rockchip-add-rk3576-rknn-core.patch",
     "rk3576/npu/0002-pmdomain-rockchip-add-optional-power-on-settle-delay.patch",
     "rk3576/npu/0003-pmdomain-rockchip-cycle-an-optional-power-domain-reset-on-power-on.patch",
-    "rk3576/npu/0004-iommu-rockchip-take-all-dt-clocks.patch",
-    "rk3576/npu/0005-iommu-rockchip-clear-stale-page-faults-before-stall.patch",
     "rk3576/npu/0006-accel-rocket-add-rk3576-npu-support.patch",
     "rk3576/npu/0035-arm64-dts-rockchip-add-npu-core-domain-clocks-and-resets-to-rk3576.patch",
     "rk3576/npu/0007-arm64-dts-rockchip-rk3576-add-npu-nodes.patch",

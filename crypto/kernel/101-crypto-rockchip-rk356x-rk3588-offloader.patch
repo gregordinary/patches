@@ -52,10 +52,10 @@ NanoPi R5S, NanoPC-T6 LTS
  create mode 100644 drivers/crypto/rockchip/rk2_crypto_skcipher.c
 
 diff --git a/drivers/crypto/Kconfig b/drivers/crypto/Kconfig
-index d23b58b81ca3..d1ef50a8c1cb 100644
+index 0189dfdcbb..08c97508d4 100644
 --- a/drivers/crypto/Kconfig
 +++ b/drivers/crypto/Kconfig
-@@ -709,6 +709,38 @@ config CRYPTO_DEV_ROCKCHIP_DEBUG
+@@ -682,6 +682,38 @@ config CRYPTO_DEV_ROCKCHIP_DEBUG
  	  This will create /sys/kernel/debug/rk3288_crypto/stats for displaying
  	  the number of requests per algorithm and other internal stats.
  
@@ -95,19 +95,19 @@ index d23b58b81ca3..d1ef50a8c1cb 100644
  	tristate "Enable Tegra Security Engine"
  	depends on TEGRA_HOST1X
 diff --git a/drivers/crypto/Makefile b/drivers/crypto/Makefile
-index 283bbc650b5b..905538078017 100644
+index 2c33b83f3c..0a51ab1eae 100644
 --- a/drivers/crypto/Makefile
 +++ b/drivers/crypto/Makefile
-@@ -30,6 +30,7 @@ obj-$(CONFIG_CRYPTO_DEV_PPC4XX) += amcc/
+@@ -28,6 +28,7 @@ obj-$(CONFIG_CRYPTO_DEV_PADLOCK_SHA) += padlock-sha.o
+ obj-$(CONFIG_CRYPTO_DEV_PPC4XX) += amcc/
  obj-$(CONFIG_CRYPTO_DEV_QCE) += qce/
- obj-$(CONFIG_CRYPTO_DEV_QCOM_RNG) += qcom-rng.o
  obj-$(CONFIG_CRYPTO_DEV_ROCKCHIP) += rockchip/
 +obj-$(CONFIG_CRYPTO_DEV_ROCKCHIP2) += rockchip/
  obj-$(CONFIG_CRYPTO_DEV_S5P) += s5p-sss.o
  obj-$(CONFIG_CRYPTO_DEV_SA2UL) += sa2ul.o
  obj-$(CONFIG_CRYPTO_DEV_SAHARA) += sahara.o
 diff --git a/drivers/crypto/rockchip/Makefile b/drivers/crypto/rockchip/Makefile
-index 785277aca71e..ea946ba0d4d5 100644
+index 785277aca7..ea946ba0d4 100644
 --- a/drivers/crypto/rockchip/Makefile
 +++ b/drivers/crypto/rockchip/Makefile
 @@ -3,3 +3,8 @@ obj-$(CONFIG_CRYPTO_DEV_ROCKCHIP) += rk_crypto.o
@@ -121,7 +121,7 @@ index 785277aca71e..ea946ba0d4d5 100644
 +		   rk2_crypto_ahash.o
 diff --git a/drivers/crypto/rockchip/rk2_crypto.c b/drivers/crypto/rockchip/rk2_crypto.c
 new file mode 100644
-index 000000000000..e818aaaa2401
+index 0000000000..e818aaaa24
 --- /dev/null
 +++ b/drivers/crypto/rockchip/rk2_crypto.c
 @@ -0,0 +1,783 @@
@@ -910,7 +910,7 @@ index 000000000000..e818aaaa2401
 +
 diff --git a/drivers/crypto/rockchip/rk2_crypto.h b/drivers/crypto/rockchip/rk2_crypto.h
 new file mode 100644
-index 000000000000..189c4557f525
+index 0000000000..189c4557f5
 --- /dev/null
 +++ b/drivers/crypto/rockchip/rk2_crypto.h
 @@ -0,0 +1,254 @@
@@ -1170,7 +1170,7 @@ index 000000000000..189c4557f525
 +#endif /* __RK2_CRYPTO_H__ */
 diff --git a/drivers/crypto/rockchip/rk2_crypto_ahash.c b/drivers/crypto/rockchip/rk2_crypto_ahash.c
 new file mode 100644
-index 000000000000..bfbfd9eec355
+index 0000000000..bfbfd9eec3
 --- /dev/null
 +++ b/drivers/crypto/rockchip/rk2_crypto_ahash.c
 @@ -0,0 +1,541 @@
@@ -1717,7 +1717,7 @@ index 000000000000..bfbfd9eec355
 +}
 diff --git a/drivers/crypto/rockchip/rk2_crypto_skcipher.c b/drivers/crypto/rockchip/rk2_crypto_skcipher.c
 new file mode 100644
-index 000000000000..d524a9d5eeb2
+index 0000000000..d524a9d5ee
 --- /dev/null
 +++ b/drivers/crypto/rockchip/rk2_crypto_skcipher.c
 @@ -0,0 +1,740 @@

@@ -28,11 +28,11 @@
 # an RGA driver with no DT nodes to bind -- silence where a refusal belongs. 7.1.4 is
 # untested and may well work; the bound names what is verified.
 #
-# The ceiling is 7.3 because 7.2 is the newest generation the series has been dry-run
-# against. 7.2 carries an in-tree V4L2 RGA3 driver, but that is RK3588-only silicon
-# support and it touches nothing this SoC's RGA2 nodes describe, so all three patches
-# read the same on both generations.
-applies_to_kernel = ">=7.1.5, <7.3"
+# The ceiling is 7.4 because 7.3 is the newest generation the series has been dry-run
+# against. The kernel's in-tree V4L2 RGA3 driver is RK3588-only silicon support and
+# touches nothing this SoC's RGA2 nodes describe, so all three patches read the same
+# from 7.1.5 through 7.3.
+applies_to_kernel = ">=7.1.5, <7.4"
 
 # Kernel tree: the shared vendor driver, its mainline fixups, then this SoC's DT
 # nodes.
