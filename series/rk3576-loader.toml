@@ -7,8 +7,10 @@
 # board keeps a case-free path back into USB flashing after mainline u-boot
 # replaces the vendor bootloader:
 #
-#   * BOOT_LOADER handling, so `reboot loader` from Linux comes back up in
-#     rockusb (loader) mode -- the software path, no maskrom, no button.
+#   * BOOT_LOADER handling and the preboot hook that the reboot modes run
+#     through, so `reboot loader` from Linux comes back up in rockusb
+#     (loader) mode and `reboot ums` exports the eMMC as a USB drive -- the
+#     software path, no maskrom, no button.
 #   * a SARADC download key, so grounding the recovery/jack button at boot
 #     drops into BootROM download mode -- the hardware path, works even when
 #     Linux will not boot (u-boot only).
@@ -35,8 +37,10 @@ kernel    = []
 ffmpeg    = []
 userspace = []
 
-# u-boot tree: enter rockusb on the BOOT_LOADER reboot flag, enable the SARADC
-# download key on the rk3576-generic control DTB, make the key's ADC lookup
+# u-boot tree: enter rockusb on the BOOT_LOADER reboot flag, enable preboot so
+# the command that flag (or upstream's BOOT_UMS) arms actually runs -- without
+# it main_loop never reads the variable -- enable the SARADC download key on
+# the rk3576-generic control DTB, make the key's ADC lookup
 # find the RK3576 SARADC at all -- upstream matches it by device-tree node name
 # ("saradc"), which no SoC since rk3568 uses -- have binman emit the
 # CODE471/CODE472 maskrom USB boot images alongside the storage image, and fix
@@ -45,6 +49,7 @@ userspace = []
 # the ROM places the image 8 MiB high and it never boots). Applied with `git am`.
 uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0026-rockchip-rk3576-generic-enable-preboot-for-the-reboo.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
     "rk3576/uboot/0025-rockchip-widen-the-download-key-ADC-window-for-12-bi.patch",

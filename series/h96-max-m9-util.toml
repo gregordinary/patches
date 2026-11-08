@@ -28,7 +28,7 @@ ffmpeg    = []
 userspace = []
 
 # u-boot tree, applied with `git am`: the SoC-generic rk3576-util series
-# (0001-0024, see that series for the per-patch notes) plus the H96 board
+# (0001-0026, see that series for the per-patch notes) plus the H96 board
 # patch.
 #
 #   boards/h96-max-m9/0001  enable the H96's GMAC0 RGMII ethernet: the RK3576
@@ -40,6 +40,7 @@ userspace = []
 #                           defconfig's CONFIG_NO_NET.
 uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0026-rockchip-rk3576-generic-enable-preboot-for-the-reboo.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
     "rk3576/uboot/0025-rockchip-widen-the-download-key-ADC-window-for-12-bi.patch",

@@ -11,14 +11,16 @@ driver calls xhci_register(), so without an XHCI HCD there is no host,
 and it selects USB_HOST for us. USB_KEYBOARD (+ DM_KEYBOARD) and
 CONSOLE_MUX let the keyboard join serial as console input.
 
-USE_PREBOOT runs the host bring-up automatically: PREBOOT defaults to
-"usb start" when USB_KEYBOARD is set, and run_preboot_environment_command()
-fires in main_loop before the autoboot/prompt, so the USB keyboard is
-live at the prompt without `usb start` typed over serial -- the point of
-a console/util image that must not require a UART. This enumerates only
-the drd1 host; drd0 stays the peripheral gadget, so `ums` and
-`reboot loader`->rockusb are unaffected (and reboot-loader enters rockusb
-in the SPL, before preboot runs at all).
+The host bring-up runs automatically: PREBOOT defaults to "usb start"
+when USB_KEYBOARD is set, and the defconfig already enables USE_PREBOOT
+for the reboot modes, so run_preboot_environment_command() fires it in
+main_loop before the autoboot/prompt. The USB keyboard is therefore live
+at the prompt without `usb start` typed over serial -- the point of a
+console/util image that must not require a UART. This enumerates only
+the drd1 host; drd0 stays the peripheral gadget, so `ums` is unaffected.
+After a `reboot loader` or `reboot ums`, setup_boot_mode() replaces the
+preboot command for that one boot, so the board starts the gadget
+instead of the host.
 
 The host runs on drd1 (patch "run USB host on the second controller").
 drd0 stays a peripheral: rk3576-generic.dts sets it to "peripheral", so
@@ -31,23 +33,22 @@ connector.
 
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
- configs/generic-rk3576_defconfig | 8 ++++++++
- 1 file changed, 8 insertions(+)
+ configs/generic-rk3576_defconfig | 7 +++++++
+ 1 file changed, 7 insertions(+)
 
 diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
-index 501b1951..afdf5434 100644
+index 02912658..f0bb8db3 100644
 --- a/configs/generic-rk3576_defconfig
 +++ b/configs/generic-rk3576_defconfig
-@@ -21,6 +21,8 @@ CONFIG_CMD_GPT=y
+@@ -22,6 +22,7 @@ CONFIG_CMD_GPT=y
  CONFIG_CMD_MISC=y
  CONFIG_CMD_MMC=y
  CONFIG_CMD_ROCKUSB=y
 +CONFIG_CMD_USB=y
-+CONFIG_USE_PREBOOT=y
  CONFIG_CMD_USB_MASS_STORAGE=y
  # CONFIG_CMD_SETEXPR is not set
  CONFIG_CMD_RNG=y
-@@ -45,9 +47,15 @@ CONFIG_DEBUG_UART_SHIFT=2
+@@ -46,9 +47,15 @@ CONFIG_DEBUG_UART_SHIFT=2
  CONFIG_SYS_NS16550_MEM32=y
  CONFIG_SYSRESET_PSCI=y
  CONFIG_USB=y

@@ -16,7 +16,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  1 file changed, 1 insertion(+)
 
 diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
-index 3a6044b5..a3e4c991 100644
+index feb42b38..893ba2fa 100644
 --- a/configs/generic-rk3576_defconfig
 +++ b/configs/generic-rk3576_defconfig
 @@ -9,6 +9,7 @@ CONFIG_SYS_LOAD_ADDR=0x40c00800
@@ -25,7 +25,7 @@ index 3a6044b5..a3e4c991 100644
  CONFIG_DEBUG_UART=y
 +CONFIG_BOOTDELAY=-1
  # CONFIG_BOOTMETH_VBE is not set
+ CONFIG_USE_PREBOOT=y
  CONFIG_DEFAULT_FDT_FILE="rockchip/rk3576-generic.dtb"
- # CONFIG_DISPLAY_CPUINFO is not set
 -- 
 2.43.0

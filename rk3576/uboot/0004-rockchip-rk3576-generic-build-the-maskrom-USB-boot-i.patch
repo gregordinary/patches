@@ -23,7 +23,7 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  1 file changed, 1 insertion(+)
 
 diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
-index 15022300..501b1951 100644
+index 1d530312..02912658 100644
 --- a/configs/generic-rk3576_defconfig
 +++ b/configs/generic-rk3576_defconfig
 @@ -4,6 +4,7 @@ CONFIG_COUNTER_FREQUENCY=24000000

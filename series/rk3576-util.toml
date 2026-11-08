@@ -49,8 +49,9 @@ ffmpeg    = []
 userspace = []
 
 # u-boot tree, applied with `git am`:
-#   0001-0005  the rk3576-loader patches (reboot-loader, SARADC download key
-#              + driver-name match, maskrom USB boot images, SPL text base).
+#   0001-0005, the rk3576-loader patches (reboot-loader and the preboot it
+#   0025-0026  runs through, SARADC download key + driver-name match + 12-bit
+#              window, maskrom USB boot images, SPL text base).
 #   0006       USB host/storage/keyboard stack (host on drd1; drd0 stays the
 #              rockusb/ums device port).
 #   0007-0012  the display stack: HDMITX/VO0/HDPTX clocks, the PMU
@@ -85,6 +86,7 @@ userspace = []
 #   0024       the util command set: bootmenu, clk, memtest, md5sum, sha1sum.
 uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0026-rockchip-rk3576-generic-enable-preboot-for-the-reboo.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
     "rk3576/uboot/0025-rockchip-widen-the-download-key-ADC-window-for-12-bi.patch",

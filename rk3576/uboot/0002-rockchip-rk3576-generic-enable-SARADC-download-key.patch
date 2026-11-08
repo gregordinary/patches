@@ -48,10 +48,10 @@ index 632fabb6..98edec7f 100644
 +	status = "okay";
 +};
 diff --git a/configs/generic-rk3576_defconfig b/configs/generic-rk3576_defconfig
-index 5e256538..15022300 100644
+index 0e228e7e..1d530312 100644
 --- a/configs/generic-rk3576_defconfig
 +++ b/configs/generic-rk3576_defconfig
-@@ -23,11 +23,13 @@ CONFIG_CMD_ROCKUSB=y
+@@ -24,11 +24,13 @@ CONFIG_CMD_ROCKUSB=y
  CONFIG_CMD_USB_MASS_STORAGE=y
  # CONFIG_CMD_SETEXPR is not set
  CONFIG_CMD_RNG=y

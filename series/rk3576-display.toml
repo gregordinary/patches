@@ -47,9 +47,9 @@ userspace = []
 # commands (`smc` and the cache commands), which a shipped image has no use
 # for; the rk3576-util series carries them.
 #
-#   0001-0005  the rk3576-loader patches, shared verbatim (reboot-loader,
-#              SARADC download key + driver-name match, maskrom USB boot
-#              images, SPL text base).
+#   0001-0005, the rk3576-loader patches, shared verbatim (reboot-loader and
+#   0025-0026  the preboot it runs through, SARADC download key + driver-name
+#              match + 12-bit window, maskrom USB boot images, SPL text base).
 #   0006       USB host/storage/keyboard stack (host on drd1; drd0 stays the
 #              rockusb/ums device port).
 #   0007-0009  display infrastructure: HDMITX/VO0/HDPTX clock handling in the
@@ -96,6 +96,7 @@ userspace = []
 #              time-derived logic (USB reset/timeout windows, I2C, delays).
 uboot = [
     "rk3576/uboot/0001-rockchip-enter-rockusb-loader-mode-on-BOOT_LOADER-re.patch",
+    "rk3576/uboot/0026-rockchip-rk3576-generic-enable-preboot-for-the-reboo.patch",
     "rk3576/uboot/0002-rockchip-rk3576-generic-enable-SARADC-download-key.patch",
     "rk3576/uboot/0003-rockchip-match-the-SARADC-by-driver-not-by-node-name.patch",
     "rk3576/uboot/0025-rockchip-widen-the-download-key-ADC-window-for-12-bi.patch",
