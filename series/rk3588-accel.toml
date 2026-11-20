@@ -456,16 +456,17 @@ kernel = [
 
 # ffmpeg tree: an FFmpeg release tag, then Kwiboo's V4L2 request-API hwaccel
 # (v4l2-request/0001-0013), then the nyanmisaka rkmpp/rkrga graft materialized as an
-# ordered `git am` series (0001-0004; one commit needs a 3-way resolution a
-# cherry-pick cannot reproduce — see media-accel/ffmpeg/README.md), then the NV15/NV20
-# tag fix the request-API base needs (0005).
+# ordered `git am` series (0001-0004; three of them carry a resolution against this
+# base that a cherry-pick cannot reproduce -- see media-accel/ffmpeg/README.md), then
+# the NV15/NV20 tag fix the request-API base needs (0005).
 #
-# The v4l2-request patches are Kwiboo's `v4l2-request-n8.1` branch carried verbatim:
-# the 13 commits between `n8.1` and its tip `b57fbbe`, with patch-ids identical to
-# the branch's. They ride on the release tag the SoC layer pins rather than on
-# Kwiboo's own `n8.1` base, so the image takes FFmpeg's point releases -- the
-# demuxer, decoder and swscale fixes on `release/8.1` -- with no wait for the
-# branch to be rebased. All 13 apply to `n8.1.3` with no conflict.
+# The v4l2-request patches are Kwiboo's `v4l2-request-n8.1` branch, the 13 commits
+# between `n8.1` and its tip `b57fbbe`, rebased onto the release tag the SoC layer
+# pins. Each keeps its author, date and payload; the rebase moves context only,
+# apart from 0005's fall-through marker, which the base's -Wimplicit-fallthrough=5
+# accepts only as `av_fallthrough`. Riding on the release tag rather than on Kwiboo's
+# own base is what lets the image take FFmpeg's releases -- their demuxer, decoder
+# and swscale fixes -- with no wait for the branch to be rebased.
 #
 # 0005 is what makes 10-bit hardware decode usable at all beyond the RGA filters.
 # The base tags a packed NV15 capture buffer with the planar logical sw_format
@@ -493,12 +494,14 @@ kernel = [
 # RK3588-specific. series/rk3576-media does not carry it: Mesa's PanVk does not drive
 # that SoC's Mali-G52 by default, and forced onto it renders wrong chroma.
 #
-# 0007-0013 are defect fixes in the grafted code, so each one follows the patch
-# that introduces the file it touches: 0007/0008 need 0004's rkrga filters,
-# 0010-0012 need 0003's RKMPP hwcontext, and 0013 needs 0002's swscale converter.
-# 0009 is the exception — `rkmppenc.c` comes from the base — but it is grouped
-# here because it only compiles under `--enable-rkmpp`, which is the graft's
-# configure surface.
+# 0007, 0008 and 0012 are defect fixes in the grafted code, so each one follows the
+# patch that introduces the file it touches: 0007/0008 need 0004's rkrga filters and
+# 0012 needs 0003's RKMPP hwcontext. 0009 is the exception -- `rkmppenc.c` comes
+# from the base -- but it is grouped here because it only compiles under
+# `--enable-rkmpp`, which is the graft's configure surface. The graft source handles
+# the mapping error path, device-level cacheable flags, the tail of an NV15/NV20
+# row and the scale ratio of a rotated RGA job itself; the fixes here are the
+# defects it still has.
 #
 # The two that matter are 0007 and 0009. 0007 is a use-after-free followed by a
 # double free: both RGA async delivery paths called `av_frame_free()` on a frame
@@ -508,7 +511,7 @@ kernel = [
 # no count checks, dividing by a stride it never checks for zero, and silently
 # importing object 0 for a frame whose planes live elsewhere.
 #
-# No test has aimed at the seven defects. The code they touch runs in every RGA
+# No test has aimed at the four defects. The code they touch runs in every RGA
 # and RKMPP chain measured on the RK1, but none of those chains provokes a defect,
 # so no run shows a fix taking effect.
 #
@@ -600,15 +603,10 @@ kernel = [
 # drives but never exposed. Framesync's default is eof_action=repeat, so an
 # unbounded overlay source -- 0014's alphasrc, which is exactly what a burn-in
 # chain puts there -- keeps the graph compositing after the main input ends,
-# with no option available to say otherwise.
-#
-# 0022 is a defect fix in the grafted RGA filters, so it follows 0004 and the
-# other rkrga fixes. verify_rga_frame_info() picks the RGA core from the scale
-# ratio, and for a 90 or 270 degree rotation it divided each destination axis by
-# the wrong source axis. A rotated scale RGA3 can do was then routed to RGA2,
-# which takes no P010 and writes no NV15, and the filter failed to configure. The
-# fix is nyanmisaka's, taken from jellyfin-ffmpeg, which carries it and
-# ffmpeg-rockchip does not.
+# with no option available to say otherwise. With eof_action=pass or repeatlast=0,
+# and before an overlay's first frame under any options, framesync hands the
+# blend no overlay frame, so 0021 also adds a passthrough shader that copies the
+# main input alone for those events, which the filter otherwise dropped.
 #
 # 0023 decides which decoder a stream goes to when two take its coded format.
 # The v4l2-request probe took the first media device in udev's order, which is
@@ -619,6 +617,17 @@ kernel = [
 # for the coded format, and probes in that order, so H.264 goes to rkvdec and the
 # VDPU2 keeps MPEG-2 and VP8, which only it decodes. It applies after the
 # v4l2-request patches and touches none of them.
+#
+# 0024 and 0025 are FFmpeg master commits that no release carries yet, and they
+# are the input half of 0019: the copy of a system-memory frame into a V4L2
+# OUTPUT buffer. 0024 lays a frame out in a single-plane buffer by the driver's
+# bytesperline and aligned height, so a 1080-line frame in a 1088-line NV12
+# buffer puts its chroma where the driver reads it. 0025 copies the visible rows
+# of each plane into a multi-planar buffer at the driver's stride, where the base
+# copied `frame->buf[i]` whole: a frame with all its planes in one buffer, as the
+# rawvideo decoder makes, has no `buf[1]` and crashed, and a cropped frame copied
+# the wrong area. 0018 negotiates exactly those multi-planar formats (NM12, YM12)
+# on the VEPU121. Both drop when the base carries them.
 ffmpeg = [
     "media-accel/ffmpeg/v4l2-request/0001-avutil-hwcontext-Add-hwdevice-type-for-V4L2-Request-API.patch",
     "media-accel/ffmpeg/v4l2-request/0002-avutil-hwcontext_v4l2request-Probe-for-a-capable-media-and-video-device.patch",
@@ -642,10 +651,7 @@ ffmpeg = [
     "media-accel/ffmpeg/0007-rkrga-do-not-free-frame-owned-by-ff-filter-frame.patch",
     "media-accel/ffmpeg/0008-rkrga-clear-output-frame-crop-rectangle.patch",
     "media-accel/ffmpeg/0009-rkmppenc-validate-drm-descriptor-before-import.patch",
-    "media-accel/ffmpeg/0010-hwcontext-rkmpp-free-mapping-on-non-linear-reject.patch",
-    "media-accel/ffmpeg/0011-hwcontext-rkmpp-honour-device-level-cacheable-flags.patch",
     "media-accel/ffmpeg/0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch",
-    "media-accel/ffmpeg/0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch",
     "media-accel/ffmpeg/0014-lavfi-add-alphasrc-source-video-filter.patch",
     "media-accel/ffmpeg/0015-lavfi-subtitles-add-sub2video-option.patch",
     "media-accel/ffmpeg/0016-v4l2request-hevc-set-sps-rps-controls.patch",
@@ -654,8 +660,9 @@ ffmpeg = [
     "media-accel/ffmpeg/0019-v4l2m2m-add-mjpeg-encoder.patch",
     "media-accel/ffmpeg/0020-overlay-vulkan-keep-the-main-inputs-timebase.patch",
     "media-accel/ffmpeg/0021-overlay-vulkan-expose-the-framesync-options.patch",
-    "media-accel/ffmpeg/0022-rkrga-swap-scale-ratio-for-90-and-270-rotations.patch",
     "media-accel/ffmpeg/0023-hwcontext-v4l2request-try-the-widest-decoder-first.patch",
+    "media-accel/ffmpeg/0024-v4l2-buffers-copy-into-the-driver-aligned-layout.patch",
+    "media-accel/ffmpeg/0025-v4l2-buffers-copy-multi-plane-frames-row-by-row.patch",
 ]
 
 # Userspace tree (librockchip-mpp): force MPP allocations onto the contiguous

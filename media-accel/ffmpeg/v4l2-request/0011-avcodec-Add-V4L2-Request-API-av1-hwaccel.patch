@@ -19,19 +19,19 @@ Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
  create mode 100644 libavcodec/v4l2_request_av1.c
 
 diff --git a/configure b/configure
-index 6b86d7c823..070173874e 100755
+index d4e7552e59..6691614b08 100755
 --- a/configure
 +++ b/configure
-@@ -3364,6 +3364,8 @@ av1_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_AV1"
- av1_dxva2_hwaccel_select="av1_decoder"
- av1_nvdec_hwaccel_deps="nvdec CUVIDAV1PICPARAMS"
+@@ -3376,6 +3376,8 @@ av1_nvdec_hwaccel_deps="nvdec CUVIDAV1PICPARAMS"
  av1_nvdec_hwaccel_select="av1_decoder"
+ av1_nvdec_cuarray_hwaccel_deps="nvdec ffnvcodec_cuarray CUVIDAV1PICPARAMS"
+ av1_nvdec_cuarray_hwaccel_select="av1_decoder"
 +av1_v4l2request_hwaccel_deps="v4l2_request av1_v4l2_request"
 +av1_v4l2request_hwaccel_select="av1_decoder"
  av1_vaapi_hwaccel_deps="vaapi VADecPictureParameterBufferAV1_bit_depth_idx"
  av1_vaapi_hwaccel_select="av1_decoder"
  av1_vdpau_hwaccel_deps="vdpau VdpPictureInfoAV1"
-@@ -7614,6 +7616,7 @@ if enabled v4l2_m2m; then
+@@ -7577,6 +7579,7 @@ if enabled v4l2_m2m; then
  fi
  
  if enabled v4l2_request; then
@@ -40,30 +40,30 @@ index 6b86d7c823..070173874e 100755
      check_cc hevc_v4l2_request linux/videodev2.h "int i = V4L2_CID_STATELESS_HEVC_SPS"
      check_cc mpeg2_v4l2_request linux/videodev2.h "int i = V4L2_CID_STATELESS_MPEG2_SEQUENCE"
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index b68e8bd7b4..1ca5ca7adb 100644
+index 1b978837d4..554ee6481a 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -1051,6 +1051,7 @@ OBJS-$(CONFIG_AV1_D3D11VA_HWACCEL)        += dxva2_av1.o
- OBJS-$(CONFIG_AV1_DXVA2_HWACCEL)          += dxva2_av1.o
+@@ -1058,6 +1058,7 @@ OBJS-$(CONFIG_AV1_DXVA2_HWACCEL)          += dxva2_av1.o
  OBJS-$(CONFIG_AV1_D3D12VA_HWACCEL)        += dxva2_av1.o d3d12va_av1.o
  OBJS-$(CONFIG_AV1_NVDEC_HWACCEL)          += nvdec_av1.o
+ OBJS-$(CONFIG_AV1_NVDEC_CUARRAY_HWACCEL)  += nvdec_av1.o
 +OBJS-$(CONFIG_AV1_V4L2REQUEST_HWACCEL)    += v4l2_request_av1.o
  OBJS-$(CONFIG_AV1_VAAPI_HWACCEL)          += vaapi_av1.o
  OBJS-$(CONFIG_AV1_VDPAU_HWACCEL)          += vdpau_av1.o
  OBJS-$(CONFIG_AV1_VIDEOTOOLBOX_HWACCEL)   += videotoolbox_av1.o
 diff --git a/libavcodec/av1dec.c b/libavcodec/av1dec.c
-index 2b3a36aa5c..6eff1b2a3e 100644
+index 315828e18a..ab8dfa1649 100644
 --- a/libavcodec/av1dec.c
 +++ b/libavcodec/av1dec.c
-@@ -543,6 +543,7 @@ static int get_pixel_format(AVCodecContext *avctx)
-                      CONFIG_AV1_D3D11VA_HWACCEL * 2 + \
+@@ -547,6 +547,7 @@ static int get_pixel_format(AVCodecContext *avctx)
                       CONFIG_AV1_D3D12VA_HWACCEL + \
                       CONFIG_AV1_NVDEC_HWACCEL + \
+                      CONFIG_AV1_NVDEC_CUARRAY_HWACCEL + \
 +                     CONFIG_AV1_V4L2REQUEST_HWACCEL + \
                       CONFIG_AV1_VAAPI_HWACCEL + \
                       CONFIG_AV1_VDPAU_HWACCEL + \
                       CONFIG_AV1_VIDEOTOOLBOX_HWACCEL + \
-@@ -578,6 +579,9 @@ static int get_pixel_format(AVCodecContext *avctx)
+@@ -585,6 +586,9 @@ static int get_pixel_format(AVCodecContext *avctx)
  #endif
  #if CONFIG_AV1_VULKAN_HWACCEL
          *fmtp++ = AV_PIX_FMT_VULKAN;
@@ -73,7 +73,7 @@ index 2b3a36aa5c..6eff1b2a3e 100644
  #endif
          break;
      case AV_PIX_FMT_YUV420P10:
-@@ -605,6 +609,9 @@ static int get_pixel_format(AVCodecContext *avctx)
+@@ -615,6 +619,9 @@ static int get_pixel_format(AVCodecContext *avctx)
  #endif
  #if CONFIG_AV1_VULKAN_HWACCEL
          *fmtp++ = AV_PIX_FMT_VULKAN;
@@ -83,7 +83,7 @@ index 2b3a36aa5c..6eff1b2a3e 100644
  #endif
          break;
      case AV_PIX_FMT_YUV420P12:
-@@ -1631,6 +1638,9 @@ const FFCodec ff_av1_decoder = {
+@@ -1615,6 +1622,9 @@ const FFCodec ff_av1_decoder = {
  #if CONFIG_AV1_VULKAN_HWACCEL
          HWACCEL_VULKAN(av1),
  #endif
@@ -94,13 +94,13 @@ index 2b3a36aa5c..6eff1b2a3e 100644
          NULL
      },
 diff --git a/libavcodec/hwaccels.h b/libavcodec/hwaccels.h
-index ca47a3c906..7b6f67330a 100644
+index 6098b0bd5d..7e421dc572 100644
 --- a/libavcodec/hwaccels.h
 +++ b/libavcodec/hwaccels.h
-@@ -24,6 +24,7 @@ extern const struct FFHWAccel ff_av1_d3d11va2_hwaccel;
- extern const struct FFHWAccel ff_av1_d3d12va_hwaccel;
+@@ -26,6 +26,7 @@ extern const struct FFHWAccel ff_av1_d3d12va_hwaccel;
  extern const struct FFHWAccel ff_av1_dxva2_hwaccel;
  extern const struct FFHWAccel ff_av1_nvdec_hwaccel;
+ extern const struct FFHWAccel ff_av1_nvdec_cuarray_hwaccel;
 +extern const struct FFHWAccel ff_av1_v4l2request_hwaccel;
  extern const struct FFHWAccel ff_av1_vaapi_hwaccel;
  extern const struct FFHWAccel ff_av1_vdpau_hwaccel;

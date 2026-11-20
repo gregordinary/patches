@@ -23,19 +23,19 @@ Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
  create mode 100644 libavcodec/v4l2_request_h264.c
 
 diff --git a/configure b/configure
-index 0d25c03111..bd0ae88677 100755
+index f9b95f5744..7cd068b4ea 100755
 --- a/configure
 +++ b/configure
-@@ -3389,6 +3389,8 @@ h264_dxva2_hwaccel_deps="dxva2"
- h264_dxva2_hwaccel_select="h264_decoder"
- h264_nvdec_hwaccel_deps="nvdec"
+@@ -3403,6 +3403,8 @@ h264_nvdec_hwaccel_deps="nvdec"
  h264_nvdec_hwaccel_select="h264_decoder"
+ h264_nvdec_cuarray_hwaccel_deps="nvdec ffnvcodec_cuarray"
+ h264_nvdec_cuarray_hwaccel_select="h264_decoder"
 +h264_v4l2request_hwaccel_deps="v4l2_request h264_v4l2_request"
 +h264_v4l2request_hwaccel_select="h264_decoder"
  h264_vaapi_hwaccel_deps="vaapi"
  h264_vaapi_hwaccel_select="h264_decoder"
  h264_vdpau_hwaccel_deps="vdpau"
-@@ -7605,6 +7607,7 @@ if enabled v4l2_m2m; then
+@@ -7568,6 +7570,7 @@ if enabled v4l2_m2m; then
  fi
  
  if enabled v4l2_request; then
@@ -44,40 +44,40 @@ index 0d25c03111..bd0ae88677 100755
      check_cc v4l2_m2m_hold_capture_buf linux/videodev2.h "int i = V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF"
      check_func_headers "linux/media.h linux/videodev2.h" v4l2_timeval_to_ns
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index 0898f8232a..8590e62c27 100644
+index aafa9c7235..56ac0f9d35 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -1064,6 +1064,7 @@ OBJS-$(CONFIG_H264_DXVA2_HWACCEL)         += dxva2_h264.o
- OBJS-$(CONFIG_H264_D3D12VA_HWACCEL)       += dxva2_h264.o d3d12va_h264.o
+@@ -1072,6 +1072,7 @@ OBJS-$(CONFIG_H264_D3D12VA_HWACCEL)       += dxva2_h264.o d3d12va_h264.o
  OBJS-$(CONFIG_H264_NVDEC_HWACCEL)         += nvdec_h264.o
+ OBJS-$(CONFIG_H264_NVDEC_CUARRAY_HWACCEL) += nvdec_h264.o
  OBJS-$(CONFIG_H264_QSV_HWACCEL)           += qsvdec.o
 +OBJS-$(CONFIG_H264_V4L2REQUEST_HWACCEL)   += v4l2_request_h264.o
  OBJS-$(CONFIG_H264_VAAPI_HWACCEL)         += vaapi_h264.o
  OBJS-$(CONFIG_H264_VDPAU_HWACCEL)         += vdpau_h264.o
  OBJS-$(CONFIG_H264_VIDEOTOOLBOX_HWACCEL)  += videotoolbox.o
 diff --git a/libavcodec/h264_slice.c b/libavcodec/h264_slice.c
-index 74ab618f2b..2c7011a704 100644
+index b4b1fdf2ac..fc68812cbf 100644
 --- a/libavcodec/h264_slice.c
 +++ b/libavcodec/h264_slice.c
-@@ -791,6 +791,7 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback)
-                      (CONFIG_H264_D3D11VA_HWACCEL * 2) + \
+@@ -804,6 +804,7 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback,
                       CONFIG_H264_D3D12VA_HWACCEL + \
                       CONFIG_H264_NVDEC_HWACCEL + \
+                      CONFIG_H264_NVDEC_CUARRAY_HWACCEL + \
 +                     CONFIG_H264_V4L2REQUEST_HWACCEL + \
                       CONFIG_H264_VAAPI_HWACCEL + \
                       CONFIG_H264_VIDEOTOOLBOX_HWACCEL + \
                       CONFIG_H264_VDPAU_HWACCEL + \
-@@ -819,6 +820,9 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback)
+@@ -835,6 +836,9 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback,
  #endif
- #if CONFIG_H264_NVDEC_HWACCEL
-         *fmt++ = AV_PIX_FMT_CUDA;
+ #if CONFIG_H264_NVDEC_CUARRAY_HWACCEL
+         *fmt++ = AV_PIX_FMT_CUARRAY;
 +#endif
 +#if CONFIG_H264_V4L2REQUEST_HWACCEL
 +        *fmt++ = AV_PIX_FMT_DRM_PRIME;
  #endif
          if (CHROMA444(h)) {
              if (h->avctx->colorspace == AVCOL_SPC_RGB) {
-@@ -875,6 +879,9 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback)
+@@ -894,6 +898,9 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback,
  #if CONFIG_H264_VIDEOTOOLBOX_HWACCEL
          if (h->avctx->colorspace != AVCOL_SPC_RGB)
              *fmt++ = AV_PIX_FMT_VIDEOTOOLBOX;
@@ -88,10 +88,10 @@ index 74ab618f2b..2c7011a704 100644
          if (CHROMA444(h)) {
              if (h->avctx->colorspace == AVCOL_SPC_RGB)
 diff --git a/libavcodec/h264dec.c b/libavcodec/h264dec.c
-index 809a938386..6c4ce97f63 100644
+index 9e4b1222ab..af7d05092c 100644
 --- a/libavcodec/h264dec.c
 +++ b/libavcodec/h264dec.c
-@@ -1144,6 +1144,9 @@ const FFCodec ff_h264_decoder = {
+@@ -1238,6 +1238,9 @@ const FFCodec ff_h264_decoder = {
  #endif
  #if CONFIG_H264_VULKAN_HWACCEL
                                 HWACCEL_VULKAN(h264),
@@ -102,13 +102,13 @@ index 809a938386..6c4ce97f63 100644
                                 NULL
                             },
 diff --git a/libavcodec/hwaccels.h b/libavcodec/hwaccels.h
-index 8893064ce7..052153465f 100644
+index b0b217ef25..4fa0dc5968 100644
 --- a/libavcodec/hwaccels.h
 +++ b/libavcodec/hwaccels.h
-@@ -37,6 +37,7 @@ extern const struct FFHWAccel ff_h264_d3d11va2_hwaccel;
- extern const struct FFHWAccel ff_h264_d3d12va_hwaccel;
+@@ -40,6 +40,7 @@ extern const struct FFHWAccel ff_h264_d3d12va_hwaccel;
  extern const struct FFHWAccel ff_h264_dxva2_hwaccel;
  extern const struct FFHWAccel ff_h264_nvdec_hwaccel;
+ extern const struct FFHWAccel ff_h264_nvdec_cuarray_hwaccel;
 +extern const struct FFHWAccel ff_h264_v4l2request_hwaccel;
  extern const struct FFHWAccel ff_h264_vaapi_hwaccel;
  extern const struct FFHWAccel ff_h264_vdpau_hwaccel;

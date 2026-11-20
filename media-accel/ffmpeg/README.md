@@ -21,33 +21,33 @@ directory's README. Then:
 7. `0007-rkrga-do-not-free-frame-owned-by-ff-filter-frame.patch`
 8. `0008-rkrga-clear-output-frame-crop-rectangle.patch`
 9. `0009-rkmppenc-validate-drm-descriptor-before-import.patch`
-10. `0010-hwcontext-rkmpp-free-mapping-on-non-linear-reject.patch`
-11. `0011-hwcontext-rkmpp-honour-device-level-cacheable-flags.patch`
-12. `0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch`
-13. `0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch`
-14. `0014-lavfi-add-alphasrc-source-video-filter.patch`
-15. `0015-lavfi-subtitles-add-sub2video-option.patch`
-16. `0016-v4l2request-hevc-set-sps-rps-controls.patch`
-17. `0017-v4l2m2m-set-coded-format-before-raw-when-encoding.patch`
-18. `0018-v4l2m2m-negotiate-formats-the-driver-offers.patch`
-19. `0019-v4l2m2m-add-mjpeg-encoder.patch`
-20. `0020-overlay-vulkan-keep-the-main-inputs-timebase.patch`
-21. `0021-overlay-vulkan-expose-the-framesync-options.patch`
-22. `0022-rkrga-swap-scale-ratio-for-90-and-270-rotations.patch`
-23. `0023-hwcontext-v4l2request-try-the-widest-decoder-first.patch`
+10. `0012-hwcontext-rkmpp-pool-buffer-size-in-size-t.patch`
+11. `0014-lavfi-add-alphasrc-source-video-filter.patch`
+12. `0015-lavfi-subtitles-add-sub2video-option.patch`
+13. `0016-v4l2request-hevc-set-sps-rps-controls.patch`
+14. `0017-v4l2m2m-set-coded-format-before-raw-when-encoding.patch`
+15. `0018-v4l2m2m-negotiate-formats-the-driver-offers.patch`
+16. `0019-v4l2m2m-add-mjpeg-encoder.patch`
+17. `0020-overlay-vulkan-keep-the-main-inputs-timebase.patch`
+18. `0021-overlay-vulkan-expose-the-framesync-options.patch`
+19. `0023-hwcontext-v4l2request-try-the-widest-decoder-first.patch`
+20. `0024-v4l2-buffers-copy-into-the-driver-aligned-layout.patch`
+21. `0025-v4l2-buffers-copy-multi-plane-frames-row-by-row.patch`
 
 Patches 0001–0004 are the graft; 0005 is a fix to the base, described below.
 0006 is independent of the graft — it makes the base's own V4L2-request frames
-importable into Vulkan. 0007–0013 are defect fixes in the grafted code. 0014 and
+importable into Vulkan. 0007, 0008 and 0012 are defect fixes in the grafted code,
+and 0009 is one in the base's RKMPP encoder. 0014 and
 0015 are independent of the graft too: they build the subtitle branch every
 hardware burn-in chain needs. 0016 is a fix to the base's HEVC hwaccel,
 described below. 0017–0019 are independent of the graft as well: they reach the
 mainline VEPU121 JPEG encoder through V4L2, with no vendor userspace involved,
 and are described below. 0020 and 0021 are defect fixes in upstream's own
-`overlay_vulkan`, found the first time this scope built ffmpeg with Vulkan. 0022
-is a defect fix in the grafted RGA filters, taken from jellyfin-ffmpeg. 0023 is a
+`overlay_vulkan`, found the first time this scope built ffmpeg with Vulkan. 0023 is a
 fix to the base's device probe: it decides which decoder a stream goes to when two
-take its coded format.
+take its coded format. 0024 and 0025 are FFmpeg master commits that no release
+carries yet: the copy of a frame into a V4L2 encoder's input buffer, which 0019
+depends on.
 
 ## 0005 — what a 10-bit decoded frame is called
 
@@ -82,29 +82,28 @@ This replaces a patch that normalised the same two tags back to NV15/NV20 inside
 RGA filters — the same fix applied one consumer at a time. `map_av_to_rga_format()`
 maps `AV_PIX_FMT_NV15` natively, so with the tag right the RGA filters need nothing.
 
-## 0007–0013 — defect fixes
+## 0007, 0008, 0009, 0012 — defect fixes
 
-Each follows the patch that introduces the file it touches: 0007/0008 need 0004,
-0010–0012 need 0003, 0013 needs 0002. `rkmppenc.c` comes from the base, so 0009 has
-no graft dependency beyond `--enable-rkmpp`.
+Each follows the patch that introduces the file it touches: 0007/0008 need 0004 and
+0012 needs 0003. `rkmppenc.c` comes from the base, so 0009 has no graft dependency
+beyond `--enable-rkmpp`. The graft itself handles the mapping error path, cacheable
+flags requested on the device context, the tail of an NV15/NV20 row and the scale
+ratio of a rotated RGA job; these four are the defects it still has.
 
 | patch | defect |
 |---|---|
 | `0007` | **Use-after-free then double free.** Both RGA async delivery paths called `av_frame_free()` on a frame `ff_filter_frame()` had already taken. Its contract in `libavfilter/filters.h` says the receiving filter owns the frame on error, and it frees on every negative return — freeing its own parameter, which leaves the caller's pointer dangling. The queue's `queued` count also went unbalanced on that path. |
 | `0008` | Only `crop_top` was cleared on the output frame, so a crop the RGA had already applied propagated downstream and asked for a second one. `crop_left` is the field that leaks in practice; all four leak when a caller sets `apply_cropping = 0`. |
 | `0009` | **The encoder's DRM import trusted the descriptor.** No `nb_objects`/`nb_layers`/`nb_planes` checks before indexing them; `planes[1].offset / stride` with no check that the stride is non-zero, which is SIGFPE rather than an error; and a frame whose planes live in several dma-bufs imported object 0 and encoded whatever was at that offset. |
-| `0010` | The non-linear `ENOSYS` return leaked the mapping descriptor allocated just above it. |
-| `0011` | Cacheable buffers requested through the *device* context got no `DMA_BUF_IOCTL_SYNC` — only the frames-level flag was read. The effective answer is now decided once at map time so unmap cannot disagree. |
 | `0012` | The pool buffer size multiplied three `int`s before widening to `size_t`. Hardening: reaching `INT_MAX` needs roughly 13000×13000. |
-| `0013` | `nv15_20ToPlanarWrapper` stepped whole 5-byte groups (`src_w / 4`, `chrSrcW / 2`), dropping up to three luma samples and one chroma pair at the end of a row. 1920 and 3840 divide cleanly; 1366 loses two pixels per row. The chroma *slice height* truncation is deliberately left alone — see the patch. |
 
 Origins are `yisding/rock-5b-ysp`'s fix-candidate list, re-derived against this tree
 rather than ported: two of the defects it describes are not present here, and 0009's
-divide-by-zero and 0010's leak are not in it.
+divide-by-zero is not in it.
 
-**No test has aimed at the seven defects.** All seven ship in every `ffmpeg-rk` build,
-and the RGA filters, the RKMPP hwcontext, the encoder's DRM import and the NV15 reader
-they touch run in every RGA and RKMPP chain measured on the RK1. None of those chains
+**No test has aimed at the four defects.** All four ship in every `ffmpeg-rk` build,
+and the RGA filters, the RKMPP hwcontext and the encoder's DRM import they touch run
+in every RGA and RKMPP chain measured on the RK1. None of those chains
 was built to provoke a defect, so no run shows a fix taking effect.
 
 ## 0006 — multi-planar DRM import
@@ -200,35 +199,39 @@ headers.
 
 ## Provenance
 
-- **Base:** FFmpeg release tag `n8.1.3`, as the SoC layer pins it.
+- **Base:** FFmpeg release tag `n9.1`, as the SoC layer pins it.
 - **Request-API hwaccel:** Kwiboo `FFmpeg` branch `v4l2-request-n8.1`, commit
-  `b57fbbe5`, carried as [`v4l2-request/0001`–`0013`](v4l2-request/).
-- **Graft source:** nyanmisaka `ffmpeg-rockchip` branch `8.1`, commit `f66f2f80`.
+  `b57fbbe5`, rebased onto the base as [`v4l2-request/0001`–`0013`](v4l2-request/).
+- **Graft source:** nyanmisaka `ffmpeg-rockchip` branch `9.0`, commit `12b8e961`.
 
 Each graft patch's `(cherry picked from commit …)` trailer records the exact
-nyanmisaka commit it materializes. The series is `git am`-ready and reproduces the
-grafted tree byte-for-byte.
+nyanmisaka commit it materializes, followed by a note where the patch carries a
+resolution against this base. The series is `git am`-ready and reproduces the grafted
+tree byte-for-byte.
 
 ## Why these are patches, not cherry-picks
 
-`0003` (RKMPP hwcontext) does not cherry-pick cleanly onto the request-API base: that
-base and nyanmisaka's tree register different sets of `AVHWDeviceType`s, so adding the
-rkmpp entry is a 3-way textual conflict in `libavutil/hwcontext.c` / `.h` and
-`libavutil/Makefile`. The resolution is mechanical (keep both sets, add rkmpp), but
-a pinned cherry-pick cannot reproduce a manual resolution — so the resolved commit
-ships as a patch. The other three apply cleanly and ship as patches for uniformity.
+`0001`, `0002` and `0003` do not cherry-pick cleanly onto this base. The release adds
+pixel formats where `0001` and `0002` add NV15 and NV20 — the `AVPixelFormat` enum,
+the `AV_PIX_FMT_NV20` macro block `0001` removes the macro from, and the `imgutils`
+FATE reference — and the request-API patches register `AV_HWDEVICE_TYPE_V4L2REQUEST`
+in the lists `0003` extends, in `libavutil/hwcontext.c` / `.h` and
+`libavutil/Makefile`. Each resolution is mechanical (keep both sets, add the graft's
+entries after them), but a pinned cherry-pick cannot reproduce a manual resolution —
+so the resolved commits ship as patches. `0004` applies cleanly and ships as a patch
+for uniformity.
 
 ## Excluded from the graft
 
 Two nyanmisaka commits match the encode/scale subject keywords but are deliberately
 **not** grafted — they displace the working upstream paths mainline needs:
 
-- `d3b5fbba1a157355d965b108f9935949c2654f80` — *lavc/rkmppenc: refactor RKMPP
-  encoders*. Bloats the MPP cfg payload; trips the mainline VEPU580 driver
+- `c93bf471a3730af4fee9438fa8b10ea9f93a1c41` — *lavc/rkmppenc: refactor RKMPP
+  encoders and extend codecs*. Bloats the MPP cfg payload; trips the mainline VEPU580 driver
   (`MPP_IOC_CFG_V1` ENOMEM). The simpler upstream rkmppenc already in the base is
   what the mainline driver expects.
-- `383893abc6a1a0ae5ad0f2e3927f9649593c3019` — *lavc/rkmppdec: refactor RKMPP
-  decoders*. Forces the vendor MPP decode HAL that mainline lacks; breaks the
+- `0db5fba6b6294073461e0658962bb6b913e14052` — *lavc/rkmppdec: refactor RKMPP
+  decoders and extend codecs*. Forces the vendor MPP decode HAL that mainline lacks; breaks the
   working V4L2 stateless decode. Decode stays on the mainline V4L2 path.
 
 ## 0017–0019 — reaching a hardware JPEG encoder
@@ -326,6 +329,27 @@ each axis. Widths are rounded up to a multiple of 4 by the driver's own selectio
 handling, and the wrapper warns when the coded size it gets back differs from the one
 asked for.
 
+## 0024, 0025 — the copy into the encoder's input buffer
+
+A system-memory frame reaches a V4L2 encoder by being copied into an OUTPUT buffer,
+and the driver, not the frame, decides that buffer's layout: its stride, and the
+aligned height the next plane starts after. Both patches are FFmpeg master commits
+that no release carries yet, and both drop when the base carries them.
+
+**0024 — a single-plane buffer.** The frame is laid out by the driver's
+`bytesperline` and aligned height, and only its visible pixels are copied, so a
+1080-line frame in a 1088-line NV12 buffer puts its chroma where the driver reads
+it. A layout that would not fit the driver's buffer is refused before anything is
+written.
+
+**0025 — a multi-planar buffer.** The base copied `frame->buf[i]` whole into plane
+`i`, which assumes one buffer per plane holding exactly the driver's layout. A frame
+with all its planes in one buffer, which is what the rawvideo decoder produces, has
+no `buf[1]` and crashed; a cropped frame copied the wrong area; and every frame
+copied its padding. Each plane's visible rows are now copied at the driver's
+stride. 0018 negotiates exactly these multi-planar formats (`NM12`, `YM12`) on the
+VEPU121, so this is the path 0019's input takes.
+
 ## 0020, 0021 — overlay_vulkan
 
 Both are defects in upstream's `overlay_vulkan`, unrelated to Rockchip: this is
@@ -363,6 +387,18 @@ input ends with no option available to stop it. The three options are published
 the way `overlay`, `overlay_vaapi`, `overlay_cuda` and `overlay_qsv` publish
 them, with `FRAMESYNC_DEFINE_CLASS()` and the preinit callback it requires.
 
+Two of those values reach a case the filter did not handle. With
+`eof_action=pass` or `repeatlast=0`, framesync hands the blend no overlay frame
+once the overlay input has ended — and it does so before the overlay's first
+frame whatever the options — and the blend returned without output for every such
+event, dropping the main frame instead of passing it on. 0021 adds a second shader,
+`overlay_pass`, that copies the main input alone, and dispatches it whenever there
+is no overlay frame; the overlay's size and the format check come from the links,
+so the filter starts on main frames that arrive before any overlay does. On
+lavapipe, with a 90-frame main and a 30-frame overlay, `eof_action=pass` and
+`repeatlast=0` each gave 30 frames without it and give 90 with it, and the 60
+passed-through frames equal the main input byte for byte.
+
 Three further findings from the same measurement are **not** fixed here, because
 neither is an ffmpeg defect. `libplacebo` converting a Vulkan BGRA surface to
 NV12 swaps red and blue, and P010 is broken in both directions across the Vulkan
@@ -375,30 +411,6 @@ their plain 16-bit equivalents; `nv12`, `yuv420p` and `yuv420p10le` all bypass i
 and all upload correctly. Separately, there is no zero-copy Vulkan-to-RKMPP
 handoff — every `hwmap` variant is `ENOSYS` — and `scale_vulkan` rejects BGRA
 with `Unsupported colorspace` and exposes no option to name the matrix.
-
-## 0022 — the scale ratio of a rotated RGA job
-
-`verify_rga_frame_info()` derives a scale ratio per axis from the destination and
-source sizes, and uses it twice. A ratio outside 1/8..8 moves the job from RGA3 to
-RGA2, and the final range check refuses a ratio past the chosen core's limit.
-
-A 90 or 270 degree rotation swaps the output's axes, and the unpatched code still
-divided destination width by source width. For those modes each axis was paired
-with the wrong one. A rotated scale that RGA3 can do was then routed to RGA2, which
-accepts no `P010` or `P210` and writes no `NV15` or `NV20`, so the filter failed to
-configure with `ENOSYS`. The same mistake could also trip the range check.
-
-The fix pairs the destination height with the source width, and the destination
-width with the source height, whenever the rotate mode carries the 90 degree bit.
-That is the test the output frame's sample aspect ratio already applies a few
-hundred lines earlier.
-
-It is nyanmisaka's, taken from jellyfin-ffmpeg commit `24bd5c9` ("Sync fixes from
-ffmpeg-rockchip"), which folds it into that project's `debian/patches/0042`.
-ffmpeg-rockchip's `8.1` branch does not carry it. The patch keeps nyanmisaka as
-author. Jellyfin's RKMPP filter chain reaches the path through `vpp_rkrga`'s
-`transpose=` option, which it emits for a rotated source. The patch has not run on
-hardware.
 
 ## 0023 — which decoder a stream goes to
 

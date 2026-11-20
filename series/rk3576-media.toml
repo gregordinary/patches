@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # series/rk3576-media.toml
 #
-# RK3576 FFmpeg series: the patches an FFmpeg built `--enable-v4l2-request` needs
-# to drive this SoC's VDPU383 correctly and to carry what it decodes.
+# RK3576 FFmpeg series: the V4L2 request-API hwaccel, and the patches it needs to
+# drive this SoC's VDPU383 correctly and to carry what it decodes.
+#
+# The hwaccel is media-accel/ffmpeg/v4l2-request/0001-0013, Kwiboo's request-API
+# series rebased onto the FFmpeg release the SoC layer pins; the rest apply after it.
 #
 # Every patch here is shared verbatim with series/rk3588-accel, where the same
 # FFmpeg tree serves the RK3588. The two series take different subsets of it: this
@@ -12,13 +15,12 @@
 # neither of which touches a file the omitted patches do -- the builder's
 # verify-applies gate is what holds that apart.
 #
-# 0001 and 0002 add NV15 and NV20 to libavutil and libswscale, and 0013 stops
-# libswscale dropping the tail samples of a row in them. NV15 is 10-bit 4:2:0
+# 0001 and 0002 add NV15 and NV20 to libavutil and libswscale. NV15 is 10-bit 4:2:0
 # packed with no padding between samples, and it is what the VDPU383 writes for
 # 10-bit content -- the hardware has no other output format for it, so a decoder
 # that cannot name NV15 cannot hand a 10-bit frame to anything. 0005 tags the
 # format on the v4l2request hwcontext so a decoded frame carries what it actually
-# is rather than an approximation. Without the four, 10-bit decode succeeds in
+# is rather than an approximation. Without the three, 10-bit decode succeeds in
 # hardware and then fails at the first consumer: hwdownload cannot name the
 # format, and a plain `-hwaccel v4l2request` transcode aborts with `Failed to
 # transfer data to output frame`. There is no software fallback in that path,
@@ -35,23 +37,33 @@
 # depends on nothing else here. Its kernel-side counterpart is 083 in
 # series/rk3576-fixes, which bounds what those controls may say.
 #
-# Ordering is the RK3588 series' order, narrowed: 0002 and 0013 both edit
-# libswscale/swscale_unscaled.c and 0013 builds on 0002's hunks, so the two stay in
-# this sequence.
+# Ordering is the RK3588 series' order, narrowed.
 
 # Declared intent; the builder's verify-applies gate is the enforcement. The range
-# is the FFmpeg tree's, not the kernel's -- these patches sit on the
-# `v4l2-request-n8.1` base the SoC layer pins, and the kernel bound is inherited
+# is the FFmpeg tree's, not the kernel's -- these patches sit on the FFmpeg
+# release the SoC layer pins, and the kernel bound is inherited
 # from whichever other series a build composes alongside this one.
 applies_to_kernel = ">=7.1, <7.4"
 
 kernel = []
 
 ffmpeg = [
+    "media-accel/ffmpeg/v4l2-request/0001-avutil-hwcontext-Add-hwdevice-type-for-V4L2-Request-API.patch",
+    "media-accel/ffmpeg/v4l2-request/0002-avutil-hwcontext_v4l2request-Probe-for-a-capable-media-and-video-device.patch",
+    "media-accel/ffmpeg/v4l2-request/0003-avcodec-Add-common-V4L2-Request-API-code.patch",
+    "media-accel/ffmpeg/v4l2-request/0004-avcodec-v4l2request-Add-common-decode-support-for-hwaccels.patch",
+    "media-accel/ffmpeg/v4l2-request/0005-avcodec-Add-V4L2-Request-API-mpeg2-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0006-avcodec-h264dec-add-ref_pic_marking-and-pic_order_cnt-bit_size-to-slice-context.patch",
+    "media-accel/ffmpeg/v4l2-request/0007-avcodec-Add-V4L2-Request-API-h264-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0008-avcodec-Add-V4L2-Request-API-hevc-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0009-avcodec-Add-V4L2-Request-API-vp8-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0010-avcodec-Add-V4L2-Request-API-vp9-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0011-avcodec-Add-V4L2-Request-API-av1-hwaccel.patch",
+    "media-accel/ffmpeg/v4l2-request/0012-avutil-hwcontext_v4l2request-Add-support-for-AFBC_16X16_SPLIT-pix-fmts.patch",
+    "media-accel/ffmpeg/v4l2-request/0013-avutil-hwcontext_v4l2request-Add-support-for-BROADCOM_SAND128-pix-fmts.patch",
     "media-accel/ffmpeg/0001-lavu-add-NV15-and-NV20-bitstream-formats-support.patch",
     "media-accel/ffmpeg/0002-lsws-add-NV15-and-NV20-formats-support.patch",
     "media-accel/ffmpeg/0005-hwcontext-v4l2request-tag-nv15-nv20-as-themselves.patch",
-    "media-accel/ffmpeg/0013-lsws-nv15-nv20-do-not-drop-row-tail-samples.patch",
     "media-accel/ffmpeg/0016-v4l2request-hevc-set-sps-rps-controls.patch",
 ]
 

@@ -47,7 +47,7 @@ Jellyfin's packaging tree.
 
 [`series/rk3588-accel.toml`](series/rk3588-accel.toml) is the RK3588 mainline media
 + NPU + crypto series: kernel `030`–`103`, ffmpeg `v4l2-request/0001`–`0013` then
-`0001`–`0023`, userspace `001`. A
+`0001`–`0025`, userspace `001`. A
 series' `kernel` list spans scopes in one `git am` order (`media-accel/kernel/*`, then
 `rocket/*`, then `crypto/kernel/*`).
 

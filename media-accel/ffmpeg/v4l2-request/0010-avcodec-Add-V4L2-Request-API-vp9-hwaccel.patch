@@ -23,19 +23,19 @@ Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
  create mode 100644 libavcodec/v4l2_request_vp9.c
 
 diff --git a/configure b/configure
-index 9a6a4cd296..6b86d7c823 100755
+index 7dfddfccd5..d4e7552e59 100755
 --- a/configure
 +++ b/configure
-@@ -3492,6 +3492,8 @@ vp9_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_VP9"
- vp9_dxva2_hwaccel_select="vp9_decoder"
- vp9_nvdec_hwaccel_deps="nvdec"
+@@ -3522,6 +3522,8 @@ vp9_nvdec_hwaccel_deps="nvdec"
  vp9_nvdec_hwaccel_select="vp9_decoder"
+ vp9_nvdec_cuarray_hwaccel_deps="nvdec ffnvcodec_cuarray"
+ vp9_nvdec_cuarray_hwaccel_select="vp9_decoder"
 +vp9_v4l2request_hwaccel_deps="v4l2_request vp9_v4l2_request"
 +vp9_v4l2request_hwaccel_select="vp9_decoder"
  vp9_vaapi_hwaccel_deps="vaapi VADecPictureParameterBufferVP9_bit_depth"
  vp9_vaapi_hwaccel_select="vp9_decoder"
  vp9_vdpau_hwaccel_deps="vdpau VdpPictureInfoVP9"
-@@ -7617,6 +7619,7 @@ if enabled v4l2_request; then
+@@ -7580,6 +7582,7 @@ if enabled v4l2_request; then
      check_cc mpeg2_v4l2_request linux/videodev2.h "int i = V4L2_CID_STATELESS_MPEG2_SEQUENCE"
      check_cc v4l2_m2m_hold_capture_buf linux/videodev2.h "int i = V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF"
      check_cc vp8_v4l2_request linux/videodev2.h "int i = V4L2_CID_STATELESS_VP8_FRAME"
@@ -44,25 +44,25 @@ index 9a6a4cd296..6b86d7c823 100755
      check_pkg_config libudev libudev libudev.h udev_new
      check_struct linux/videodev2.h "struct v4l2_ctrl_hevc_decode_params" num_delta_pocs_of_ref_rps_idx
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index 2c209a0a6a..b68e8bd7b4 100644
+index 81df3333fc..1b978837d4 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -1110,6 +1110,7 @@ OBJS-$(CONFIG_VP9_D3D11VA_HWACCEL)        += dxva2_vp9.o
- OBJS-$(CONFIG_VP9_DXVA2_HWACCEL)          += dxva2_vp9.o
+@@ -1125,6 +1125,7 @@ OBJS-$(CONFIG_VP9_DXVA2_HWACCEL)          += dxva2_vp9.o
  OBJS-$(CONFIG_VP9_D3D12VA_HWACCEL)        += dxva2_vp9.o d3d12va_vp9.o
  OBJS-$(CONFIG_VP9_NVDEC_HWACCEL)          += nvdec_vp9.o
+ OBJS-$(CONFIG_VP9_NVDEC_CUARRAY_HWACCEL)  += nvdec_vp9.o
 +OBJS-$(CONFIG_VP9_V4L2REQUEST_HWACCEL)    += v4l2_request_vp9.o
  OBJS-$(CONFIG_VP9_VAAPI_HWACCEL)          += vaapi_vp9.o
  OBJS-$(CONFIG_VP9_VDPAU_HWACCEL)          += vdpau_vp9.o
  OBJS-$(CONFIG_VP9_VIDEOTOOLBOX_HWACCEL)   += videotoolbox_vp9.o
 diff --git a/libavcodec/hwaccels.h b/libavcodec/hwaccels.h
-index e60ec2a498..ca47a3c906 100644
+index 31b032b912..6098b0bd5d 100644
 --- a/libavcodec/hwaccels.h
 +++ b/libavcodec/hwaccels.h
-@@ -88,6 +88,7 @@ extern const struct FFHWAccel ff_vp9_d3d11va2_hwaccel;
- extern const struct FFHWAccel ff_vp9_d3d12va_hwaccel;
+@@ -99,6 +99,7 @@ extern const struct FFHWAccel ff_vp9_d3d12va_hwaccel;
  extern const struct FFHWAccel ff_vp9_dxva2_hwaccel;
  extern const struct FFHWAccel ff_vp9_nvdec_hwaccel;
+ extern const struct FFHWAccel ff_vp9_nvdec_cuarray_hwaccel;
 +extern const struct FFHWAccel ff_vp9_v4l2request_hwaccel;
  extern const struct FFHWAccel ff_vp9_vaapi_hwaccel;
  extern const struct FFHWAccel ff_vp9_vdpau_hwaccel;
@@ -604,18 +604,18 @@ index 0000000000..e93937daf2
 +    .caps_internal      = HWACCEL_CAP_ASYNC_SAFE,
 +};
 diff --git a/libavcodec/vp9.c b/libavcodec/vp9.c
-index f8289bbaba..02d3262ad3 100644
+index 3a52b8444f..69adaed85c 100644
 --- a/libavcodec/vp9.c
 +++ b/libavcodec/vp9.c
-@@ -168,6 +168,7 @@ static int update_size(AVCodecContext *avctx, int w, int h)
-                      CONFIG_VP9_D3D11VA_HWACCEL * 2 + \
+@@ -175,6 +175,7 @@ static int update_size(AVCodecContext *avctx, int w, int h)
                       CONFIG_VP9_D3D12VA_HWACCEL + \
                       CONFIG_VP9_NVDEC_HWACCEL + \
+                      CONFIG_VP9_NVDEC_CUARRAY_HWACCEL + \
 +                     CONFIG_VP9_V4L2REQUEST_HWACCEL + \
                       CONFIG_VP9_VAAPI_HWACCEL + \
                       CONFIG_VP9_VDPAU_HWACCEL + \
                       CONFIG_VP9_VIDEOTOOLBOX_HWACCEL + \
-@@ -213,6 +214,9 @@ static int update_size(AVCodecContext *avctx, int w, int h)
+@@ -223,6 +224,9 @@ static int update_size(AVCodecContext *avctx, int w, int h)
  #endif
  #if CONFIG_VP9_VULKAN_HWACCEL
              *fmtp++ = AV_PIX_FMT_VULKAN;
@@ -625,7 +625,7 @@ index f8289bbaba..02d3262ad3 100644
  #endif
              break;
          case AV_PIX_FMT_YUV420P12:
-@@ -1963,6 +1967,9 @@ const FFCodec ff_vp9_decoder = {
+@@ -2004,6 +2008,9 @@ const FFCodec ff_vp9_decoder = {
  #endif
  #if CONFIG_VP9_VULKAN_HWACCEL
                                 HWACCEL_VULKAN(vp9),

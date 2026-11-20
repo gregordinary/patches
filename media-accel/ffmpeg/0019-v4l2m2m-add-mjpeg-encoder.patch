@@ -52,10 +52,10 @@ Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
  6 files changed, 122 insertions(+), 4 deletions(-)
 
 diff --git a/configure b/configure
-index 754cdd807b..2360ce4c25 100755
+index 8c59d656bc..d68ed2cbf0 100755
 --- a/configure
 +++ b/configure
-@@ -3652,6 +3652,7 @@ mp3_mf_encoder_deps="mediafoundation"
+@@ -3681,6 +3681,7 @@ mp3_mf_encoder_deps="mediafoundation"
  mp3_mediacodec_decoder_deps="mediacodec"
  mp3_mediacodec_decoder_select="mpegaudioheader"
  mpeg1_cuvid_decoder_deps="cuvid"
@@ -64,22 +64,22 @@ index 754cdd807b..2360ce4c25 100755
  mpeg2_cuvid_decoder_deps="cuvid"
  mpeg2_mmal_decoder_deps="mmal"
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index c6735d32a5..ea2f950d3c 100644
+index 554ee6481a..777a4e1722 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -537,6 +537,7 @@ OBJS-$(CONFIG_MJPEG_DECODER)           += mjpegdec.o mjpegdec_common.o
+@@ -540,6 +540,7 @@ OBJS-$(CONFIG_MJPEG_DECODER)           += mjpegdec.o mjpegdec_common.o gain_map.
  OBJS-$(CONFIG_MJPEG_QSV_DECODER)       += qsvdec.o
  OBJS-$(CONFIG_MJPEG_ENCODER)           += mjpegenc.o mjpegenc_common.o \
-                                           mjpegenc_huffman.o
+                                           mjpegenc_huffman.o gain_map.o
 +OBJS-$(CONFIG_MJPEG_V4L2M2M_ENCODER)   += v4l2_m2m_enc.o
  OBJS-$(CONFIG_MJPEGB_DECODER)          += mjpegbdec.o
  OBJS-$(CONFIG_MJPEG_CUVID_DECODER)     += cuviddec.o
  OBJS-$(CONFIG_MJPEG_QSV_ENCODER)       += qsvenc_jpeg.o
 diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
-index 695214f192..ef4ebf7b17 100644
+index b12dcc405a..19785b762d 100644
 --- a/libavcodec/allcodecs.c
 +++ b/libavcodec/allcodecs.c
-@@ -907,6 +907,7 @@ extern const FFCodec ff_hevc_vulkan_encoder;
+@@ -902,6 +902,7 @@ extern const FFCodec ff_hevc_vulkan_encoder;
  extern const FFCodec ff_libkvazaar_encoder;
  extern const FFCodec ff_mjpeg_cuvid_decoder;
  extern const FFCodec ff_mjpeg_qsv_encoder;

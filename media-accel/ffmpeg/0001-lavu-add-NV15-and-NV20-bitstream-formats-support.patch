@@ -1,21 +1,23 @@
-From 463075094dca3b5549d44edb5ce5d225e2bb3b1c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: nyanmisaka <nst799610810@gmail.com>
 Date: Sun, 8 Mar 2026 14:27:31 +0800
-Subject: [PATCH 1/4] lavu: add NV15 and NV20 bitstream formats support
+Subject: [PATCH] lavu: add NV15 and NV20 bitstream formats support
 
 Signed-off-by: nyanmisaka <nst799610810@gmail.com>
-(cherry picked from commit ee141a1cc531dbfd6bb415185f8ee7e18945adaf)
+(cherry picked from commit edf4576d8e37092f3b6cbf394c742a6caeac8f96)
+[gregordinary: n9.1's enum gains AV_PIX_FMT_CUARRAY and the XYZP12 pair,
+ and NV15 and NV20 follow them.]
 ---
  libavutil/pixdesc.c              | 24 ++++++++++++++++++++++++
- libavutil/pixfmt.h               |  8 +++++---
+ libavutil/pixfmt.h               |  8 ++++----
  tests/ref/fate/sws-pixdesc-query | 10 ++++++++++
- 3 files changed, 39 insertions(+), 3 deletions(-)
+ 3 files changed, 38 insertions(+), 4 deletions(-)
 
 diff --git a/libavutil/pixdesc.c b/libavutil/pixdesc.c
-index 90f9596def..5da0efa6f0 100644
+index c7cbfa8658..03b52afea8 100644
 --- a/libavutil/pixdesc.c
 +++ b/libavutil/pixdesc.c
-@@ -3267,6 +3267,30 @@ static const AVPixFmtDescriptor av_pix_fmt_descriptors[AV_PIX_FMT_NB] = {
+@@ -3295,6 +3295,30 @@ static const AVPixFmtDescriptor av_pix_fmt_descriptors[AV_PIX_FMT_NB] = {
          .name = "ohcodec",
          .flags = AV_PIX_FMT_FLAG_HWACCEL,
      },
@@ -47,7 +49,7 @@ index 90f9596def..5da0efa6f0 100644
  
  static const char * const color_range_names[] = {
 diff --git a/libavutil/pixfmt.h b/libavutil/pixfmt.h
-index 2e7b6457e0..8a302d5b15 100644
+index 750e05b644..99944470a9 100644
 --- a/libavutil/pixfmt.h
 +++ b/libavutil/pixfmt.h
 @@ -196,8 +196,8 @@ enum AVPixelFormat {
@@ -61,26 +63,26 @@ index 2e7b6457e0..8a302d5b15 100644
  
      AV_PIX_FMT_RGBA64BE,     ///< packed RGBA 16:16:16:16, 64bpp, 16R, 16G, 16B, 16A, the 2-byte value for each R/G/B/A component is stored as big-endian
      AV_PIX_FMT_RGBA64LE,     ///< packed RGBA 16:16:16:16, 64bpp, 16R, 16G, 16B, 16A, the 2-byte value for each R/G/B/A component is stored as little-endian
-@@ -499,6 +499,9 @@ enum AVPixelFormat {
+@@ -507,6 +507,8 @@ enum AVPixelFormat {
  
-     AV_PIX_FMT_OHCODEC, /// hardware decoding through openharmony
- 
+     AV_PIX_FMT_XYZP12LE,       ///< planar XYZ 4:4:4, 36 bpp, (msb) 12X, 12Y, 12Z (lsb), the 2-byte value for each X/Y/Z is stored as little-endian, the 4 lower bits are set to 0
+     AV_PIX_FMT_XYZP12BE,       ///< planar XYZ 4:4:4, 36 bpp, (msb) 12X, 12Y, 12Z (lsb), the 2-byte value for each X/Y/Z is stored as big-endian, the 4 lower bits are set to 0
 +    AV_PIX_FMT_NV15,        ///< like P010, but has no zero padding bits, 15bpp, bitstream
 +    AV_PIX_FMT_NV20,        ///< like P210, but has no zero padding bits, 20bpp, bitstream
-+
+ 
      AV_PIX_FMT_NB         ///< number of pixel formats, DO NOT USE THIS if you want to link with shared libav* because the number of formats might differ between versions
  };
- 
-@@ -597,7 +600,6 @@ enum AVPixelFormat {
- #define AV_PIX_FMT_YUVA444P16 AV_PIX_FMT_NE(YUVA444P16BE, YUVA444P16LE)
+@@ -607,8 +609,6 @@ enum AVPixelFormat {
  
  #define AV_PIX_FMT_XYZ12      AV_PIX_FMT_NE(XYZ12BE, XYZ12LE)
+ #define AV_PIX_FMT_XYZP12     AV_PIX_FMT_NE(XYZP12BE, XYZP12LE)
+-
 -#define AV_PIX_FMT_NV20       AV_PIX_FMT_NE(NV20BE,  NV20LE)
  #define AV_PIX_FMT_AYUV64     AV_PIX_FMT_NE(AYUV64BE, AYUV64LE)
  #define AV_PIX_FMT_P010       AV_PIX_FMT_NE(P010BE,  P010LE)
  #define AV_PIX_FMT_P012       AV_PIX_FMT_NE(P012BE,  P012LE)
 diff --git a/tests/ref/fate/sws-pixdesc-query b/tests/ref/fate/sws-pixdesc-query
-index a062088d54..928a0613ce 100644
+index 92a2430ca4..b91447bda8 100644
 --- a/tests/ref/fate/sws-pixdesc-query
 +++ b/tests/ref/fate/sws-pixdesc-query
 @@ -79,6 +79,8 @@ isNBPS:
@@ -92,7 +94,7 @@ index a062088d54..928a0613ce 100644
    nv20be
    nv20le
    p010be
-@@ -263,7 +265,9 @@ isYUV:
+@@ -266,7 +268,9 @@ isYUV:
    ayuv64be
    ayuv64le
    nv12
@@ -102,7 +104,7 @@ index a062088d54..928a0613ce 100644
    nv20be
    nv20le
    nv21
-@@ -395,7 +399,9 @@ isYUV:
+@@ -400,7 +404,9 @@ isYUV:
  
  isPlanarYUV:
    nv12
@@ -112,7 +114,7 @@ index a062088d54..928a0613ce 100644
    nv20be
    nv20le
    nv21
-@@ -496,7 +502,9 @@ isPlanarYUV:
+@@ -503,7 +509,9 @@ isPlanarYUV:
  
  isSemiPlanarYUV:
    nv12
@@ -122,7 +124,7 @@ index a062088d54..928a0613ce 100644
    nv20be
    nv20le
    nv21
-@@ -1011,7 +1019,9 @@ Planar:
+@@ -1018,7 +1026,9 @@ Planar:
    gbrpf32be
    gbrpf32le
    nv12
@@ -132,3 +134,5 @@ index a062088d54..928a0613ce 100644
    nv20be
    nv20le
    nv21
+-- 
+2.43.0

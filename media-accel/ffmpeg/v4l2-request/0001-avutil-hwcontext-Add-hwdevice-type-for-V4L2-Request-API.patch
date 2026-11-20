@@ -34,26 +34,26 @@ Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
  create mode 100644 libavutil/hwcontext_v4l2request_internal.h
 
 diff --git a/configure b/configure
-index 86a2437265..7df94514e2 100755
+index f5e1fbb71b..9c631de35f 100755
 --- a/configure
 +++ b/configure
-@@ -368,6 +368,7 @@ External library support:
-   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
+@@ -366,6 +366,7 @@ External library support:
+   --disable-nvenc          disable Nvidia video encoding code [autodetect]
    --enable-rkmpp           enable Rockchip Media Process Platform code [no]
    --disable-v4l2-m2m       disable V4L2 mem2mem code [autodetect]
 +  --enable-v4l2-request    enable V4L2 Request API code [no]
    --disable-vaapi          disable Video Acceleration API (mainly Unix/Intel) code [autodetect]
    --disable-vdpau          disable Nvidia Video Decode and Presentation API for Unix code [autodetect]
    --disable-videotoolbox   disable VideoToolbox code [autodetect]
-@@ -2162,6 +2163,7 @@ HWACCEL_LIBRARY_LIST="
+@@ -2177,6 +2178,7 @@ HWACCEL_LIBRARY_LIST="
+     libvpl
      mmal
-     omx
      opencl
 +    v4l2_request
  "
  
  DOCUMENT_LIST="
-@@ -3342,6 +3344,8 @@ dxva2_deps="dxva2api_h DXVA2_ConfigPictureDecode ole32 user32"
+@@ -3346,6 +3348,8 @@ dxva2_deps="dxva2api_h DXVA2_ConfigPictureDecode ole32 user32"
  ffnvcodec_deps_any="libdl LoadLibrary"
  mediacodec_deps="android mediandk pthreads"
  nvdec_deps="ffnvcodec"
@@ -62,7 +62,7 @@ index 86a2437265..7df94514e2 100755
  vaapi_x11_deps="xlib_x11"
  videotoolbox_hwaccel_deps="videotoolbox pthreads"
  videotoolbox_hwaccel_extralibs="-framework QuartzCore"
-@@ -7597,6 +7601,10 @@ if enabled v4l2_m2m; then
+@@ -7560,6 +7564,10 @@ if enabled v4l2_m2m; then
      check_cc vp9_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_VP9;"
  fi
  
@@ -74,10 +74,10 @@ index 86a2437265..7df94514e2 100755
  test_code cc sys/videoio.h "struct v4l2_frmsizeenum vfse; vfse.discrete.width = 0;" && enable_sanitized struct_v4l2_frmivalenum_discrete
  
 diff --git a/libavutil/Makefile b/libavutil/Makefile
-index c5241895ff..fa161b9bc5 100644
+index 1f91fd5d17..007e42437c 100644
 --- a/libavutil/Makefile
 +++ b/libavutil/Makefile
-@@ -52,6 +52,7 @@ HEADERS = adler32.h                                                     \
+@@ -53,6 +53,7 @@ HEADERS = adler32.h                                                     \
            hwcontext_mediacodec.h                                        \
            hwcontext_opencl.h                                            \
            hwcontext_oh.h                                                \
@@ -85,7 +85,7 @@ index c5241895ff..fa161b9bc5 100644
            hwcontext_vaapi.h                                             \
            hwcontext_videotoolbox.h                                      \
            hwcontext_vdpau.h                                             \
-@@ -214,6 +215,7 @@ OBJS-$(CONFIG_MEDIACODEC)               += hwcontext_mediacodec.o
+@@ -218,6 +219,7 @@ OBJS-$(CONFIG_MEDIACODEC)               += hwcontext_mediacodec.o
  OBJS-$(CONFIG_OHCODEC)                  += hwcontext_oh.o
  OBJS-$(CONFIG_OPENCL)                   += hwcontext_opencl.o
  OBJS-$(CONFIG_QSV)                      += hwcontext_qsv.o
@@ -93,7 +93,7 @@ index c5241895ff..fa161b9bc5 100644
  OBJS-$(CONFIG_VAAPI)                    += hwcontext_vaapi.o
  OBJS-$(CONFIG_VIDEOTOOLBOX)             += hwcontext_videotoolbox.o
  OBJS-$(CONFIG_VDPAU)                    += hwcontext_vdpau.o
-@@ -245,6 +247,8 @@ SKIPHEADERS-$(CONFIG_AMF)              += hwcontext_amf.h               \
+@@ -250,6 +252,8 @@ SKIPHEADERS-$(CONFIG_AMF)              += hwcontext_amf.h               \
                                            hwcontext_amf_internal.h
  SKIPHEADERS-$(CONFIG_QSV)              += hwcontext_qsv.h
  SKIPHEADERS-$(CONFIG_OPENCL)           += hwcontext_opencl.h
@@ -103,10 +103,10 @@ index c5241895ff..fa161b9bc5 100644
  SKIPHEADERS-$(CONFIG_VIDEOTOOLBOX)     += hwcontext_videotoolbox.h
  SKIPHEADERS-$(CONFIG_VDPAU)            += hwcontext_vdpau.h
 diff --git a/libavutil/hwcontext.c b/libavutil/hwcontext.c
-index 83bd7457e8..7f93d90c8e 100644
+index 297cc5dd85..f8bcbcd6d8 100644
 --- a/libavutil/hwcontext.c
 +++ b/libavutil/hwcontext.c
-@@ -71,6 +71,9 @@ static const HWContextType * const hw_table[] = {
+@@ -72,6 +72,9 @@ static const HWContextType * const hw_table[] = {
  #endif
  #if CONFIG_OHCODEC
      &ff_hwcontext_type_oh,
@@ -116,7 +116,7 @@ index 83bd7457e8..7f93d90c8e 100644
  #endif
      NULL,
  };
-@@ -83,6 +86,7 @@ static const char *const hw_type_names[] = {
+@@ -84,6 +87,7 @@ static const char *const hw_type_names[] = {
      [AV_HWDEVICE_TYPE_D3D12VA] = "d3d12va",
      [AV_HWDEVICE_TYPE_OPENCL] = "opencl",
      [AV_HWDEVICE_TYPE_QSV]    = "qsv",
@@ -125,7 +125,7 @@ index 83bd7457e8..7f93d90c8e 100644
      [AV_HWDEVICE_TYPE_VDPAU]  = "vdpau",
      [AV_HWDEVICE_TYPE_VIDEOTOOLBOX] = "videotoolbox",
 diff --git a/libavutil/hwcontext.h b/libavutil/hwcontext.h
-index 29374cf0a7..88e47cc7f5 100644
+index 8e414f4863..bd64460e78 100644
 --- a/libavutil/hwcontext.h
 +++ b/libavutil/hwcontext.h
 @@ -41,6 +41,7 @@ enum AVHWDeviceType {
@@ -137,10 +137,10 @@ index 29374cf0a7..88e47cc7f5 100644
  
  /**
 diff --git a/libavutil/hwcontext_internal.h b/libavutil/hwcontext_internal.h
-index dcfdc2016a..94e4da16c0 100644
+index e100233e35..163cf696fa 100644
 --- a/libavutil/hwcontext_internal.h
 +++ b/libavutil/hwcontext_internal.h
-@@ -158,6 +158,7 @@ extern const HWContextType ff_hwcontext_type_drm;
+@@ -175,6 +175,7 @@ extern const HWContextType ff_hwcontext_type_drm;
  extern const HWContextType ff_hwcontext_type_dxva2;
  extern const HWContextType ff_hwcontext_type_opencl;
  extern const HWContextType ff_hwcontext_type_qsv;

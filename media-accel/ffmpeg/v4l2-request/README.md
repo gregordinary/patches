@@ -11,14 +11,16 @@ pins. The graft and the fixes in [`../`](../) apply after them.
 
 ## Provenance
 
-The patches are Kwiboo's `FFmpeg` branch `v4l2-request-n8.1`, carried verbatim: the
-13 commits from `n8.1` to the branch tip `b57fbbe5`, in branch order, with the
-original authors and dates. Each patch's patch-id equals its branch commit's.
+The patches are Kwiboo's `FFmpeg` branch `v4l2-request-n8.1`: the 13 commits from
+`n8.1` to the branch tip `b57fbbe5`, in branch order, with the original authors and
+dates, rebased onto the release tag the SoC layer pins. Each patch adds and removes
+exactly the lines its branch commit does; the rebase moves context only. The one
+exception is `0005`'s fall-through comment, which is `av_fallthrough` here: the base
+builds with `-Wimplicit-fallthrough=5`, which accepts no other marker, and the patch
+carries a note saying so.
 
-The branch is based on `n8.1`, and the scope's base is a later tag on
-`release/8.1`. All 13 apply to `n8.1.3` with no conflict under strict `git am`.
 Carrying them rather than pinning the branch is what lets the image take FFmpeg's
-point releases as they are tagged.
+releases as they are tagged.
 
 | Patch | Author | Adds |
 |---|---|---|
@@ -38,9 +40,12 @@ point releases as they are tagged.
 
 ## Re-syncing
 
-When Kwiboo moves the branch, regenerate this directory from it rather than
-editing a patch here. Replace the 13 files with `git format-patch --zero-commit -N
---filename-max-length=100 <base>..<tip>`, strip the trailing blank line after the
-version trailer, and check that the whole `ffmpeg` scope still applies under strict
-`git am` onto the pinned tag. The fixes in [`../`](../) that name the request-API
+When Kwiboo moves the branch, or the SoC layer moves the tag, regenerate this
+directory rather than editing a patch here. Rebase the branch's commits onto the
+pinned tag, export them with `git format-patch --zero-commit -N
+--filename-max-length=100 <tag>..<rebased tip>`, and strip the trailing blank line
+after the version trailer. Keep an existing file wherever it still applies at its
+position under strict `git am` and adds and removes the same lines, so the directory
+changes only where the rebase did, and check that the whole `ffmpeg` scope applies
+under strict `git am` onto the pinned tag. The fixes in [`../`](../) that name the request-API
 base (`0005`, `0016`) are the ones to re-read when a hwaccel file moves.

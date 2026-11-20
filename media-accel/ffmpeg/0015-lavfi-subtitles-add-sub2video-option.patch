@@ -32,25 +32,28 @@ the alpha error survives it and the colour is premultiplied a second time.
 sub2video also drops frames libass renders nothing into, which is what pairs
 with an overlay filter's eof_action=pass:repeatlast=0 -- a subtitle branch is
 sparse by nature and would otherwise push blank frames for the whole stream.
-Shaping defaults to complex here, where the plain filter leaves it to libass.
 
 Origin: jellyfin-ffmpeg, debian/patches/0022-add-sub2video-option-to-subtitles-filter.patch
 
-[gregordinary: taken unchanged; it applies to this base with no conflict.]
+[gregordinary: rebased onto n9.1. The base reads the ass filter's script in
+ read_track(), so the end-of-track timestamp is computed there and follows a
+ script replaced at runtime. The base also gives the subtitles filter its own
+ shaping option; the copy this patch added is dropped, and with it a default
+ of complex, which is what libass selects on its own.]
 
 Signed-off-by: nyanmisaka <nst799610810@gmail.com>
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  libavfilter/drawutils.c    | 182 +++++++++++++++++++++++++++++++++----
  libavfilter/drawutils.h    |  12 ++-
- libavfilter/vf_subtitles.c |  72 +++++++++++++--
- 3 files changed, 239 insertions(+), 27 deletions(-)
+ libavfilter/vf_subtitles.c |  62 +++++++++++--
+ 3 files changed, 233 insertions(+), 23 deletions(-)
 
 diff --git a/libavfilter/drawutils.c b/libavfilter/drawutils.c
-index 75bf8f4..deb702e 100644
+index b1ac440b06..8af611b17a 100644
 --- a/libavfilter/drawutils.c
 +++ b/libavfilter/drawutils.c
-@@ -461,7 +461,7 @@ void ff_blend_rectangle(FFDrawContext *draw, FFDrawColor *color,
+@@ -478,7 +478,7 @@ void ff_blend_rectangle(FFDrawContext *draw, FFDrawColor *color,
  
  static void blend_pixel16(uint8_t *dst, unsigned src, unsigned alpha,
                            const uint8_t *mask, int mask_linesize, int l2depth,
@@ -59,7 +62,7 @@ index 75bf8f4..deb702e 100644
  {
      unsigned t = 0;
      unsigned xmshf = 3 - l2depth;
-@@ -480,12 +480,13 @@ static void blend_pixel16(uint8_t *dst, unsigned src, unsigned alpha,
+@@ -497,12 +497,13 @@ static void blend_pixel16(uint8_t *dst, unsigned src, unsigned alpha,
          mask += mask_linesize;
      }
      alpha = (t >> shift) * alpha;
@@ -74,7 +77,7 @@ index 75bf8f4..deb702e 100644
  {
      unsigned t = 0;
      unsigned xmshf = 3 - l2depth;
-@@ -503,6 +504,7 @@ static void blend_pixel(uint8_t *dst, unsigned src, unsigned alpha,
+@@ -520,6 +521,7 @@ static void blend_pixel(uint8_t *dst, unsigned src, unsigned alpha,
          mask += mask_linesize;
      }
      alpha = (t >> shift) * alpha;
@@ -82,7 +85,7 @@ index 75bf8f4..deb702e 100644
      *dst = ((0x1010101 - alpha) * *dst + alpha * src) >> 24;
  }
  
-@@ -510,48 +512,130 @@ static void blend_line_hv16(uint8_t *dst, int dst_delta,
+@@ -527,48 +529,130 @@ static void blend_line_hv16(uint8_t *dst, int dst_delta,
                              unsigned src, unsigned alpha,
                              const uint8_t *mask, int mask_linesize, int l2depth, int w,
                              unsigned hsub, unsigned vsub,
@@ -221,7 +224,7 @@ index 75bf8f4..deb702e 100644
  }
  
  void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
-@@ -589,13 +673,79 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
+@@ -607,13 +691,79 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
          y_sub = y0;
          subsampling_bounds(draw->hsub[plane], &x_sub, &w_sub, &left, &right);
          subsampling_bounds(draw->vsub[plane], &y_sub, &h_sub, &top, &bottom);
@@ -301,15 +304,15 @@ index 75bf8f4..deb702e 100644
              p = p0 + offset;
              m = mask;
              if (top) {
-@@ -604,13 +754,13 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
-                                   color->comp[plane].u8[index], alpha,
+@@ -622,13 +772,13 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
+                                   over.comp[plane].u8[index], alpha,
                                    m, mask_linesize, l2depth, w_sub,
                                    draw->hsub[plane], draw->vsub[plane],
 -                                  xm0, left, right, top);
 +                                  xm0, left, right, top, srca_opaque);
                  } else {
                      blend_line_hv16(p, draw->pixelstep[plane],
-                                     color->comp[plane].u16[index], alpha,
+                                     over.comp[plane].u16[index], alpha,
                                      m, mask_linesize, l2depth, w_sub,
                                      draw->hsub[plane], draw->vsub[plane],
 -                                    xm0, left, right, top);
@@ -317,8 +320,8 @@ index 75bf8f4..deb702e 100644
                  }
                  p += dst_linesize[plane];
                  m += top * mask_linesize;
-@@ -621,7 +771,7 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
-                                   color->comp[plane].u8[index], alpha,
+@@ -639,7 +789,7 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
+                                   over.comp[plane].u8[index], alpha,
                                    m, mask_linesize, l2depth, w_sub,
                                    draw->hsub[plane], draw->vsub[plane],
 -                                  xm0, left, right, 1 << draw->vsub[plane]);
@@ -326,8 +329,8 @@ index 75bf8f4..deb702e 100644
                      p += dst_linesize[plane];
                      m += mask_linesize << draw->vsub[plane];
                  }
-@@ -631,7 +781,7 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
-                                     color->comp[plane].u16[index], alpha,
+@@ -649,7 +799,7 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
+                                     over.comp[plane].u16[index], alpha,
                                      m, mask_linesize, l2depth, w_sub,
                                      draw->hsub[plane], draw->vsub[plane],
 -                                    xm0, left, right, 1 << draw->vsub[plane]);
@@ -335,15 +338,15 @@ index 75bf8f4..deb702e 100644
                      p += dst_linesize[plane];
                      m += mask_linesize << draw->vsub[plane];
                  }
-@@ -642,13 +792,13 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
-                                   color->comp[plane].u8[index], alpha,
+@@ -660,13 +810,13 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
+                                   over.comp[plane].u8[index], alpha,
                                    m, mask_linesize, l2depth, w_sub,
                                    draw->hsub[plane], draw->vsub[plane],
 -                                  xm0, left, right, bottom);
 +                                  xm0, left, right, bottom, srca_opaque);
                  } else {
                      blend_line_hv16(p, draw->pixelstep[plane],
-                                     color->comp[plane].u16[index], alpha,
+                                     over.comp[plane].u16[index], alpha,
                                      m, mask_linesize, l2depth, w_sub,
                                      draw->hsub[plane], draw->vsub[plane],
 -                                    xm0, left, right, bottom);
@@ -352,7 +355,7 @@ index 75bf8f4..deb702e 100644
              }
          }
 diff --git a/libavfilter/drawutils.h b/libavfilter/drawutils.h
-index a7fc967..885d132 100644
+index a7fc967a85..885d132232 100644
 --- a/libavfilter/drawutils.h
 +++ b/libavfilter/drawutils.h
 @@ -61,7 +61,17 @@ typedef struct FFDrawColor {
@@ -375,7 +378,7 @@ index a7fc967..885d132 100644
  /**
   * Init a draw context.
 diff --git a/libavfilter/vf_subtitles.c b/libavfilter/vf_subtitles.c
-index dde4535..16b13fe 100644
+index f90ac40e22..f35e988588 100644
 --- a/libavfilter/vf_subtitles.c
 +++ b/libavfilter/vf_subtitles.c
 @@ -38,6 +38,7 @@
@@ -386,7 +389,7 @@ index dde4535..16b13fe 100644
  
  #include "filters.h"
  #include "drawutils.h"
-@@ -64,6 +65,9 @@ typedef struct AssContext {
+@@ -65,6 +66,9 @@ typedef struct AssContext {
      int shaping;
      FFDrawContext draw;
      int wrap_unicode;
@@ -396,21 +399,17 @@ index dde4535..16b13fe 100644
  } AssContext;
  
  #define OFFSET(x) offsetof(AssContext, x)
-@@ -74,7 +78,12 @@ typedef struct AssContext {
+@@ -75,7 +79,8 @@ typedef struct AssContext {
      {"f",              "set the filename of file to read",                         OFFSET(filename),   AV_OPT_TYPE_STRING,     {.str = NULL},  0, 0, FLAGS }, \
      {"original_size",  "set the size of the original video (used to scale fonts)", OFFSET(original_w), AV_OPT_TYPE_IMAGE_SIZE, {.str = NULL},  0, 0, FLAGS }, \
      {"fontsdir",       "set the directory containing the fonts to read",           OFFSET(fontsdir),   AV_OPT_TYPE_STRING,     {.str = NULL},  0, 0, FLAGS }, \
 -    {"alpha",          "enable processing of alpha channel",                       OFFSET(alpha),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },         0,        1, FLAGS }, \
 +    {"alpha",          "enable processing of alpha channel",                       OFFSET(alpha),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },  0, 1, FLAGS }, \
 +    {"sub2video",      "enable textual subtitle to video mode",                    OFFSET(sub2video),  AV_OPT_TYPE_BOOL,       {.i64 = 0   },  0, 1, FLAGS }, \
-+    {"shaping",        "set shaping engine",                                       OFFSET(shaping),    AV_OPT_TYPE_INT,        {.i64 = ASS_SHAPING_COMPLEX }, -1, 1, FLAGS, .unit = "shaping_mode"}, \
-+        {"auto",       NULL,              0, AV_OPT_TYPE_CONST, {.i64 = -1},                  INT_MIN, INT_MAX, FLAGS, .unit = "shaping_mode"}, \
-+        {"simple",     "simple shaping",  0, AV_OPT_TYPE_CONST, {.i64 = ASS_SHAPING_SIMPLE},  INT_MIN, INT_MAX, FLAGS, .unit = "shaping_mode"}, \
-+        {"complex",    "complex shaping", 0, AV_OPT_TYPE_CONST, {.i64 = ASS_SHAPING_COMPLEX}, INT_MIN, INT_MAX, FLAGS, .unit = "shaping_mode"}, \
  
- /* libass supports a log level ranging from 0 to 7 */
- static const int ass_libavfilter_log_level_map[] = {
-@@ -184,12 +193,28 @@ static int config_input(AVFilterLink *inlink)
+ #define SHAPING_OPTIONS \
+     {"shaping", "set shaping engine", OFFSET(shaping), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, 1, FLAGS, .unit = "shaping_mode"}, \
+@@ -186,12 +191,28 @@ static int config_input(AVFilterLink *inlink)
  {
      AVFilterContext *ctx = inlink->dst;
      AssContext *ass = ctx->priv;
@@ -440,7 +439,7 @@ index dde4535..16b13fe 100644
      if (ret < 0) {
          av_log(ctx, AV_LOG_ERROR, "Failed to initialize FFDrawContext\n");
          return ret;
-@@ -206,6 +231,8 @@ static int config_input(AVFilterLink *inlink)
+@@ -208,6 +229,8 @@ static int config_input(AVFilterLink *inlink)
      if (ass->shaping != -1)
          ass_set_shaper(ass->renderer, ass->shaping);
  
@@ -449,7 +448,7 @@ index dde4535..16b13fe 100644
      return 0;
  }
  
-@@ -234,20 +261,44 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
+@@ -236,20 +259,44 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
  {
      AVFilterContext *ctx = inlink->dst;
      AVFilterLink *outlink = ctx->outputs[0];
@@ -496,28 +495,15 @@ index dde4535..16b13fe 100644
  static const AVFilterPad ass_inputs[] = {
      {
          .name             = "default",
-@@ -262,10 +313,6 @@ static const AVFilterPad ass_inputs[] = {
- 
- static const AVOption ass_options[] = {
-     COMMON_OPTIONS
--    {"shaping", "set shaping engine", OFFSET(shaping), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, 1, FLAGS, .unit = "shaping_mode"},
--        {"auto", NULL,                 0, AV_OPT_TYPE_CONST, {.i64 = -1},                  INT_MIN, INT_MAX, FLAGS, .unit = "shaping_mode"},
--        {"simple",  "simple shaping",  0, AV_OPT_TYPE_CONST, {.i64 = ASS_SHAPING_SIMPLE},  INT_MIN, INT_MAX, FLAGS, .unit = "shaping_mode"},
--        {"complex", "complex shaping", 0, AV_OPT_TYPE_CONST, {.i64 = ASS_SHAPING_COMPLEX}, INT_MIN, INT_MAX, FLAGS, .unit = "shaping_mode"},
-     {NULL},
- };
- 
-@@ -289,6 +336,9 @@ static av_cold int init_ass(AVFilterContext *ctx)
-                ass->filename);
-         return AVERROR(EINVAL);
-     }
-+
+@@ -285,6 +332,7 @@ static int read_track(AVFilterContext *ctx)
+     if (ass->track)
+         ass_free_track(ass->track);
+     ass->track = track;
 +    get_max_timestamp(ctx);
-+
      return 0;
  }
  
-@@ -310,8 +360,8 @@ const FFFilter ff_vf_ass = {
+@@ -336,8 +384,8 @@ const FFFilter ff_vf_ass = {
  static const AVOption subtitles_options[] = {
      COMMON_OPTIONS
      {"charenc",      "set input character encoding", OFFSET(charenc),      AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, FLAGS},
@@ -528,7 +514,7 @@ index dde4535..16b13fe 100644
      {"force_style",  "force subtitle style",         OFFSET(force_style),  AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, FLAGS},
  #if FF_ASS_FEATURE_WRAP_UNICODE
      {"wrap_unicode", "break lines according to the Unicode Line Breaking Algorithm", OFFSET(wrap_unicode), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, FLAGS },
-@@ -540,6 +590,8 @@ static av_cold int init_subtitles(AVFilterContext *ctx)
+@@ -572,6 +620,8 @@ static av_cold int init_subtitles(AVFilterContext *ctx)
          avsubtitle_free(&sub);
      }
  

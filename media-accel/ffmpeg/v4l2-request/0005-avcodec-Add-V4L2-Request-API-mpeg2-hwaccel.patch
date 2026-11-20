@@ -11,6 +11,8 @@ control id V4L2_CID_STATELESS_MPEG2_SEQUENCE, added in v5.14.
 This also change v4l2_request hwaccel to use autodetect in configure.
 
 Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+[gregordinary: rebased onto n9.1. The fall-through comment becomes
+ av_fallthrough, the only marker 9.1's -Wimplicit-fallthrough=5 accepts.]
 ---
  configure                       |   7 +-
  libavcodec/Makefile             |   1 +
@@ -21,11 +23,11 @@ Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
  create mode 100644 libavcodec/v4l2_request_mpeg2.c
 
 diff --git a/configure b/configure
-index 24351d37c2..0d25c03111 100755
+index 66247f600b..f9b95f5744 100755
 --- a/configure
 +++ b/configure
-@@ -368,7 +368,7 @@ External library support:
-   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
+@@ -366,7 +366,7 @@ External library support:
+   --disable-nvenc          disable Nvidia video encoding code [autodetect]
    --enable-rkmpp           enable Rockchip Media Process Platform code [no]
    --disable-v4l2-m2m       disable V4L2 mem2mem code [autodetect]
 -  --enable-v4l2-request    enable V4L2 Request API code [no]
@@ -33,7 +35,7 @@ index 24351d37c2..0d25c03111 100755
    --disable-vaapi          disable Video Acceleration API (mainly Unix/Intel) code [autodetect]
    --disable-vdpau          disable Nvidia Video Decode and Presentation API for Unix code [autodetect]
    --disable-videotoolbox   disable VideoToolbox code [autodetect]
-@@ -2143,6 +2143,7 @@ HWACCEL_AUTODETECT_LIBRARY_LIST="
+@@ -2159,6 +2159,7 @@ HWACCEL_AUTODETECT_LIBRARY_LIST="
      videotoolbox
      vulkan
      v4l2_m2m
@@ -41,24 +43,24 @@ index 24351d37c2..0d25c03111 100755
  "
  
  # catchall list of things that require external libs to link
-@@ -2164,7 +2165,6 @@ HWACCEL_LIBRARY_LIST="
+@@ -2179,7 +2180,6 @@ HWACCEL_LIBRARY_LIST="
+     libvpl
      mmal
-     omx
      opencl
 -    v4l2_request
  "
  
  DOCUMENT_LIST="
-@@ -3435,6 +3435,8 @@ mpeg2_dxva2_hwaccel_deps="dxva2"
- mpeg2_dxva2_hwaccel_select="mpeg2video_decoder"
- mpeg2_nvdec_hwaccel_deps="nvdec"
+@@ -3455,6 +3455,8 @@ mpeg2_nvdec_hwaccel_deps="nvdec"
  mpeg2_nvdec_hwaccel_select="mpeg2video_decoder"
+ mpeg2_nvdec_cuarray_hwaccel_deps="nvdec ffnvcodec_cuarray"
+ mpeg2_nvdec_cuarray_hwaccel_select="mpeg2video_decoder"
 +mpeg2_v4l2request_hwaccel_deps="v4l2_request mpeg2_v4l2_request"
 +mpeg2_v4l2request_hwaccel_select="mpeg2video_decoder"
  mpeg2_vaapi_hwaccel_deps="vaapi"
  mpeg2_vaapi_hwaccel_select="mpeg2video_decoder"
  mpeg2_vdpau_hwaccel_deps="vdpau"
-@@ -7603,6 +7605,7 @@ if enabled v4l2_m2m; then
+@@ -7566,6 +7568,7 @@ if enabled v4l2_m2m; then
  fi
  
  if enabled v4l2_request; then
@@ -67,34 +69,34 @@ index 24351d37c2..0d25c03111 100755
      check_func_headers "linux/media.h linux/videodev2.h" v4l2_timeval_to_ns
      check_pkg_config libudev libudev libudev.h udev_new
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
-index f680897c9e..0898f8232a 100644
+index b33972e139..aafa9c7235 100644
 --- a/libavcodec/Makefile
 +++ b/libavcodec/Makefile
-@@ -1086,6 +1086,7 @@ OBJS-$(CONFIG_MPEG2_DXVA2_HWACCEL)        += dxva2_mpeg2.o
- OBJS-$(CONFIG_MPEG2_D3D12VA_HWACCEL)      += dxva2_mpeg2.o d3d12va_mpeg2.o
+@@ -1097,6 +1097,7 @@ OBJS-$(CONFIG_MPEG2_D3D12VA_HWACCEL)      += dxva2_mpeg2.o d3d12va_mpeg2.o
  OBJS-$(CONFIG_MPEG2_NVDEC_HWACCEL)        += nvdec_mpeg12.o
+ OBJS-$(CONFIG_MPEG2_NVDEC_CUARRAY_HWACCEL) += nvdec_mpeg12.o
  OBJS-$(CONFIG_MPEG2_QSV_HWACCEL)          += qsvdec.o
 +OBJS-$(CONFIG_MPEG2_V4L2REQUEST_HWACCEL)  += v4l2_request_mpeg2.o
  OBJS-$(CONFIG_MPEG2_VAAPI_HWACCEL)        += vaapi_mpeg2.o
  OBJS-$(CONFIG_MPEG2_VDPAU_HWACCEL)        += vdpau_mpeg12.o
  OBJS-$(CONFIG_MPEG2_VIDEOTOOLBOX_HWACCEL) += videotoolbox.o
 diff --git a/libavcodec/hwaccels.h b/libavcodec/hwaccels.h
-index 3de191288a..8893064ce7 100644
+index e593bf3b71..b0b217ef25 100644
 --- a/libavcodec/hwaccels.h
 +++ b/libavcodec/hwaccels.h
-@@ -60,6 +60,7 @@ extern const struct FFHWAccel ff_mpeg2_d3d11va2_hwaccel;
- extern const struct FFHWAccel ff_mpeg2_d3d12va_hwaccel;
+@@ -66,6 +66,7 @@ extern const struct FFHWAccel ff_mpeg2_d3d12va_hwaccel;
  extern const struct FFHWAccel ff_mpeg2_dxva2_hwaccel;
  extern const struct FFHWAccel ff_mpeg2_nvdec_hwaccel;
+ extern const struct FFHWAccel ff_mpeg2_nvdec_cuarray_hwaccel;
 +extern const struct FFHWAccel ff_mpeg2_v4l2request_hwaccel;
  extern const struct FFHWAccel ff_mpeg2_vaapi_hwaccel;
  extern const struct FFHWAccel ff_mpeg2_vdpau_hwaccel;
  extern const struct FFHWAccel ff_mpeg2_videotoolbox_hwaccel;
 diff --git a/libavcodec/mpeg12dec.c b/libavcodec/mpeg12dec.c
-index 4c83bcfa90..c65e9e3b86 100644
+index e30fa843cc..b9dcff97a6 100644
 --- a/libavcodec/mpeg12dec.c
 +++ b/libavcodec/mpeg12dec.c
-@@ -821,6 +821,9 @@ static const enum AVPixelFormat mpeg2_hwaccel_pixfmt_list_420[] = {
+@@ -826,6 +826,9 @@ static const enum AVPixelFormat mpeg2_hwaccel_pixfmt_list_420[] = {
  #endif
  #if CONFIG_MPEG2_VIDEOTOOLBOX_HWACCEL
      AV_PIX_FMT_VIDEOTOOLBOX,
@@ -104,7 +106,7 @@ index 4c83bcfa90..c65e9e3b86 100644
  #endif
      AV_PIX_FMT_YUV420P,
      AV_PIX_FMT_NONE
-@@ -2736,6 +2739,9 @@ const FFCodec ff_mpeg2video_decoder = {
+@@ -2741,6 +2744,9 @@ const FFCodec ff_mpeg2video_decoder = {
  #endif
  #if CONFIG_MPEG2_VIDEOTOOLBOX_HWACCEL
                          HWACCEL_VIDEOTOOLBOX(mpeg2),
@@ -116,7 +118,7 @@ index 4c83bcfa90..c65e9e3b86 100644
                      },
 diff --git a/libavcodec/v4l2_request_mpeg2.c b/libavcodec/v4l2_request_mpeg2.c
 new file mode 100644
-index 0000000000..5d89b7168e
+index 0000000000..3a96c92dc6
 --- /dev/null
 +++ b/libavcodec/v4l2_request_mpeg2.c
 @@ -0,0 +1,184 @@
@@ -222,7 +224,7 @@ index 0000000000..5d89b7168e
 +        if (s->next_pic.ptr)
 +            controls->picture.backward_ref_ts =
 +                ff_v4l2_request_get_capture_timestamp(s->next_pic.ptr->f);
-+        // fall-through
++        av_fallthrough;
 +    case AV_PICTURE_TYPE_P:
 +        if (s->last_pic.ptr)
 +            controls->picture.forward_ref_ts =
