@@ -48,14 +48,14 @@ whose conversions happen in buffers of its own.
 Signed-off-by: gregordinary <33880035+gregordinary@users.noreply.github.com>
 ---
  doc/indevs.texi    |  32 ++++
- libavdevice/v4l2.c | 402 ++++++++++++++++++++++++++++++++++++++++++---
- 2 files changed, 409 insertions(+), 25 deletions(-)
+ libavdevice/v4l2.c | 405 ++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 411 insertions(+), 26 deletions(-)
 
 diff --git a/doc/indevs.texi b/doc/indevs.texi
-index 8822e07..29cfcde 100644
+index dc4b92a0a0..dd50586e9f 100644
 --- a/doc/indevs.texi
 +++ b/doc/indevs.texi
-@@ -1370,6 +1370,14 @@ frame rate and size as previously set:
+@@ -1385,6 +1385,14 @@ frame rate and size as previously set:
  @example
  ffmpeg -f video4linux2 -input_format mjpeg -i /dev/video0 out.mpeg
  @end example
@@ -70,7 +70,7 @@ index 8822e07..29cfcde 100644
  @end itemize
  
  For more information about Video4Linux, check @url{http://linuxtv.org/}.
-@@ -1446,6 +1454,30 @@ Default value is @code{default}.
+@@ -1461,6 +1469,30 @@ Default value is @code{default}.
  @item use_libv4l2
  Use libv4l2 (v4l-utils) conversion functions. Default is 0.
  
@@ -102,7 +102,7 @@ index 8822e07..29cfcde 100644
  
  @section vfwcap
 diff --git a/libavdevice/v4l2.c b/libavdevice/v4l2.c
-index a51fc70..09af2ff 100644
+index 63d151140a..ad0f999b42 100644
 --- a/libavdevice/v4l2.c
 +++ b/libavdevice/v4l2.c
 @@ -52,6 +52,12 @@
@@ -118,7 +118,7 @@ index a51fc70..09af2ff 100644
  static const int desired_video_buffers = 256;
  
  #define V4L_ALLFORMATS  3
-@@ -107,6 +113,16 @@ struct video_data {
+@@ -111,6 +117,16 @@ struct video_data {
      int list_standard;  /**< Set by a private option. */
      char *framerate;    /**< Set by a private option. */
  
@@ -135,7 +135,26 @@ index a51fc70..09af2ff 100644
      int use_libv4l2;
      int (*open_f)(const char *file, int oflag, ...);
      int (*close_f)(int fd);
-@@ -376,6 +392,13 @@ static int mmap_init(AVFormatContext *ctx)
+@@ -362,8 +378,16 @@ static void list_standards(AVFormatContext *ctx)
+ 
+ static void mmap_free(struct video_data *s, int n)
+ {
+-    for (int i = 0; i < n; i++)
+-        v4l2_munmap(s->buf_data[i].start, s->buf_data[i].len);
++    for (int i = 0; i < n; i++) {
++        /* A DRM PRIME buffer was exported rather than mapped. */
++        if (s->dmabuf_fd) {
++            if (s->dmabuf_fd[i] >= 0)
++                close(s->dmabuf_fd[i]);
++        } else {
++            v4l2_munmap(s->buf_data[i].start, s->buf_data[i].len);
++        }
++    }
++    av_freep(&s->dmabuf_fd);
+     av_freep(&s->buf_data);
+ }
+ 
+@@ -387,12 +411,29 @@ static int mmap_init(AVFormatContext *ctx)
          av_log(ctx, AV_LOG_ERROR, "Insufficient buffer memory\n");
          return AVERROR(ENOMEM);
      }
@@ -147,18 +166,16 @@ index a51fc70..09af2ff 100644
 +        return AVERROR(ENOMEM);
 +    }
      s->buffers = req.count;
-     s->buf_start = av_malloc_array(s->buffers, sizeof(void *));
-     if (!s->buf_start) {
-@@ -388,6 +411,17 @@ static int mmap_init(AVFormatContext *ctx)
-         av_freep(&s->buf_start);
+     s->buf_data = av_malloc_array(s->buffers, sizeof(struct buf_data));
+     if (!s->buf_data) {
+         av_log(ctx, AV_LOG_ERROR, "Cannot allocate buffer data\n");
          return AVERROR(ENOMEM);
      }
 +    if (s->drm_prime) {
 +        s->dmabuf_fd = av_malloc_array(s->buffers, sizeof(int));
 +        if (!s->dmabuf_fd) {
 +            av_log(ctx, AV_LOG_ERROR, "Cannot allocate buffer descriptors\n");
-+            av_freep(&s->buf_start);
-+            av_freep(&s->buf_len);
++            av_freep(&s->buf_data);
 +            return AVERROR(ENOMEM);
 +        }
 +        for (i = 0; i < s->buffers; i++)
@@ -167,9 +184,9 @@ index a51fc70..09af2ff 100644
  
      for (i = 0; i < req.count; i++) {
          unsigned int buf_length, buf_offset;
-@@ -424,6 +458,30 @@ static int mmap_init(AVFormatContext *ctx)
-                    i, s->buf_len[i], s->frame_size);
-             return AVERROR(ENOMEM);
+@@ -431,6 +472,30 @@ static int mmap_init(AVFormatContext *ctx)
+             res = AVERROR(ENOMEM);
+             goto fail;
          }
 +
 +        if (s->drm_prime) {
@@ -184,21 +201,21 @@ index a51fc70..09af2ff 100644
 +                .flags = O_RDONLY,
 +            };
 +
-+            s->buf_start[i] = NULL;
++            s->buf_data[i].start = NULL;
 +            if (v4l2_ioctl(s->fd, VIDIOC_EXPBUF, &expbuf) < 0) {
 +                res = AVERROR(errno);
 +                av_log(ctx, AV_LOG_ERROR, "ioctl(VIDIOC_EXPBUF): %s\n",
 +                       av_err2str(res));
-+                return res;
++                goto fail;
 +            }
 +            s->dmabuf_fd[i] = expbuf.fd;
 +            continue;
 +        }
 +
-         s->buf_start[i] = v4l2_mmap(NULL, buf_length,
-                                PROT_READ | PROT_WRITE, MAP_SHARED,
-                                s->fd, buf_offset);
-@@ -452,27 +510,131 @@ static int enqueue_buffer(struct video_data *s, struct v4l2_buffer *buf)
+         s->buf_data[i].start = v4l2_mmap(NULL, buf_length,
+                                          PROT_READ | PROT_WRITE, MAP_SHARED,
+                                          s->fd, buf_offset);
+@@ -463,28 +528,132 @@ static int enqueue_buffer(struct video_data *s, struct v4l2_buffer *buf)
      return res;
  }
  
@@ -225,7 +242,7 @@ index a51fc70..09af2ff 100644
 +
 +static void mmap_release_buffer(void *opaque, uint8_t *data)
 +{
-     struct buff_data *buf_descriptor = opaque;
+     struct buf_desc *buf_descriptor = opaque;
      struct video_data *s = buf_descriptor->s;
 +    int index = buf_descriptor->index;
  
@@ -272,10 +289,11 @@ index a51fc70..09af2ff 100644
 +static void drm_prime_free_frame(void *opaque, uint8_t *data)
 +{
 +    AVFrame *frame = (AVFrame *)data;
-+
+ 
+-    enqueue_buffer(s, &buf);
 +    av_frame_free(&frame);
-+}
-+
+ }
+ 
 +/**
 + * Wrap a dequeued buffer in a DRM PRIME frame and hand it out as a
 + * wrapped-AVFrame packet. The buffer goes back to the driver when the frame
@@ -285,7 +303,7 @@ index a51fc70..09af2ff 100644
 +{
 +    struct video_data *s = ctx->priv_data;
 +    AVDRMFrameDescriptor *desc = av_mallocz(sizeof(*desc));
-+    struct buff_data *buf_descriptor = av_malloc(sizeof(*buf_descriptor));
++    struct buf_desc *buf_descriptor = av_malloc(sizeof(*buf_descriptor));
 +    AVFrame *frame = av_frame_alloc();
 +
 +    if (!desc || !buf_descriptor || !frame)
@@ -293,15 +311,14 @@ index a51fc70..09af2ff 100644
 +
 +    desc->nb_objects                = 1;
 +    desc->objects[0].fd             = s->dmabuf_fd[index];
-+    desc->objects[0].size           = s->buf_len[index];
++    desc->objects[0].size           = s->buf_data[index].len;
 +    desc->objects[0].format_modifier = DRM_FORMAT_MOD_LINEAR;
 +    desc->nb_layers                 = 1;
 +    desc->layers[0]                 = s->drm_layer;
 +
 +    buf_descriptor->index = index;
 +    buf_descriptor->s     = s;
- 
--    enqueue_buffer(s, &buf);
++
 +    frame->buf[0] = av_buffer_create((uint8_t *)desc, sizeof(*desc),
 +                                     drm_prime_release_buffer, buf_descriptor, 0);
 +    if (!frame->buf[0])
@@ -337,12 +354,13 @@ index a51fc70..09af2ff 100644
 +    /* The frame owns the buffer now, so freeing it re-queues the buffer. */
 +    av_frame_free(&frame);
 +    return AVERROR(ENOMEM);
- }
++}
 +#endif
- 
++
  #if HAVE_CLOCK_GETTIME && defined(CLOCK_MONOTONIC)
  static int64_t av_gettime_monotonic(void)
-@@ -597,6 +759,41 @@ static int mmap_read_frame(AVFormatContext *ctx, AVPacket *pkt)
+ {
+@@ -608,6 +777,41 @@ static int mmap_read_frame(AVFormatContext *ctx, AVPacket *pkt)
          }
      }
  
@@ -381,26 +399,10 @@ index a51fc70..09af2ff 100644
 +    }
 +#endif
 +
-     /* Image is at s->buff_start[buf.index] */
-     if (atomic_load(&s->buffers_queued) == FFMAX(s->buffers / 8, 1)) {
-         /* when we start getting low on queued buffers, fall back on copying data */
-@@ -694,8 +891,14 @@ static void mmap_close(struct video_data *s)
-      */
-     v4l2_ioctl(s->fd, VIDIOC_STREAMOFF, &type);
-     for (i = 0; i < s->buffers; i++) {
--        v4l2_munmap(s->buf_start[i], s->buf_len[i]);
-+        if (s->dmabuf_fd) {
-+            if (s->dmabuf_fd[i] >= 0)
-+                close(s->dmabuf_fd[i]);
-+        } else {
-+            v4l2_munmap(s->buf_start[i], s->buf_len[i]);
-+        }
-     }
-+    av_freep(&s->dmabuf_fd);
-     av_freep(&s->buf_start);
-     av_freep(&s->buf_len);
- }
-@@ -871,6 +1074,108 @@ static int device_try_init(AVFormatContext *ctx,
+     /* Image is at s->buf_data[buf.index].start */
+     if (atomic_load(&s->buffers_queued) == FFMAX(s->buffers / 8, 1) ||
+         ctx->video_codec_id != AV_CODEC_ID_RAWVIDEO) {
+@@ -878,6 +1082,108 @@ static int device_try_init(AVFormatContext *ctx,
      return ret;
  }
  
@@ -509,7 +511,7 @@ index a51fc70..09af2ff 100644
  static int v4l2_read_probe(const AVProbeData *p)
  {
      if (av_strstart(p->filename, "/dev/video", NULL))
-@@ -892,6 +1197,21 @@ static int v4l2_read_header(AVFormatContext *ctx)
+@@ -899,6 +1205,21 @@ static int v4l2_read_header(AVFormatContext *ctx)
      if (!st)
          return AVERROR(ENOMEM);
  
@@ -531,7 +533,7 @@ index a51fc70..09af2ff 100644
  #if CONFIG_LIBV4L2
      /* silence libv4l2 logging. if fopen() fails v4l2_log_file will be NULL
         and errors will get sent to stderr */
-@@ -990,6 +1310,10 @@ static int v4l2_read_header(AVFormatContext *ctx)
+@@ -997,6 +1318,10 @@ static int v4l2_read_header(AVFormatContext *ctx)
       */
      if (codec_id != AV_CODEC_ID_NONE && ctx->video_codec_id == AV_CODEC_ID_NONE)
          ctx->video_codec_id = codec_id;
@@ -542,7 +544,7 @@ index a51fc70..09af2ff 100644
  
      if ((res = av_image_check_size(s->width, s->height, 0, ctx)) < 0)
          goto fail;
-@@ -1004,6 +1328,11 @@ static int v4l2_read_header(AVFormatContext *ctx)
+@@ -1011,6 +1336,11 @@ static int v4l2_read_header(AVFormatContext *ctx)
          s->frame_size = av_image_get_buffer_size(st->codecpar->format,
                                                   s->width, s->height, 1);
  
@@ -554,7 +556,7 @@ index a51fc70..09af2ff 100644
      if ((res = mmap_init(ctx)) ||
          (res = mmap_start(ctx)) < 0)
              goto fail;
-@@ -1011,25 +1340,39 @@ static int v4l2_read_header(AVFormatContext *ctx)
+@@ -1018,25 +1348,39 @@ static int v4l2_read_header(AVFormatContext *ctx)
      s->top_field_first = first_field(s);
  
      st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
@@ -606,7 +608,7 @@ index a51fc70..09af2ff 100644
      v4l2_close(s->fd);
      return res;
  }
-@@ -1052,8 +1395,15 @@ static int v4l2_read_close(AVFormatContext *ctx)
+@@ -1059,8 +1403,15 @@ static int v4l2_read_close(AVFormatContext *ctx)
      if (atomic_load(&s->buffers_queued) != s->buffers)
          av_log(ctx, AV_LOG_WARNING, "Some buffers are still owned by the caller on "
                 "close.\n");
@@ -622,7 +624,7 @@ index a51fc70..09af2ff 100644
  
      ff_timefilter_destroy(s->timefilter);
      v4l2_close(s->fd);
-@@ -1167,6 +1517,8 @@ static const AVOption options[] = {
+@@ -1174,6 +1525,8 @@ static const AVOption options[] = {
      { "abs",          "use absolute timestamps (wall clock)",                     OFFSET(ts_mode),      AV_OPT_TYPE_CONST,  {.i64 = V4L_TS_ABS      }, 0, 2, DEC, .unit = "timestamps" },
      { "mono2abs",     "force conversion from monotonic to absolute timestamps",   OFFSET(ts_mode),      AV_OPT_TYPE_CONST,  {.i64 = V4L_TS_MONO2ABS }, 0, 2, DEC, .unit = "timestamps" },
      { "use_libv4l2",  "use libv4l2 (v4l-utils) conversion functions",             OFFSET(use_libv4l2),  AV_OPT_TYPE_BOOL,   {.i64 = 0}, 0, 1, DEC },

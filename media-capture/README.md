@@ -7,10 +7,10 @@ patches hand that buffer on, rather than a copy of it.
 [`series/media-capture.toml`](../series/media-capture.toml) binds them. Its `ffmpeg`
 scope applies on top of whichever FFmpeg provider series the build carries.
 
-Base: FFmpeg `n8.1.3` with the `rk3588-accel` FFmpeg scope applied, and Kwiboo's
-`v4l2-request-n8.1` with the `rk3576-media` FFmpeg scope applied. Neither provider
-series touches `libavdevice` or `avformat_free_context()`, so the patches read the same
-on an unpatched `n8.1.3`.
+Base: FFmpeg `n9.1` with the `rk3588-accel` FFmpeg scope applied, and FFmpeg `n9.1`
+with the `rk3576-media` FFmpeg scope applied. Neither provider series touches
+`libavdevice` or `avformat_free_context()`, so the patches read the same on an
+unpatched `n9.1`.
 
 ## Series
 
@@ -33,7 +33,7 @@ the parse and raw queues.
 
 So any program that closed an input before reading everything probed ran the callback
 on freed memory. `ffmpeg` does this whenever its output fails to open. AddressSanitizer
-reports a heap-use-after-free in the callback, reached from `avpriv_packet_list_free()`,
+reports a heap-use-after-free in the callback, reached from `ff_packet_list_free()`,
 on the unpatched copying path as much as on `drm_prime`. `0001` frees the buffered
 packets first. `0002` makes a buffer released after `read_close` skip the re-queue,
 which otherwise logs `ioctl(VIDIOC_QBUF): Bad file descriptor` once per packet.
