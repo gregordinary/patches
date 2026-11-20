@@ -10,10 +10,10 @@
 # repo's root.
 
 # Declared intent; the builder's verify-applies gate is the enforcement. Matched
-# against the app's own pinned ref (`v12.2`). The server patches are generated
-# against the 12.2 release, and the packaging patches apply unchanged to the tag
-# that packaged it, so the envelope is that one release.
-applies_to_app = ">=12.2, <12.3"
+# against the app's own pinned ref (`v12.4`). The server patches apply under strict
+# `git am` to the 12.4 release, and the packaging patches to the tag that packaged
+# it, so the envelope is that one release.
+applies_to_app = ">=12.4, <12.5"
 
 # The server tree (github.com/jellyfin/jellyfin): route every hardware-accel read
 # through a decode or an encode accessor, let the two name different stacks, give

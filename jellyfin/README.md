@@ -9,7 +9,7 @@ files, and building needs nothing but Jellyfin's own toolchain.
 [`series/jellyfin.toml`](../series/jellyfin.toml) binds both: its `app` scope is
 the server patches below, its `app_packaging` scope the packaging patches.
 
-Base: the server at `v12.2` (`ca0f16eb7`), the packaging at `v12.2-202610051851`,
+Base: the server at `v12.4` (`14bc9abfd`), the packaging at `v12.4-202610261649`,
 the tag that packaged that release.
 
 ## Series
@@ -187,7 +187,9 @@ behaves as `HardwareAccelerationType` alone always did. On a stock server, leave
 
 ## Verification
 
-Against `v12.2`, on .NET 10.0.401:
+The series applies unchanged under strict `git am` to `v12.4` and to
+`v12.4-202610261649`. The build and test results below were taken against `v12.2`, on
+.NET 10.0.401:
 
 - The server patches apply under strict `git am`, and a self-contained
   `linux-arm64` publish of `Jellyfin.Server` is clean.
