@@ -26,6 +26,11 @@ Regenerated against this series' base, v7.1.7 (c7ba9d6d); the change is
 identical to the posting, which was generated against a tree whose rkvdec
 files sit at different line numbers.
 
+The probe error path deletes no gen_pool_destroy() call. 7.3.4 includes
+upstream's removal of it, "media: rkvdec: do not destroy borrowed SRAM
+pool" (19449e913cf0), which the posting's own deletion of those lines
+duplicates. The file this patch produces is the same either way.
+
  .../platform/rockchip/rkvdec/rkvdec-h264.c    |  17 +-
  .../platform/rockchip/rkvdec/rkvdec-hevc.c    |  16 +-
  .../platform/rockchip/rkvdec/rkvdec-rcb.c     |  61 +--
@@ -35,9 +40,9 @@ files sit at different line numbers.
  .../rockchip/rkvdec/rkvdec-vdpu383-h264.c     |  24 +-
  .../rockchip/rkvdec/rkvdec-vdpu383-hevc.c     |  26 +-
  .../platform/rockchip/rkvdec/rkvdec-vp9.c     |  27 +-
- .../media/platform/rockchip/rkvdec/rkvdec.c   | 506 ++++++++++++------
+ .../media/platform/rockchip/rkvdec/rkvdec.c   | 503 ++++++++++++------
  .../media/platform/rockchip/rkvdec/rkvdec.h   |  23 +-
- 11 files changed, 472 insertions(+), 283 deletions(-)
+ 11 files changed, 472 insertions(+), 280 deletions(-)
 
 diff --git a/drivers/media/platform/rockchip/rkvdec/rkvdec-h264.c b/drivers/media/platform/rockchip/rkvdec/rkvdec-h264.c
 index d3202cecb..215676c55 100644
@@ -1313,13 +1318,10 @@ index db2731af0..d3b13132b 100644
  	}
  
  	return 0;
-@@ -1849,60 +1831,254 @@ static int rkvdec_probe(struct platform_device *pdev)
+@@ -1849,57 +1831,254 @@ static int rkvdec_probe(struct platform_device *pdev)
  err_disable_runtime_pm:
  	pm_runtime_dont_use_autosuspend(&pdev->dev);
  	pm_runtime_disable(&pdev->dev);
--
--	if (rkvdec->sram_pool)
--		gen_pool_destroy(rkvdec->sram_pool);
 +	if (core->empty_domain)
 +		iommu_domain_free(core->empty_domain);
  

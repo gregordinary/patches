@@ -17,8 +17,10 @@
 
 # Declared intent; the builder's verify-applies gate is the enforcement.
 #
-# The floor is 7.3, where the kernel carries the fixes named above. 060 has a kernel
-# dependency of its own, which that floor covers. Its trailing context is
+# The floor is 7.3.4. 7.3 is where the kernel carries the fixes named above, and 7.3.4
+# removes the gen_pool_destroy() call from rkvdec's probe error path, which 044 is
+# written against: 044 restructures that function and no longer deletes the call
+# itself. 060 has a kernel dependency of its own, which that floor covers. Its trailing context is
 # `rk3588-base.dtsi`'s `vdec0` node, written against the `reg` and `reg-names` order
 # the binding declares, which kernels follow from 7.1.5. A kernel that keeps 060 out
 # keeps VEPU580 encode out, so filtering it per-patch would silently ship a different
@@ -26,7 +28,7 @@
 #
 # The ceiling is 7.4 because 7.3 is the newest generation the series has been dry-run
 # against, not because 7.4 is known to break it.
-applies_to_kernel = ">=7.3, <7.4"
+applies_to_kernel = ">=7.3.4, <7.4"
 
 # Kernel tree: media-accel first (decode/encode/RGA), then rocket (NPU). Applying
 # in ascending numeric order satisfies the series' dependencies: npu-volt needs

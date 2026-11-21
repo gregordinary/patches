@@ -58,6 +58,8 @@ for. A series with no divergence to express declares its floor once, and every e
 applies unconditionally. `rk3588-accel`, `rk3576-fixes` and `rk3576-npu` stand that way
 at 7.3, where the kernel bounds the HEVC and AV1 tile counts itself, searches every
 rocket core slot, and carries the Rockchip IOMMU's all-clocks and stale-fault fixes.
+`rk3588-accel`'s floor is 7.3.4, whose rkvdec probe error path its `044` is written
+against.
 
 ## Consuming patches
 
