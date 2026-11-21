@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# series/rk3588-uboot-fixes.toml
+#
+# RK3588 u-boot fix series: the SoC-generic fixes a mainline u-boot
+# release needs on any RK3588 or RK3588S board, and nothing else. A board
+# whose u-boot is otherwise upstream selects this series; a board with
+# its own u-boot series (the Turing RK1's) lists the same patches ahead
+# of its board patches instead.
+#
+# The one fix is the SPL clock initialization. SPLL clocks the SoC's
+# center interconnect, the fabric between the bus masters and the DDR
+# controllers, and only SPL can program it. Without the fix, SPL programs
+# it only when a boot device's clock request reaches the secure SCRU,
+# which an eMMC boot never makes. rk3588/README.md explains the path.
+
+# No version envelope. This series patches only u-boot, so it makes no kernel
+# claim (no applies_to_kernel). The u-boot series targets the one u-boot
+# generation the board runs, so it declares no applies_to_uboot either; the
+# builder's git-am pass is what enforces that the series applies.
+
+# The kernel/ffmpeg/userspace trees are built pristine -- the RK3588's media and
+# NPU patches ride the kernel axis in the rk3588-accel series, not here.
+kernel    = []
+ffmpeg    = []
+userspace = []
+
+# u-boot tree, applied with `git am`:
+#
+#   0001  probe the CRU and the secure SCRU at bind in SPL, so SPLL runs
+#         at 702 MHz whatever the boot device. Upstream 514663543ecf,
+#         first in v2027.01-rc2.
+uboot = [
+    "rk3588/uboot/0001-clk-rockchip-rk3588-Always-initialize-clocks-in-SPL.patch",
+]

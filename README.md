@@ -19,7 +19,7 @@ top of mainline.
 | [`crypto/`](crypto/) | Rockchip second-generation crypto offloader (RK356x/RK3588) — AES and hash offload over an LLI DMA engine. |
 | [`rk3288/`](rk3288/) | RK3288 kernel fixes, written to upstream standards and meant to retire into stable. |
 | [`rk3576/`](rk3576/) | RK3576 kernel fixes plus the out-of-tree u-boot series (USB-flash recovery, USB host, HDMI display). |
-| [`rk3588/`](rk3588/) | RK3588 u-boot series (block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
+| [`rk3588/`](rk3588/) | RK3588 u-boot series (the SPL clock fix every RK3588 board takes, block-device export, recovery tooling). Its kernel patches ride `rk3588-accel`, from the subject scopes above. |
 | [`jellyfin/`](jellyfin/) | Jellyfin **server** patches for Rockchip boards on a mainline kernel, and the Debian packaging patches that build the patched server as a package. Bound by `series/jellyfin.toml`; they also apply by hand to a Jellyfin checkout. |
 | [`media-capture/`](media-capture/) | Capture into the hardware pipeline: the FFmpeg V4L2 input device hands out DRM PRIME frames that reference the capture buffers, rather than copies. Bound by `series/media-capture.toml`, which a feature composes on top of an FFmpeg provider series. |
 

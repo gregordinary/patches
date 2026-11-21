@@ -22,7 +22,7 @@
 # The RK1 u-boot series are:
 #
 #   * turing-rk1-recovery -- the u-boot an image ships with: mainline
-#                            plus `ums` and `setexpr`.
+#                            plus the SPL clock fix, `ums` and `setexpr`.
 #   * turing-rk1-util     -- this series. Recovery plus the diagnostic,
 #                            verification, and fetch commands.
 
@@ -39,14 +39,18 @@ userspace = []
 
 # u-boot tree, applied with `git am`:
 #
-#   0001  the turing-rk1-recovery patch, shared verbatim: `ums` to export
-#         a block device over USB, and `setexpr` restored.
+#   0001  (rk3588/uboot) the RK3588 SPL clock fix, shared verbatim: SPLL
+#         at 702 MHz whatever the boot device.
+#   0001  (boards/turing-rk1) the turing-rk1-recovery patch, shared
+#         verbatim: `ums` to export a block device over USB, and
+#         `setexpr` restored.
 #   0002  the util command set -- `bootmenu` to pick a boot target on a
 #         serial line, `memtest` to walk DRAM before trusting a module,
 #         `md5sum`/`sha1sum` to hash an image in RAM before writing it
 #         and off the disk afterwards, `wget` to pull it from a plain web
 #         server, and `read`/`write` for raw partition access.
 uboot = [
+    "rk3588/uboot/0001-clk-rockchip-rk3588-Always-initialize-clocks-in-SPL.patch",
     "rk3588/uboot/boards/turing-rk1/0001-export-block-devices-over-usb-with-ums.patch",
     "rk3588/uboot/boards/turing-rk1/0002-enable-the-util-command-set.patch",
 ]

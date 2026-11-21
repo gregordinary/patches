@@ -14,15 +14,21 @@
 # ordinary host tools, with no OS on the module.
 #
 # Everything the flow leans on is already mainline in this board's
-# defconfig, which is why the series is one patch: CONFIG_NVME_PCI and
-# CONFIG_PCIE_DW_ROCKCHIP enumerate the M.2 disk, CONFIG_CMD_UNZIP
-# (selected by CONFIG_CMD_BOOTI on arm64) carries `gzwrite`, and the
-# network stack carries `dhcp` and `tftp`.
+# defconfig, which is why the board's own part is one patch:
+# CONFIG_NVME_PCI and CONFIG_PCIE_DW_ROCKCHIP enumerate the M.2 disk,
+# CONFIG_CMD_UNZIP (selected by CONFIG_CMD_BOOTI on arm64) carries
+# `gzwrite`, and the network stack carries `dhcp` and `tftp`.
+#
+# Ahead of it sits the RK3588 SPL clock fix every RK3588 u-boot series
+# carries (rk3588/README.md explains it). The RK1 boots from eMMC, which
+# is the boot that leaves SPLL, and with it the SoC's center
+# interconnect, at the BootROM's rate without it.
 #
 # The RK1 u-boot series are:
 #
 #   * turing-rk1-recovery -- this series. The u-boot an image ships
-#                            with: mainline plus `ums` and `setexpr`.
+#                            with: mainline plus the SPL clock fix,
+#                            `ums` and `setexpr`.
 #   * turing-rk1-util     -- recovery plus a boot menu, memtest, image
 #                            hashing, `wget`, and raw partition
 #                            read/write. The recovery and bring-up tool.
@@ -40,10 +46,14 @@ userspace = []
 
 # u-boot tree, applied with `git am`:
 #
-#   0001  export block devices over USB with `ums`, and restore the
-#         default-y `setexpr` the board defconfig had turned off (a
-#         hand-driven write needs it to turn ${filesize} into the block
-#         count `nvme write` takes).
+#   0001  (rk3588/uboot) probe the CRU and the secure SCRU at bind in
+#         SPL, so SPLL runs at 702 MHz whatever the boot device. Upstream
+#         514663543ecf, first in v2027.01-rc2.
+#   0001  (boards/turing-rk1) export block devices over USB with `ums`,
+#         and restore the default-y `setexpr` the board defconfig had
+#         turned off (a hand-driven write needs it to turn ${filesize}
+#         into the block count `nvme write` takes).
 uboot = [
+    "rk3588/uboot/0001-clk-rockchip-rk3588-Always-initialize-clocks-in-SPL.patch",
     "rk3588/uboot/boards/turing-rk1/0001-export-block-devices-over-usb-with-ums.patch",
 ]
